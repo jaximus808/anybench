@@ -32,11 +32,29 @@ export const UploadCompleteRequestSchema = z.object({
 });
 export type UploadCompleteRequest = z.infer<typeof UploadCompleteRequestSchema>;
 
+/**
+ * Response of `POST /v1/trials/:id/uploads/complete`. `url` is optional: when the ingest gives
+ * none, the runner refers to the object as `artifact:<key>` (see artifactUrl).
+ */
+export const UploadCompleteResponseSchema = z.looseObject({ url: z.url().optional() });
+
+/** The reference the runner puts in events for an uploaded object when the ingest names no URL. */
+export function artifactUrl(key: string): string {
+  return `artifact:${key}`;
+}
+
+/** Inverse of artifactUrl; null when `url` is not an `artifact:` reference. */
+export function artifactKeyFromUrl(url: string): string | null {
+  return url.startsWith("artifact:") ? url.slice("artifact:".length) : null;
+}
+
 export interface UploadedArtifact {
   name: string;
   key: string;
   sha256: string;
   size_bytes: number;
+  /** From the completion response, else artifactUrl(key). */
+  url: string;
 }
 
 async function postJson(
@@ -92,6 +110,7 @@ export async function uploadArtifact(
     plan = UploadPlanResponseSchema.parse(res).plan;
   }
   const { parts } = await uploadFileWithPlan(plan, filePath, { fetch: fetchImpl });
+  let url = artifactUrl(plan.key);
   if (ingest) {
     const complete: UploadCompleteRequest = {
       attempt: job.attempt,
@@ -102,13 +121,15 @@ export async function uploadArtifact(
       ...(plan.kind === "multipart" ? { upload_id: plan.uploadId } : {}),
       parts,
     };
-    await postJson(
+    const res = await postJson(
       fetchImpl,
       ingestUrl(ingest.url, RUNNER_INGEST_ROUTES.uploadComplete(job.trial_id)),
       ingest.token,
       complete,
       ingest.timeout_ms,
     );
+    const parsed = UploadCompleteResponseSchema.safeParse(res);
+    if (parsed.success && parsed.data.url) url = parsed.data.url;
   }
-  return { name, key: plan.key, sha256, size_bytes: sizeBytes };
+  return { name, key: plan.key, sha256, size_bytes: sizeBytes, url };
 }

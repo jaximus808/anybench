@@ -9,6 +9,7 @@
 
 import { readFile } from "node:fs/promises";
 import { isAbsolute, normalize } from "node:path";
+import { NonNegativeMicroUsdSchema } from "@anybench/core";
 import { uploadPlanSchema } from "@anybench/envs";
 import { z } from "zod";
 
@@ -82,6 +83,62 @@ export const UploadConfigSchema = z.object({
 });
 export type UploadConfig = z.infer<typeof UploadConfigSchema>;
 
+/**
+ * Live log chunks (TDM-160). Absent = off: the logs are only in the frozen bundle. When on, each
+ * stream's redacted output is cut into segments (every `segment_bytes`, or `segment_ms` after the
+ * segment's first byte), each segment is uploaded through the ingest upload flow and announced
+ * with a `trial.log_chunk` event. Needs `ingest`.
+ */
+export const LogChunksConfigSchema = z.object({
+  segment_bytes: z
+    .int()
+    .min(1024)
+    .max(64 * 1024 * 1024)
+    .default(256 * 1024),
+  segment_ms: z.int().min(50).max(600_000).default(5000),
+  streams: z
+    .array(z.enum(["stdout", "stderr"]))
+    .min(1)
+    .default(["stdout", "stderr"]),
+  /** Upload tries per segment before live chunks are turned off for that stream. */
+  upload_tries: z.int().min(1).max(10).default(3),
+});
+export type LogChunksConfig = z.infer<typeof LogChunksConfigSchema>;
+
+/** Integer micro-USD per million tokens, as a decimal string (or bigint). */
+const perMtok = NonNegativeMicroUsdSchema;
+
+/**
+ * Token prices for the BYOK token cap, micro-USD per million tokens. The worker should pass the
+ * prices of the contender's model; the default is Claude Sonnet list pricing ($3 in, $15 out,
+ * $0.30 cache read, $3.75 cache write).
+ */
+export const TokenPricesSchema = z.object({
+  input: perMtok,
+  output: perMtok,
+  cache_read: perMtok,
+  cache_creation: perMtok,
+});
+export type TokenPrices = z.infer<typeof TokenPricesSchema>;
+
+export const DEFAULT_TOKEN_PRICES: TokenPrices = {
+  input: 3_000_000n,
+  output: 15_000_000n,
+  cache_read: 300_000n,
+  cache_creation: 3_750_000n,
+};
+
+/**
+ * Network probe before `run` (TDM-160). Absent = no probe. `allow` is the kit's declared
+ * `EnvSpec.network.allow`; the canary is a host the allow-list does not cover.
+ */
+export const NetworkProbeConfigSchema = z.object({
+  allow: z.array(z.string().min(1)).default([]),
+  canary_url: z.url({ protocol: /^https?$/ }).default("https://example.com"),
+  timeout_ms: z.int().min(100).max(60_000).default(5000),
+});
+export type NetworkProbeConfig = z.infer<typeof NetworkProbeConfigSchema>;
+
 export const TrialJobSchema = z.object({
   version: z.literal(TRIAL_JOB_VERSION),
   trial_id: idSchema,
@@ -120,6 +177,18 @@ export const TrialJobSchema = z.object({
   heartbeat_s: z.int().min(1).max(300).default(15),
   /** Recorded as `lease_owner` in heartbeats. Default `runner:<hostname>`. */
   lease_owner: z.string().min(1).optional(),
+  /** Live log chunks; absent = off. */
+  log_chunks: LogChunksConfigSchema.optional(),
+  /**
+   * BYOK token cap, integer micro-USD as a decimal string. The runner reads the Claude Code
+   * stream-json on the warm-up and `run` stdout and stops the trial with a `budget` failure when
+   * the spend crosses it. Absent = no cap.
+   */
+  token_cap_micro_usd: NonNegativeMicroUsdSchema.optional(),
+  /** Prices used to estimate spend from token usage before Claude Code reports its own cost. */
+  token_prices: TokenPricesSchema.optional(),
+  /** Network probe before `run`; absent = none. */
+  network: NetworkProbeConfigSchema.optional(),
   /** Extra non-secret env for the driver. */
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).default({}),
 });

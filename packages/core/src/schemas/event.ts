@@ -48,6 +48,7 @@ export const EVENT_TYPES = [
   "trial.phase",
   "trial.heartbeat",
   "trial.log_chunk",
+  "trial.network",
   "trial.gate",
   "agent.tool.started",
   "agent.message",
@@ -69,6 +70,7 @@ export const EVENT_SOURCE_BY_TYPE = {
   "trial.phase": "trial",
   "trial.heartbeat": "trial",
   "trial.log_chunk": "trial",
+  "trial.network": "trial",
   "trial.gate": "trial",
   "agent.tool.started": "agent_session",
   "agent.message": "agent_session",
@@ -186,6 +188,24 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
       offset,
       bytes: z.int().positive(),
       url: z.url(),
+      /** sha256 of the segment's bytes (the runner sends it; older producers may not). */
+      sha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
+    }),
+  ),
+  /**
+   * The runner's network probe before `run`: an HTTPS HEAD to each declared allowed host and to a
+   * canary that should be blocked. On Naïve the allow-list is declared, not enforced, so a
+   * reachable canary is recorded, not failed.
+   */
+  eventOf(
+    "trial.network",
+    z.object({
+      allowed: z.record(z.string(), z.enum(["ok", "failed"])),
+      canary: z.enum(["blocked", "reachable"]),
+      canary_url: z.url(),
     }),
   ),
   /** The correctness gate. No speed or quality number is reported for a trial without one. */

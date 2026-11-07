@@ -28,6 +28,10 @@ export interface RunnerPaths {
   eventsJsonl: string;
   /** ~/eval/out/machine.json: the machine probe, written right before `run`. */
   machineJson: string;
+  /** ~/eval/out/network.json: the network probe, written right before `run` when trial.json asks. */
+  networkJson: string;
+  /** ~/eval/chunks: scratch for live log segments while they upload (never bundled). */
+  chunksDir: string;
   /** ~/eval/out/stdout.log / stderr.log: the driver's redacted output (all verbs). */
   stdoutLog: string;
   stderrLog: string;
@@ -60,6 +64,8 @@ export function runnerPaths(home: string = homedir()): RunnerPaths {
     statusJson: join(outDir, "status.json"),
     eventsJsonl: join(outDir, "events.jsonl"),
     machineJson: join(outDir, "machine.json"),
+    networkJson: join(outDir, "network.json"),
+    chunksDir: join(evalDir, "chunks"),
     stdoutLog: join(outDir, "stdout.log"),
     stderrLog: join(outDir, "stderr.log"),
     manifestJson: join(outDir, "manifest.json"),

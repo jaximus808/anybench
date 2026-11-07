@@ -16,14 +16,16 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { createRedactor, type Redactor, type TrialState } from "@anybench/core";
+import { createRedactor, formatUsd, type Redactor, type TrialState } from "@anybench/core";
 import { sha256File } from "@anybench/envs";
 import { loadEnvFile } from "./envfile.js";
 import { EventSink, type FetchLike } from "./events.js";
 import { defaultShell, RedactingLineWriter, runVerb, type VerbResult } from "./exec.js";
 import { listFiles, matchFiles } from "./glob.js";
 import { loadTrialJob, TrialJobError, type TrialJob } from "./job.js";
+import { LogChunker, type LogStream } from "./logs.js";
 import { probeMachine } from "./machine.js";
+import { probeNetwork, type ProbeFetch } from "./netprobe.js";
 import { runnerPaths, type RunnerPaths } from "./paths.js";
 import {
   isFinalRunnerPhase,
@@ -35,6 +37,7 @@ import {
   type RunnerStatus,
 } from "./status.js";
 import { writeTarGz } from "./tar.js";
+import { TokenMeter, type TokenMeterSnapshot } from "./token-cap.js";
 import { uploadArtifact, type UploadedArtifact } from "./upload.js";
 import { RUNNER_VERSION } from "./version.js";
 
@@ -62,6 +65,12 @@ export interface RunTrialOptions {
   handleSignals?: boolean;
   /** How long to keep trying to push the last events before exiting. */
   finalFlushMs?: number;
+  /** fetch for the network probe (default: global fetch). Tests stub it. */
+  probeFetch?: ProbeFetch;
+  /** How long freeze waits for queued live log segments to upload. */
+  logChunkDeadlineMs?: number;
+  /** Backoff between live log segment upload tries. */
+  logChunkRetryMs?: number;
 }
 
 export interface RunTrialResult {
@@ -171,6 +180,11 @@ class TrialRun {
   private readonly shell: string;
   private readonly cwd: string;
   private started = false;
+  private readonly chunkers = new Map<LogStream, LogChunker>();
+  private meter: TokenMeter | null = null;
+  private budgetHit: TokenMeterSnapshot | null = null;
+  private resolveBudget!: () => void;
+  private readonly budgetStop = new Promise<void>((r) => (this.resolveBudget = r));
 
   constructor(
     private readonly job: TrialJob,
@@ -192,6 +206,7 @@ class TrialRun {
     await rm(p.outDir, { recursive: true, force: true });
     await rm(p.warmupDir, { recursive: true, force: true });
     await rm(p.bundle, { force: true });
+    await rm(p.chunksDir, { recursive: true, force: true });
     for (const d of [p.configDir, p.inDir, p.wsDir, p.outDir, p.artifactsDir, p.warmupDir]) {
       await mkdir(d, { recursive: true });
     }
@@ -235,6 +250,8 @@ class TrialRun {
     });
     this.stdout = new RedactingLineWriter(p.stdoutLog, (t) => this.getRedact()(t));
     this.stderr = new RedactingLineWriter(p.stderrLog, (t) => this.getRedact()(t));
+    this.setupLogChunks();
+    this.setupTokenCap();
 
     const onSignal = () => this.requestCancel("signal");
     if (this.opts.handleSignals) {
@@ -266,6 +283,93 @@ class TrialRun {
       process.off("SIGINT", onSignal);
     }
     return result;
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Live log chunks, token cap, network probe (TDM-160)
+
+  private setupLogChunks(): void {
+    const cfg = this.job.log_chunks;
+    if (!cfg) return;
+    if (!this.job.ingest) {
+      this.log("runner: log_chunks needs ingest; live chunks off (logs are in the bundle)");
+      return;
+    }
+    for (const stream of cfg.streams) {
+      const chunker = new LogChunker({
+        stream,
+        config: cfg,
+        dir: this.paths.chunksDir,
+        upload: (name, path) =>
+          uploadArtifact(this.job, name, path, {
+            allowIngest: this.sink.mode === "push",
+            ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
+          }),
+        emit: (payload) => this.sink.emit({ type: "trial.log_chunk", payload }),
+        log: this.log,
+        ...(this.opts.logChunkRetryMs !== undefined
+          ? { retryDelayMs: this.opts.logChunkRetryMs }
+          : {}),
+      });
+      this.chunkers.set(stream, chunker);
+      const writer = stream === "stdout" ? this.stdout : this.stderr;
+      writer.onWrite = (text) => chunker.write(text);
+    }
+  }
+
+  private async closeLogChunks(): Promise<void> {
+    const deadline = this.opts.logChunkDeadlineMs ?? 60_000;
+    await Promise.all([...this.chunkers.values()].map((c) => c.close(deadline)));
+  }
+
+  private setupTokenCap(): void {
+    const cap = this.job.token_cap_micro_usd;
+    if (cap === undefined) return;
+    this.meter = new TokenMeter(cap, this.job.token_prices, (snap) => {
+      this.budgetHit = snap;
+      this.log(
+        `runner: token cap crossed: ${formatUsd(snap.spent_micro_usd)} (${snap.source}) > ${formatUsd(snap.cap_micro_usd)} cap; stopping`,
+      );
+      this.resolveBudget();
+    });
+  }
+
+  private budgetReason(snap: TokenMeterSnapshot, what: string): string {
+    const t = snap.tokens;
+    return (
+      `token cap exceeded during ${what}: spent ${formatUsd(snap.spent_micro_usd)} ` +
+      `(${snap.spent_micro_usd} micro-USD, ${snap.source}) over the ${formatUsd(snap.cap_micro_usd)} ` +
+      `cap (${snap.cap_micro_usd} micro-USD); tokens in ${t.input} out ${t.output} ` +
+      `cache_read ${t.cache_read} cache_write ${t.cache_creation}`
+    );
+  }
+
+  /** Probe the network and record it; never fails the trial. */
+  private async probeNetwork(): Promise<void> {
+    const cfg = this.job.network;
+    if (!cfg) return;
+    try {
+      const result = await probeNetwork(
+        cfg,
+        this.opts.probeFetch ? { fetch: this.opts.probeFetch } : {},
+      );
+      await writeJsonAtomic(this.paths.networkJson, result);
+      const failed = Object.values(result.allowed).some((v) => v === "failed");
+      this.sink.emit({
+        type: "trial.network",
+        severity: failed ? "warn" : "info",
+        payload: { allowed: result.allowed, canary: result.canary, canary_url: result.canary_url },
+      });
+      this.log(
+        `runner: network probe: canary ${result.canary}; allowed ${
+          Object.entries(result.allowed)
+            .map(([h, v]) => `${h}=${v}`)
+            .join(", ") || "(none)"
+        }`,
+      );
+    } catch (err) {
+      this.log(`runner: network probe failed: ${(err as Error).message}`);
+    }
   }
 
   // ------------------------------------------------------------------------------------------
@@ -301,12 +405,15 @@ class TrialRun {
       const out = join(p.warmupDir, String(i));
       await mkdir(out, { recursive: true });
       const r = await this.verb("warmup", job.driver.run, [p.inDir, out], job.wall_clock_s, out, i);
-      if (!this.verbOk(r, "warmup_failed", `warm-up ${i}`)) return this.salvage();
+      if (!this.verbOk(r, "warmup_failed", `warm-up ${i}`, true)) return this.salvage();
     }
 
     // run
     await this.enter("run");
-    const machine = await probeMachine(RUNNER_VERSION, this.opts.stealWindowMs ?? 1000);
+    const [machine] = await Promise.all([
+      probeMachine(RUNNER_VERSION, this.opts.stealWindowMs ?? 1000),
+      this.probeNetwork(),
+    ]);
     await writeJsonAtomic(p.machineJson, machine);
     const r = await this.verb(
       "run",
@@ -321,7 +428,7 @@ class TrialRun {
       duration_ms: r.durationMs,
       timed_out: r.timedOut,
     };
-    this.verbOk(r, "run_failed", "run");
+    this.verbOk(r, "run_failed", "run", true);
     this.throwIfCancelled();
 
     await this.collectFreezeUpload();
@@ -349,6 +456,8 @@ class TrialRun {
     // freeze
     await this.enter("freeze");
     await Promise.all([this.stdout.close(), this.stderr.close()]);
+    // The last segments go out before the bundle, so their events are in the frozen events.jsonl.
+    await this.closeLogChunks();
     const live = new Set(["status.json", "events.jsonl", "manifest.json"]);
     const files = (await listFiles(p.outDir)).filter((f) => !f.includes(".tmp-"));
     const manifest = [];
@@ -466,6 +575,9 @@ class TrialRun {
     ignoreCancel = false,
   ): Promise<VerbResult> {
     if (!ignoreCancel) this.throwIfCancelled();
+    // The token cap watches the verbs that run the subject: warm-ups and `run`.
+    const metered = this.meter !== null && (name === "run" || name === "warmup");
+    this.stdout.onLine = metered ? (line) => this.meter?.line(line) : null;
     return runVerb({
       command,
       args,
@@ -477,12 +589,20 @@ class TrialRun {
       stderr: this.stderr,
       tag: `[${name}${iteration !== undefined ? ` ${iteration}` : ""}] `,
       ...(ignoreCancel ? {} : { cancelled: this.cancelled }),
+      ...(metered ? { abort: this.budgetStop } : {}),
+    }).finally(() => {
+      this.stdout.onLine = null;
     });
   }
 
   /** True on exit 0; otherwise records a subject failure (first one wins). */
-  private verbOk(r: VerbResult, failureClass: string, what: string): boolean {
+  private verbOk(r: VerbResult, failureClass: string, what: string, metered = false): boolean {
     if (r.cancelled) throw new CancelledError();
+    // Crossing the token cap fails the verb even if it managed to exit 0 before the kill landed.
+    if (metered && this.budgetHit) {
+      this.fail("failed_subject", "budget", this.budgetReason(this.budgetHit, what));
+      return false;
+    }
     if (r.timedOut) {
       this.fail(
         "failed_subject",
@@ -579,6 +699,23 @@ class TrialRun {
       last_error: this.sink.lastError,
     };
     this.status.events = { count: this.sink.count, bytes: this.sink.bytes };
+    if (this.chunkers.size > 0) {
+      this.status.log_chunks = Object.fromEntries(
+        [...this.chunkers].map(([stream, c]) => [
+          stream,
+          { segments: c.segments, bytes: c.bytes, state: c.state, error: c.error },
+        ]),
+      );
+    }
+    if (this.meter) {
+      const m = this.meter.snapshot();
+      this.status.token_cap = {
+        cap_micro_usd: m.cap_micro_usd.toString(),
+        spent_micro_usd: m.spent_micro_usd.toString(),
+        source: m.source,
+        exceeded: m.exceeded,
+      };
+    }
     return structuredClone(this.status);
   }
 
@@ -596,6 +733,7 @@ class TrialRun {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.failure?.outcome === "cancelled") await this.stopDriver().catch(() => undefined);
     await Promise.all([this.stdout.close(), this.stderr.close()]).catch(() => undefined);
+    await this.closeLogChunks().catch(() => undefined);
 
     const now = new Date().toISOString();
     const prev = this.status.phases.at(-1);

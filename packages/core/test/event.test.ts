@@ -56,6 +56,11 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     bytes: 1024,
     url: "s3://anybench-logs/run_1/trial_1/stdout",
   }),
+  "trial.network": tdm8Event("trial.network", {
+    allowed: { "api.anthropic.com": "ok" },
+    canary: "blocked",
+    canary_url: "https://example.com",
+  }),
   "trial.gate": tdm8Event("trial.gate", {
     gate: "tests_pass",
     passed: false,
@@ -134,7 +139,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(16);
+    expect(EVENT_TYPES).toHaveLength(17);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

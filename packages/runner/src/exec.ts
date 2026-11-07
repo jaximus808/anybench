@@ -18,6 +18,10 @@ export class RedactingLineWriter {
   private partial = "";
   private closing: Promise<void> | null = null;
   bytes = 0;
+  /** Gets exactly the (redacted) text appended to the file, e.g. for live log chunks. */
+  onWrite: ((text: string) => void) | null = null;
+  /** Gets each redacted line without the verb tag, e.g. for the stream-json token meter. */
+  onLine: ((line: string) => void) | null = null;
 
   constructor(
     path: string,
@@ -30,11 +34,11 @@ export class RedactingLineWriter {
     this.partial += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     let nl: number;
     while ((nl = this.partial.indexOf("\n")) !== -1) {
-      this.emit(prefix + this.partial.slice(0, nl + 1));
+      this.emit(prefix, this.partial.slice(0, nl + 1));
       this.partial = this.partial.slice(nl + 1);
     }
     if (this.partial.length > MAX_LINE_BYTES) {
-      this.emit(prefix + this.partial);
+      this.emit(prefix, this.partial);
       this.partial = "";
     }
   }
@@ -42,16 +46,21 @@ export class RedactingLineWriter {
   /** Write any held partial line (after a verb exits). */
   flushPartial(prefix = ""): void {
     if (this.partial.length > 0) {
-      this.emit(`${prefix + this.partial}\n`);
+      this.emit(prefix, `${this.partial}\n`);
       this.partial = "";
     }
   }
 
-  private emit(text: string): void {
+  private emit(prefix: string, line: string): void {
     if (this.closing) return;
-    const out = this.redact(text);
+    const out = this.redact(prefix + line);
     this.bytes += Buffer.byteLength(out);
     this.stream.write(out);
+    this.onWrite?.(out);
+    if (this.onLine) {
+      // The tag holds no secret, so redaction leaves it as the prefix.
+      this.onLine(out.startsWith(prefix) ? out.slice(prefix.length) : out);
+    }
   }
 
   /** Idempotent; later writes are dropped. */
@@ -74,6 +83,8 @@ export interface VerbResult {
   durationMs: number;
   timedOut: boolean;
   cancelled: boolean;
+  /** Killed because `abort` resolved (e.g. the token cap was crossed). */
+  aborted: boolean;
 }
 
 export interface RunVerbOptions {
@@ -90,6 +101,8 @@ export interface RunVerbOptions {
   tag?: string;
   /** Resolves when the trial is cancelled; the verb's process group is killed. */
   cancelled?: Promise<void>;
+  /** Resolves when the runner wants this verb stopped for another reason (token cap). */
+  abort?: Promise<void>;
   /** Grace between SIGTERM and SIGKILL. */
   killGraceMs?: number;
 }
@@ -120,6 +133,7 @@ export function runVerb(opts: RunVerbOptions): Promise<VerbResult> {
     });
     let timedOut = false;
     let cancelled = false;
+    let aborted = false;
     let settled = false;
     let killTimer: NodeJS.Timeout | null = null;
 
@@ -143,6 +157,11 @@ export function runVerb(opts: RunVerbOptions): Promise<VerbResult> {
       cancelled = true;
       terminate();
     });
+    void opts.abort?.then(() => {
+      if (settled) return;
+      aborted = true;
+      terminate();
+    });
 
     child.stdout.on("data", (c: Buffer) => opts.stdout.write(c, tag));
     child.stderr.on("data", (c: Buffer) => opts.stderr.write(c, tag));
@@ -153,10 +172,18 @@ export function runVerb(opts: RunVerbOptions): Promise<VerbResult> {
       clearTimeout(capTimer);
       if (killTimer) clearTimeout(killTimer);
       // Stragglers left in the group (backgrounded by the verb) are not ours to keep.
-      if (child.pid !== undefined && (timedOut || cancelled)) killGroup(child.pid, "SIGKILL");
+      if (child.pid !== undefined && (timedOut || cancelled || aborted))
+        killGroup(child.pid, "SIGKILL");
       opts.stdout.flushPartial(tag);
       opts.stderr.flushPartial(tag);
-      resolve({ exitCode, signal, durationMs: Date.now() - started, timedOut, cancelled });
+      resolve({
+        exitCode,
+        signal,
+        durationMs: Date.now() - started,
+        timedOut,
+        cancelled,
+        aborted,
+      });
     };
 
     child.on("error", (err) => {

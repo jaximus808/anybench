@@ -14,4 +14,7 @@ export * from "./exec.js";
 export * from "./glob.js";
 export * from "./tar.js";
 export * from "./machine.js";
+export * from "./logs.js";
+export * from "./token-cap.js";
+export * from "./netprobe.js";
 export { runTrial, RUNNER_EXIT, type RunTrialOptions, type RunTrialResult } from "./runner.js";

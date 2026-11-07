@@ -54,6 +54,7 @@ export const UploadedArtifactSchema = z.object({
   key: z.string(),
   sha256: z.string(),
   size_bytes: z.int().nonnegative(),
+  url: z.string().optional(),
 });
 
 export const RunnerStatusSchema = z.object({
@@ -101,6 +102,27 @@ export const RunnerStatusSchema = z.object({
       failure_class: z.string().nullable(),
     })
     .nullable(),
+  /** Live log chunks per stream (present only when trial.json turns them on). */
+  log_chunks: z
+    .record(
+      z.string(),
+      z.object({
+        segments: z.int().nonnegative(),
+        bytes: z.int().nonnegative(),
+        state: z.enum(["live", "off"]),
+        error: z.string().nullable(),
+      }),
+    )
+    .optional(),
+  /** BYOK token cap (present only when trial.json sets one). Money as decimal micro-USD strings. */
+  token_cap: z
+    .object({
+      cap_micro_usd: z.string(),
+      spent_micro_usd: z.string(),
+      source: z.string(),
+      exceeded: z.boolean(),
+    })
+    .optional(),
 });
 export type RunnerStatus = z.infer<typeof RunnerStatusSchema>;
 
