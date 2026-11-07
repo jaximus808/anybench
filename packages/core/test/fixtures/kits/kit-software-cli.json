@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "subject": {
+    "kind": "software",
+    "name": "ripgrep",
+    "summary": "A line-oriented search tool that recursively searches directories for a regex.",
+    "better_means": ["same matches as grep", "less wall-clock time", "lower peak memory"]
+  },
+  "contenders": [
+    {
+      "id": "ripgrep",
+      "role": "subject",
+      "source": { "github": "https://github.com/BurntSushi/ripgrep", "ref": "14.1.1" },
+      "driver": { "type": "cli", "verbs": { "run": "adapters/ripgrep/driver.sh run {in} {out}" } }
+    },
+    {
+      "id": "gnu-grep",
+      "role": "baseline",
+      "source": {
+        "binary_url": "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz",
+        "sha256": "1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab"
+      },
+      "driver": { "type": "cli", "verbs": { "run": "adapters/gnu-grep/driver.sh run {in} {out}" } }
+    }
+  ],
+  "workloads": [
+    { "id": "linux-tree-literal", "input": "workloads/linux-tree-literal/input/", "params": { "pattern": "PM_RESUME" } },
+    { "id": "unicode-regex", "params": { "pattern": "\\p{Greek}+" }, "timeout_s": 120 }
+  ],
+  "gates": [
+    { "id": "same-matches", "kind": "output-diff", "reference": "gates/same-matches/reference/" }
+  ],
+  "requirements": [
+    { "id": "wall", "type": "measured", "title": "Median wall time", "metric": "wall_s", "unit": "s", "better": "lower", "gate_id": "same-matches" },
+    { "id": "rss", "type": "measured", "title": "Peak RSS", "metric": "peak_rss_kb", "unit": "KiB", "better": "lower", "gate_id": "same-matches" }
+  ],
+  "proof": {
+    "oracle": { "id": "grep-reference", "dir": "proof/oracle/" },
+    "do_less": [{ "id": "first-match-only", "dir": "proof/do_less/first-match/", "env": { "RG_MAX_COUNT": "1" } }]
+  },
+  "scoring": { "weights": { "wall": 70, "rss": 30 } },
+  "repeats": 10,
+  "env": {
+    "profile": "base",
+    "resources": { "vcpu": 2, "memory_gb": 4, "disk_gb": 20 },
+    "os_packages": ["hyperfine"],
+    "fixtures": [{ "src": "workloads/linux-tree-literal/input/", "dest": "/home/naive/eval/in/linux" }]
+  }
+}

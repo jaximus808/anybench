@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "subject": {
+    "kind": "software",
+    "name": "velocitty",
+    "summary": "A GPU terminal emulator that claims the highest throughput.",
+    "better_means": ["final screen and scrollback match the reference grid", "faster time to sentinel"]
+  },
+  "contenders": [
+    {
+      "id": "velocitty",
+      "role": "subject",
+      "source": { "github": "valvesky/velocitty", "ref": "v1.3.0" },
+      "driver": {
+        "type": "pty",
+        "verbs": { "start": "adapters/velocitty/driver.sh start", "run": "adapters/velocitty/driver.sh run {in} {out}", "stop": "adapters/velocitty/driver.sh stop" },
+        "emulator": "velocitty",
+        "rows": 50,
+        "cols": 200,
+        "scrollback": 100000,
+        "screen_dump": "xdotool"
+      }
+    },
+    {
+      "id": "kitty",
+      "role": "competitor",
+      "source": { "github": "kovidgoyal/kitty", "ref": "v0.39.1" },
+      "driver": {
+        "type": "pty",
+        "verbs": { "run": "adapters/kitty/driver.sh run {in} {out}" },
+        "emulator": "kitty",
+        "rows": 50,
+        "cols": 200,
+        "scrollback": 100000
+      }
+    }
+  ],
+  "workloads": [
+    { "id": "cat-150mb", "input": "workloads/cat-150mb/input/", "sha256": "a3f5c1d2e4b6a7988c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b" },
+    { "id": "vttest-cursor", "input": "workloads/vttest-cursor/input/" }
+  ],
+  "gates": [
+    { "id": "reference-grid", "kind": "reference-grid", "check": "gates/reference-grid/check.sh", "description": "pyte at the same rows x cols x scrollback; screen cell by cell, scrollback by line hash" }
+  ],
+  "requirements": [
+    { "id": "time-to-sentinel", "type": "measured", "title": "Time until the sentinel is on screen", "metric": "time_to_sentinel_s", "unit": "s", "better": "lower", "gate_id": "reference-grid" },
+    { "id": "throughput", "type": "measured", "title": "Bytes per second", "metric": "bytes_per_s", "better": "higher", "gate_id": "reference-grid" },
+    { "id": "rss", "type": "measured", "title": "Peak RSS", "metric": "peak_rss_kb", "better": "lower", "gate_id": "reference-grid" }
+  ],
+  "proof": {
+    "oracle": { "id": "pyte-replay", "dir": "proof/oracle/" },
+    "do_less": [
+      { "id": "drop-chunks", "dir": "proof/do_less/drop-chunks/", "description": "PTY shim drops every Nth 64 KiB chunk", "env": { "DROP_EVERY_N": "8" } }
+    ],
+    "regression": { "id": "slow-render", "dir": "proof/regression/", "contender": "kitty", "env": { "RENDER_DELAY_MS": "5" } }
+  },
+  "collect": ["screen.txt", "scrollback.hashes"],
+  "transfer": { "max_mb": 300 },
+  "scoring": { "weights": { "time-to-sentinel": 40, "throughput": 40, "rss": 20 } },
+  "repeats": 7,
+  "env": {
+    "profile": "tui",
+    "resources": { "vcpu": 4, "memory_gb": 8, "disk_gb": 30 },
+    "os_packages": ["xvfb", "xdotool", "ffmpeg"],
+    "toolchains": [{ "name": "python", "version": "3.12" }],
+    "healthchecks": [{ "id": "xvfb", "command": "xdpyinfo -display :99", "timeout_s": 30, "retries": 3 }]
+  }
+}

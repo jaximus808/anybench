@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "subject": {
+    "kind": "agent",
+    "name": "my-claude-setup",
+    "summary": "A Claude Code setup (CLAUDE.md, .claude/, .mcp.json) with and without subagents.",
+    "better_means": ["more hidden tests pass", "less wall-clock time", "lower cost per task"]
+  },
+  "contenders": [
+    {
+      "id": "my-claude-setup",
+      "role": "subject",
+      "source": { "upload": ["CLAUDE.md", ".claude/", ".mcp.json"] },
+      "install": { "script": "adapters/my-claude-setup/install.sh" },
+      "driver": {
+        "type": "coding-agent",
+        "verbs": {
+          "run": "claude -p \"$(cat {task})\" --dangerously-skip-permissions --output-format stream-json --verbose"
+        },
+        "wall_clock_cap_s": 1800,
+        "model": "claude-sonnet-5-5",
+        "token_cap": 2000000
+      }
+    }
+  ],
+  "workloads": [
+    { "id": "add-endpoint", "instruction": "workloads/add-endpoint/instruction.md", "setup": "workloads/add-endpoint/setup.sh" },
+    { "id": "bug-hunt", "instruction": "workloads/bug-hunt/instruction.md" },
+    { "id": "refactor", "instruction": "workloads/refactor/instruction.md" }
+  ],
+  "gates": [
+    { "id": "hidden-tests", "kind": "hidden-tests", "check": "gates/hidden-tests/check.sh", "reference": "gates/hidden-tests/reference/" }
+  ],
+  "requirements": [
+    { "id": "tests-pass", "type": "measured", "title": "Hidden tests pass", "metric": "tests_passed_ratio", "better": "higher", "target": "all pass", "gate_id": "hidden-tests" },
+    { "id": "wall", "type": "measured", "title": "Wall-clock time to finish", "metric": "wall_s", "unit": "s", "better": "lower", "gate_id": "hidden-tests" },
+    { "id": "cost", "type": "measured", "title": "Cost per task", "metric": "cost_micro_usd", "unit": "micro-USD", "better": "lower", "gate_id": "hidden-tests" },
+    { "id": "quality", "type": "reviewed", "title": "Code quality: follows the repo's patterns, handles errors", "rubric": "rubric.md", "criterion": "code-quality" }
+  ],
+  "proof": {
+    "oracle": { "id": "reference-solution", "dir": "proof/oracle/" },
+    "do_less": [
+      { "id": "skip-tests", "dir": "proof/do_less/skip-tests/", "description": "CLAUDE.md that says skip the tests" },
+      { "id": "three-turns", "dir": "proof/do_less/three-turns/", "description": "3-turn cap" }
+    ],
+    "regression": { "id": "weaker-model", "dir": "proof/regression/", "env": { "MODEL": "claude-haiku-4-5" } }
+  },
+  "vary": { "SUBAGENTS": ["off", "on"] },
+  "secrets": ["ANTHROPIC_API_KEY"],
+  "collect": ["*.jsonl"],
+  "scoring": { "weights": { "tests-pass": 50, "wall": 15, "cost": 15, "quality": 20 } },
+  "repeats": 5,
+  "env": {
+    "profile": "agent-cc",
+    "resources": { "vcpu": 4, "memory_gb": 8, "disk_gb": 20 },
+    "network": { "allow": ["api.anthropic.com", "registry.npmjs.org"] },
+    "healthchecks": [{ "id": "claude-version", "command": "claude --version" }]
+  }
+}

@@ -5,3 +5,4 @@ export * from "./ids.js";
 export * from "./redact.js";
 export * from "./state/index.js";
 export * from "./schemas/event.js";
+export * from "./schemas/index.js";

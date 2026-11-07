@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "subject": {
+    "kind": "harness",
+    "name": "tandem",
+    "summary": "Tandem: a shared task board that coordinates a planner and N Claude Code workers with approvals.",
+    "better_means": ["more hidden tests pass", "finishes faster with more workers", "fewer merge conflicts"]
+  },
+  "contenders": [
+    {
+      "id": "tandem",
+      "role": "subject",
+      "source": { "github": "jaximus808/tandem", "ref": "main" },
+      "install": { "script": "adapters/tandem/install.sh", "healthcheck": "adapters/tandem/healthcheck.sh" },
+      "driver": {
+        "type": "harness",
+        "script": "adapters/tandem/driver.sh",
+        "verbs": { "run": "eval/run.sh {task} {workspace}" },
+        "wall_clock_cap_s": 3600,
+        "token_cap": 5000000
+      },
+      "version": "tandem@main"
+    },
+    {
+      "id": "claude-code",
+      "name": "plain Claude Code",
+      "role": "baseline",
+      "source": { "upload": ["baselines/claude-code/CLAUDE.md"] },
+      "driver": {
+        "type": "coding-agent",
+        "verbs": { "run": "claude -p \"$(cat {task})\" --dangerously-skip-permissions --output-format stream-json --verbose" },
+        "wall_clock_cap_s": 3600
+      },
+      "found_by": "researcher: the plain default"
+    },
+    {
+      "id": "claude-code-subagents",
+      "name": "Claude Code with subagents",
+      "role": "competitor",
+      "source": { "upload": ["baselines/claude-code-subagents/.claude/"] },
+      "driver": {
+        "type": "coding-agent",
+        "verbs": { "run": "claude -p \"$(cat {task})\" --dangerously-skip-permissions --output-format stream-json --verbose" },
+        "wall_clock_cap_s": 3600
+      }
+    }
+  ],
+  "workloads": [
+    { "id": "todo-api", "instruction": "workloads/todo-api/instruction.md", "setup": "workloads/todo-api/setup.sh" },
+    { "id": "cli-tool", "instruction": "workloads/cli-tool/instruction.md" },
+    { "id": "bug-hunt", "instruction": "workloads/bug-hunt/instruction.md" }
+  ],
+  "collectors": ["machine", "time", "stream-json", "proxy-calls", "tandem-board"],
+  "gates": [
+    { "id": "hidden-tests", "kind": "hidden-tests", "timeout_s": 900 }
+  ],
+  "requirements": [
+    { "id": "tests-pass", "type": "measured", "title": "Hidden tests pass (42 tests across 3 tasks)", "metric": "tests_passed_ratio", "better": "higher", "gate_id": "hidden-tests" },
+    { "id": "wall", "type": "measured", "title": "Wall-clock time to finish", "metric": "wall_s", "unit": "s", "better": "lower", "gate_id": "hidden-tests" },
+    { "id": "cost", "type": "measured", "title": "Cost per task", "metric": "cost_micro_usd", "better": "lower", "gate_id": "hidden-tests" },
+    { "id": "conflicts", "type": "measured", "title": "Merge conflicts between workers", "metric": "merge_conflicts", "better": "lower", "gate_id": "hidden-tests" },
+    { "id": "quality", "type": "reviewed", "title": "Code quality against the rubric", "gate_id": "hidden-tests" }
+  ],
+  "proof": {
+    "oracle": { "id": "reference-solution", "dir": "proof/oracle/", "gates": ["hidden-tests"] },
+    "do_less": [
+      { "id": "noop-harness", "dir": "proof/do_less/noop/", "contender": "tandem", "driver_patch": "proof/do_less/noop/driver.patch", "description": "No-op harness: must fail hidden tests and show 0 claims" }
+    ],
+    "regression": { "id": "one-worker-skip-tests", "dir": "proof/regression/", "contender": "tandem" }
+  },
+  "vary": { "WORKERS": [1, 3, 5], "APPROVER": ["auto", "llm-reviewer"] },
+  "human_in_loop": { "kind": "tandem", "policy": "llm-reviewer" },
+  "secrets": ["ANTHROPIC_API_KEY"],
+  "collect": ["*.jsonl", "tandem/"],
+  "transfer": { "max_mb": 200 },
+  "scoring": { "weights": { "tests-pass": 50, "wall": 10, "cost": 10, "conflicts": 10, "quality": 20 } },
+  "repeats": 3,
+  "env": {
+    "profile": "agent-cc",
+    "resources": { "vcpu": 4, "memory_gb": 8, "disk_gb": 20 },
+    "toolchains": [{ "name": "node", "version": "22" }],
+    "network": { "allow": ["api.anthropic.com", "registry.npmjs.org", "*.github.com"] },
+    "region": "us-east"
+  }
+}
