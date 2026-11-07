@@ -13,6 +13,7 @@ import {
   freshMigratedDbTdm87,
   pgAvailableTdm87,
   seedUserTdm87,
+  setTrialStateTdm87,
   type FixtureUserTdm87,
   type FreshDbTdm87,
 } from "./helpers/pg-tdm87.js";
@@ -104,7 +105,7 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       if (first.status !== "recorded") throw new Error("unreachable");
       expect(first.entry.idempotencyKey).toBe(trialFeeIdempotencyKey(u.trialIds[0]!));
       expect(first.entry.amountMicroUsd).toBe(FEE);
-      const again = await ledger.recordTrialUsage({ ...input, trialState: "failed_subject" });
+      const again = await ledger.recordTrialUsage(input);
       expect(again.status).toBe("duplicate");
       expect((await ledger.getAccountSummary(u.userId)).unbilled).toBe(FEE);
       expect((await ledger.auditAccount(u.userId)).ok).toBe(true);
@@ -178,42 +179,127 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       expect(code2).toBe("invalid_input");
     });
 
-    it("records comped usage without touching the balance or the report queue", async () => {
-      const before = await ledger.getAccountSummary(u.userId);
+    it("bills only what the DATABASE says is billable: stored failed_infra + caller 'done' -> no entry", async () => {
+      const v = await seedUserTdm87(h.pool, 2, { states: ["failed_infra", "running"] });
+      for (const [i, trialState] of [
+        [0, "done"],
+        [0, "failed_subject"],
+        [1, "done"],
+      ] as const) {
+        const code = await codeOf(
+          ledger.recordTrialUsage({
+            runId: v.runId,
+            trialId: v.trialIds[i]!,
+            userId: v.userId,
+            trialState,
+            amount: FEE,
+          }),
+        );
+        expect(code, `${i} ${trialState}`).toBe("trial_state_mismatch");
+      }
+      // Stored done, caller failed_subject: still a mismatch, never a guess.
+      await setTrialStateTdm87(h.pool, v.trialIds[1]!, "done");
+      expect(
+        await codeOf(
+          ledger.recordTrialUsage({
+            runId: v.runId,
+            trialId: v.trialIds[1]!,
+            userId: v.userId,
+            trialState: "failed_subject",
+            amount: FEE,
+          }),
+        ),
+      ).toBe("trial_state_mismatch");
+      expect(
+        await count("select count(*)::text as n from usage_entries where user_id = $1", [v.userId]),
+      ).toBe(0n);
+      expect(await ledger.getAccountSummary(v.userId)).toMatchObject({ unbilled: 0n });
+    });
+  });
+
+  describe("comp status comes from the run", () => {
+    it("a comped run never creates a counted or reportable entry, even if the caller omits the flag", async () => {
+      const c = await seedUserTdm87(h.pool, 2, { comped: true });
       const r = await ledger.recordTrialUsage({
-        runId: u.runId,
-        trialId: u.trialIds[3]!,
-        userId: u.userId,
+        runId: c.runId,
+        trialId: c.trialIds[0]!,
+        userId: c.userId,
         trialState: "done",
         amount: FEE,
-        comped: { by: "jaxon", interventionId: u.interventionId },
       });
       expect(r.status).toBe("recorded");
       if (r.status !== "recorded") throw new Error("unreachable");
       expect(r.entry.compedBy).toBe("jaxon");
-      expect(await ledger.getAccountSummary(u.userId)).toEqual(before);
-      const unreported = await ledger.listUnreported({ userId: u.userId });
-      expect(unreported.map((e) => e.id)).not.toContain(r.entry.id);
+      expect(r.entry.interventionId).toBe(c.interventionId);
+      const t = await ledger.recordManagedTokens({
+        userId: c.userId,
+        runId: c.runId,
+        cost: 1_000_000n,
+        markupBps: 2000,
+        idempotencyKey: `${c.runId}:tok`,
+      });
+      if (t.status === "skipped") throw new Error("unreachable");
+      expect(t.entry.compedBy).toBe("jaxon");
+      // We still paid Naïve for comped tokens: the COGS row exists.
+      expect(
+        await count("select count(*)::text as n from cost_entries where run_id = $1", [c.runId]),
+      ).toBe(1n);
+      expect(await ledger.getAccountSummary(c.userId)).toMatchObject({
+        unbilled: 0n,
+        granted_remaining: 0n,
+      });
+      expect(await ledger.listUnreported({ userId: c.userId })).toEqual([]);
       expect(await codeOf(ledger.markReported([r.entry.id], ["mev_x"]))).toBe(
         "comped_not_reportable",
       );
-      expect((await ledger.auditAccount(u.userId)).ok).toBe(true);
+      expect((await ledger.auditAccount(c.userId)).ok).toBe(true);
     });
 
-    it("rejects a comp whose intervention is not about the run (DB trigger)", async () => {
-      const other = await seedUserTdm87(h.pool, 1);
-      const code = await codeOf(
+    it("rejects a caller comp flag that disagrees with the run", async () => {
+      const c = await seedUserTdm87(h.pool, 1, { comped: true });
+      const p = await seedUserTdm87(h.pool, 1);
+      const fee = (f: FixtureUserTdm87, comped: boolean) =>
         ledger.recordTrialUsage({
-          runId: other.runId,
-          trialId: other.trialIds[0]!,
-          userId: other.userId,
+          runId: f.runId,
+          trialId: f.trialIds[0]!,
+          userId: f.userId,
           trialState: "done",
           amount: FEE,
-          comped: { by: "jaxon", interventionId: u.interventionId },
-        }),
-      );
-      expect(code).toBe("23514");
-      expect((await ledger.getAccountSummary(other.userId)).unbilled).toBe(0n);
+          comped,
+        });
+      expect(await codeOf(fee(c, false))).toBe("comp_mismatch");
+      expect(await codeOf(fee(p, true))).toBe("comp_mismatch");
+      expect(
+        await codeOf(
+          ledger.recordManagedTokens({
+            userId: p.userId,
+            cost: 1n,
+            markupBps: 0,
+            idempotencyKey: `${p.userId}:no-run`,
+            comped: true,
+          }),
+        ),
+      ).toBe("comp_mismatch");
+      expect((await fee(c, true)).status).toBe("recorded");
+      expect((await fee(p, false)).status).toBe("recorded");
+      expect((await ledger.getAccountSummary(c.userId)).unbilled).toBe(0n);
+      expect((await ledger.getAccountSummary(p.userId)).unbilled).toBe(FEE);
+    });
+
+    it("rejects managed tokens billed to someone else's run", async () => {
+      const a = await seedUserTdm87(h.pool, 0);
+      const b = await seedUserTdm87(h.pool, 0);
+      expect(
+        await codeOf(
+          ledger.recordManagedTokens({
+            userId: a.userId,
+            runId: b.runId,
+            cost: 1n,
+            markupBps: 0,
+            idempotencyKey: `${a.userId}:x`,
+          }),
+        ),
+      ).toBe("run_mismatch");
     });
   });
 
@@ -299,6 +385,69 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       expect((await ledger.getAccountSummary(u.userId)).granted_remaining).toBe(7_000_000n);
       expect(await codeOf(ledger.applyGrant({ ...signup, amount: 0n }))).toBe("invalid_input");
     });
+
+    it("a repeat grant that disagrees on amount, category or source is an idempotency conflict", async () => {
+      const u = await seedUserTdm87(h.pool, 0);
+      const signup = {
+        userId: u.userId,
+        amount: 5_000_000n,
+        category: "promotional",
+        source: "signup",
+        reason: "signup",
+      } as const;
+      expect((await ledger.applyGrant(signup)).status).toBe("applied");
+      expect(await codeOf(ledger.applyGrant({ ...signup, amount: 6_000_000n }))).toBe(
+        "idempotency_conflict",
+      );
+      expect(await codeOf(ledger.applyGrant({ ...signup, category: "paid" }))).toBe(
+        "idempotency_conflict",
+      );
+      // Stripe-id lookup misses, the user's signup grant is found and matches: a duplicate.
+      expect(
+        (await ledger.applyGrant({ ...signup, stripeCreditGrantId: `credgr_s_${u.userId}` }))
+          .status,
+      ).toBe("duplicate");
+      // Stripe-id lookup misses, the signup grant is found but the amount differs: a conflict.
+      expect(
+        await codeOf(
+          ledger.applyGrant({
+            ...signup,
+            amount: 1n,
+            stripeCreditGrantId: `credgr_s2_${u.userId}`,
+          }),
+        ),
+      ).toBe("idempotency_conflict");
+      const admin = {
+        userId: u.userId,
+        amount: 2_000_000n,
+        category: "paid",
+        source: "admin",
+        reason: "customer",
+        interventionId: u.userInterventionId,
+        stripeCreditGrantId: `credgr_a_${u.userId}`,
+      } as const;
+      expect((await ledger.applyGrant(admin)).status).toBe("applied");
+      expect(await codeOf(ledger.applyGrant({ ...admin, amount: 3_000_000n }))).toBe(
+        "idempotency_conflict",
+      );
+      expect(await codeOf(ledger.applyGrant({ ...admin, category: "promotional" }))).toBe(
+        "idempotency_conflict",
+      );
+      // The same Stripe grant id claimed by another user is a conflict, not a duplicate.
+      const other = await seedUserTdm87(h.pool, 0);
+      expect(
+        await codeOf(
+          ledger.applyGrant({
+            ...admin,
+            userId: other.userId,
+            interventionId: other.userInterventionId,
+          }),
+        ),
+      ).toBe("idempotency_conflict");
+      expect((await ledger.getAccountSummary(u.userId)).granted_remaining).toBe(7_000_000n);
+      expect((await ledger.getAccountSummary(other.userId)).granted_remaining).toBe(0n);
+      expect((await ledger.auditAccount(u.userId)).ok).toBe(true);
+    });
   });
 
   describe("recordManagedTokens", () => {
@@ -327,6 +476,29 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       );
       expect(cost.rows[0]!.a).toBe("1234567");
       expect((await ledger.getAccountSummary(u.userId)).unbilled).toBe(1_481_480n);
+    });
+
+    it("rejects unsafe or fractional markupBps with a LedgerError", async () => {
+      const u = await seedUserTdm87(h.pool, 0);
+      for (const markupBps of [2 ** 60, Number.MAX_SAFE_INTEGER + 2, 1.5, -1]) {
+        const err = await ledger
+          .recordManagedTokens({
+            userId: u.userId,
+            runId: u.runId,
+            cost: 1_000n,
+            markupBps,
+            idempotencyKey: `${u.userId}:${markupBps}`,
+          })
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+        expect(err, String(markupBps)).toBeInstanceOf(LedgerError);
+        expect((err as LedgerError).code).toBe("invalid_input");
+      }
+      expect(
+        await count("select count(*)::text as n from usage_entries where user_id = $1", [u.userId]),
+      ).toBe(0n);
     });
   });
 

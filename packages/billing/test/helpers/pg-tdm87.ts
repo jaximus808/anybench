@@ -86,8 +86,20 @@ export interface FixtureUserTdm87 {
 
 let seq = 0;
 
+export interface SeedOptionsTdm87 {
+  /** Stored state of each trial (default "done"); trial i uses states[i % states.length]. */
+  states?: readonly string[];
+  /** Comp the run (runs.comped_by + comp_intervention_id), as the admin comp action would. */
+  comped?: boolean;
+}
+
 /** A user with one run, `trials` trials and the intervention rows comps and admin grants need. */
-export async function seedUserTdm87(pool: pg.Pool, trials = 4): Promise<FixtureUserTdm87> {
+export async function seedUserTdm87(
+  pool: pg.Pool,
+  trials = 4,
+  options: SeedOptionsTdm87 = {},
+): Promise<FixtureUserTdm87> {
+  const states = options.states?.length ? options.states : ["done"];
   const n = ++seq;
   const login = `tdm87_${randomBytes(4).toString("hex")}_${n}`;
   const c = await pool.connect();
@@ -109,8 +121,8 @@ export async function seedUserTdm87(pool: pg.Pool, trials = 4): Promise<FixtureU
     const trialIds: string[] = [];
     for (let i = 0; i < trials; i++) {
       const t = await c.query<{ id: string }>(
-        "insert into trials (owner_id, run_id, contender_id, workload_id, repeat) values ($1, $2, $3, 'w', $4) returning id",
-        [userId, runId, contender.rows[0]!.id, i],
+        "insert into trials (owner_id, run_id, contender_id, workload_id, repeat, state) values ($1, $2, $3, 'w', $4, $5) returning id",
+        [userId, runId, contender.rows[0]!.id, i, states[i % states.length]],
       );
       trialIds.push(t.rows[0]!.id);
     }
@@ -118,6 +130,12 @@ export async function seedUserTdm87(pool: pg.Pool, trials = 4): Promise<FixtureU
       "insert into interventions (run_id, user_id, who, what, why) values ($1, $2, 'jaxon', 'comp', 'test') returning id",
       [runId, userId],
     );
+    if (options.comped) {
+      await c.query(
+        "update runs set comped_by = 'jaxon', comped_reason = 'test', comp_intervention_id = $1 where id = $2",
+        [iv.rows[0]!.id, runId],
+      );
+    }
     const uiv = await c.query<{ id: string }>(
       "insert into interventions (user_id, who, what, why) values ($1, 'jaxon', 'grant', 'test') returning id",
       [userId],
@@ -132,4 +150,9 @@ export async function seedUserTdm87(pool: pg.Pool, trials = 4): Promise<FixtureU
   } finally {
     c.release();
   }
+}
+
+/** Overwrite a trial's stored state (the ledger must trust this, not the caller). */
+export async function setTrialStateTdm87(pool: pg.Pool, trialId: string, state: string) {
+  await pool.query("update trials set state = $1 where id = $2", [state, trialId]);
 }

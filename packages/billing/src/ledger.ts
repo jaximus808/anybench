@@ -6,15 +6,22 @@
 // can never drift from the rows it summarizes.
 //
 // Balance model. Let U = sum of non-comped usage_entries.amount and G = sum of credit_grants.amount
-// for a user. Grants are spent first, including on usage that accrued before the grant (Stripe
-// applies a grant to the next invoice, which carries the current period's usage). So the only
-// state is the net position N = U - G, and the cache stores it split by sign:
+// for a user. The ledger nets them into one position N = U - G and caches it split by sign:
 //   unbilled_micro_usd          = max(N, 0)
 //   granted_remaining_micro_usd = max(-N, 0)
 // At most one of them is non-zero. `auditAccount` recomputes both from the rows.
 //
-// Not handled here: grant expiry and invoice settlement. Both change the net position over time and
-// belong to the tickets that own them (credit grants 10.7, webhooks 10.4, reconciliation 10.10).
+// How that relates to Stripe. A Stripe credit grant applies to invoices whose period_end >=
+// the grant's effective_at, while the grant still has balance when the invoice is finalized.
+// So netting a new grant against usage in the OPEN billing period matches what Stripe will do. It
+// does NOT match for usage already on a finalized invoice (a threshold invoice, or one that is
+// past due): Stripe will not apply a later grant to that invoice, while N above would. The
+// tickets that own the rest of the lifecycle must close that gap:
+//   - 10.4 (webhooks): on invoice.finalized, remove the invoiced usage from the net position and
+//     record the credit Stripe actually applied to that invoice (not our estimate).
+//   - 10.7 (credit grants): a grant with a future effective_at must not count until it is
+//     effective; 10.7 also owns expiry and the order in which grants are consumed.
+//   - 10.10 (reconciliation): cents rounding drift between our micro-USD and Stripe's cents.
 //
 // No float path: amounts are bigint end to end. Inputs go through core's MicroUsdSchema, which
 // rejects JS numbers, and Postgres sums come back as text and go straight to BigInt().
@@ -42,6 +49,7 @@ import {
   CREDIT_GRANT_SOURCES,
   costEntries,
   creditGrants,
+  runs,
   trials,
   usageEntries,
   type PaymentStatus,
@@ -60,6 +68,9 @@ export type LedgerErrorCode =
   | "invalid_input"
   | "idempotency_conflict"
   | "trial_mismatch"
+  | "trial_state_mismatch"
+  | "run_mismatch"
+  | "comp_mismatch"
   | "unknown_entry"
   | "comped_not_reportable"
   | "already_reported";
@@ -84,14 +95,18 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
 
 // ---- Inputs -------------------------------------------------------------------------------------
 
-/** A comped usage entry: recorded, never counted in the balance, never reported to Stripe. */
-export const CompSchema = z.object({
-  /** Who comped it (the admin's GitHub login). */
-  by: z.string().min(1),
-  /** The interventions row about this run (a DB trigger rejects the entry without one). */
-  interventionId: InterventionIdSchema,
-});
-export type Comp = z.input<typeof CompSchema>;
+/**
+ * Comp status is read from the run (runs.comped_by + comp_intervention_id, set by the admin comp
+ * action with its interventions row), never taken from the caller. A comped entry is recorded,
+ * never counted in the balance and never reported to Stripe. The optional `comped` input is only
+ * an assertion: if given and it disagrees with the run, the call fails with `comp_mismatch`.
+ */
+const CompAssertionSchema = z.boolean().nullish();
+
+interface Comp {
+  by: string;
+  interventionId: string | null;
+}
 
 export const RecordTrialUsageInputSchema = z.object({
   runId: RunIdSchema,
@@ -100,11 +115,12 @@ export const RecordTrialUsageInputSchema = z.object({
   trialState: TrialStateSchema,
   /** The trial fee in micro-USD (TRIAL_FEE_MICRO_USD). A bigint or a decimal string, never a number. */
   amount: NonNegativeMicroUsdSchema,
-  comped: CompSchema.nullish(),
+  comped: CompAssertionSchema,
 });
 export type RecordTrialUsageInput = z.input<typeof RecordTrialUsageInputSchema>;
 
-const BpsSchema = z.union([z.bigint().nonnegative(), z.number().int().nonnegative()]);
+/** Basis points are not money: a bigint or a safe JS integer (unsafe integers are rejected). */
+const BpsSchema = z.union([z.bigint().nonnegative(), z.number().int().safe().nonnegative()]);
 
 export const RecordManagedTokensInputSchema = z.object({
   userId: UserIdSchema,
@@ -118,7 +134,7 @@ export const RecordManagedTokensInputSchema = z.object({
   idempotencyKey: z.string().min(1).max(200),
   /** External reference for the COGS row (Naïve session id); defaults to the idempotency key. */
   ref: z.string().min(1).max(500).nullish(),
-  comped: CompSchema.nullish(),
+  comped: CompAssertionSchema,
 });
 export type RecordManagedTokensInput = z.input<typeof RecordManagedTokensInputSchema>;
 
@@ -265,7 +281,7 @@ interface NewEntry {
   type: UsageEntry["type"];
   amount: MicroUsd;
   idempotencyKey: string;
-  comped: z.output<typeof CompSchema> | null | undefined;
+  comped: Comp | null;
 }
 
 /**
@@ -317,25 +333,69 @@ async function insertEntry(
   return { status: "duplicate", entry: existing };
 }
 
+/**
+ * Read the run under FOR SHARE (a concurrent comp waits for this transaction), check it belongs to
+ * the user, and return its comp status. `asserted` is the caller's optional `comped` flag.
+ */
+async function runComp(
+  tx: Tx,
+  runId: string,
+  userId: string,
+  asserted: boolean | null | undefined,
+): Promise<Comp | null> {
+  const [run] = await tx
+    .select({
+      ownerId: runs.ownerId,
+      compedBy: runs.compedBy,
+      compInterventionId: runs.compInterventionId,
+    })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .for("share");
+  if (!run || run.ownerId !== userId) {
+    throw new LedgerError("run_mismatch", `run ${runId} is not visible or not owned by ${userId}`);
+  }
+  const comp =
+    run.compedBy === null ? null : { by: run.compedBy, interventionId: run.compInterventionId };
+  if (asserted !== null && asserted !== undefined && asserted !== (comp !== null)) {
+    throw new LedgerError(
+      "comp_mismatch",
+      `caller says comped=${String(asserted)} but run ${runId} is ${comp ? "comped" : "not comped"}`,
+    );
+  }
+  return comp;
+}
+
 /** Build the ledger over an injected Drizzle database or transaction. */
 export function createLedger(db: LedgerDb): Ledger {
   return {
     async recordTrialUsage(raw) {
       const input = parse(RecordTrialUsageInputSchema, raw);
-      // failed_infra (and anything not finished from the subject's side) is never billed.
-      if (!isBillableTrialState(input.trialState))
+      // failed_infra (and anything not finished from the subject's side) is never billed. Skipping
+      // is always safe; BILLING needs the database to agree (below).
+      if (!isBillableTrialState(input.trialState)) {
         return { status: "skipped", reason: "not_billable" };
+      }
       return db.transaction(async (tx) => {
+        // FOR SHARE: the trial's state cannot change under us until this transaction ends.
         const [trial] = await tx
-          .select({ ownerId: trials.ownerId, runId: trials.runId })
+          .select({ ownerId: trials.ownerId, runId: trials.runId, state: trials.state })
           .from(trials)
-          .where(eq(trials.id, input.trialId));
+          .where(eq(trials.id, input.trialId))
+          .for("share");
         if (!trial || trial.ownerId !== input.userId || trial.runId !== input.runId) {
           throw new LedgerError(
             "trial_mismatch",
             `trial ${input.trialId} is not visible or does not belong to run ${input.runId} / user ${input.userId}`,
           );
         }
+        if (trial.state !== input.trialState || !isBillableTrialState(trial.state)) {
+          throw new LedgerError(
+            "trial_state_mismatch",
+            `trial ${input.trialId} is ${trial.state} in the database, caller said ${input.trialState}`,
+          );
+        }
+        const comp = await runComp(tx, input.runId, input.userId, input.comped);
         return insertEntry(tx, {
           userId: input.userId,
           runId: input.runId,
@@ -343,7 +403,7 @@ export function createLedger(db: LedgerDb): Ledger {
           type: "trial_fee",
           amount: input.amount,
           idempotencyKey: trialFeeIdempotencyKey(input.trialId),
-          comped: input.comped,
+          comped: comp,
         });
       });
     },
@@ -352,8 +412,26 @@ export function createLedger(db: LedgerDb): Ledger {
       const input = parse(RecordManagedTokensInputSchema, raw);
       const key = managedTokensIdempotencyKey(input.idempotencyKey);
       const amount = withMarkupBps(input.cost, input.markupBps);
-      return db.transaction((tx) =>
-        insertEntry(
+      return db.transaction(async (tx) => {
+        let comp: Comp | null = null;
+        if (input.runId) {
+          comp = await runComp(tx, input.runId, input.userId, input.comped);
+        } else if (input.comped) {
+          throw new LedgerError("comp_mismatch", "only usage tied to a comped run can be comped");
+        }
+        if (input.trialId) {
+          const [trial] = await tx
+            .select({ ownerId: trials.ownerId, runId: trials.runId })
+            .from(trials)
+            .where(eq(trials.id, input.trialId));
+          if (!trial || trial.ownerId !== input.userId || trial.runId !== (input.runId ?? null)) {
+            throw new LedgerError(
+              "trial_mismatch",
+              `trial ${input.trialId} is not visible or does not belong to run ${input.runId ?? "(none)"} / user ${input.userId}`,
+            );
+          }
+        }
+        return insertEntry(
           tx,
           {
             userId: input.userId,
@@ -362,7 +440,7 @@ export function createLedger(db: LedgerDb): Ledger {
             type: "managed_tokens",
             amount,
             idempotencyKey: key,
-            comped: input.comped,
+            comped: comp,
           },
           // Our COGS for the same tokens, written once with the entry (comped or not: we paid it).
           async () => {
@@ -374,8 +452,8 @@ export function createLedger(db: LedgerDb): Ledger {
               ref: input.ref ?? key,
             });
           },
-        ),
-      );
+        );
+      });
     },
 
     async applyGrant(raw) {
@@ -402,15 +480,40 @@ export function createLedger(db: LedgerDb): Ledger {
           await addToBalance(tx, account, -inserted.amountMicroUsd);
           return { status: "applied", grant: inserted };
         }
-        const [existing] = await tx
-          .select()
-          .from(creditGrants)
-          .where(
-            input.stripeCreditGrantId
-              ? eq(creditGrants.stripeCreditGrantId, input.stripeCreditGrantId)
-              : and(eq(creditGrants.userId, input.userId), eq(creditGrants.source, "signup")),
+        // The conflict was on the Stripe grant id, or on the one-signup-grant-per-user index.
+        let existing: CreditGrant | undefined;
+        if (input.stripeCreditGrantId) {
+          [existing] = await tx
+            .select()
+            .from(creditGrants)
+            .where(eq(creditGrants.stripeCreditGrantId, input.stripeCreditGrantId));
+        }
+        if (!existing && input.source === "signup") {
+          [existing] = await tx
+            .select()
+            .from(creditGrants)
+            .where(and(eq(creditGrants.userId, input.userId), eq(creditGrants.source, "signup")));
+        }
+        if (!existing) {
+          throw new LedgerError(
+            "idempotency_conflict",
+            `credit grant for ${input.userId} conflicted with a grant that is not visible`,
           );
-        if (!existing) throw new Error("credit grant conflicted but no existing grant is visible");
+        }
+        const same =
+          existing.userId === input.userId &&
+          existing.amountMicroUsd === input.amount &&
+          existing.category === input.category &&
+          existing.source === input.source &&
+          (!input.stripeCreditGrantId ||
+            existing.stripeCreditGrantId === null ||
+            existing.stripeCreditGrantId === input.stripeCreditGrantId);
+        if (!same) {
+          throw new LedgerError(
+            "idempotency_conflict",
+            `credit grant ${existing.id} already exists with different user, amount, category, source or Stripe id`,
+          );
+        }
         return { status: "duplicate", grant: existing };
       });
     },

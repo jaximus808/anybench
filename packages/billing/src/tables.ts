@@ -9,6 +9,7 @@
 // so the insert types know which columns may be omitted; the database applies its own.
 //
 // Money columns are `bigint` in mode "bigint": no money value ever becomes a JS number.
+import { TRIAL_STATES } from "@anybench/core";
 import { sql } from "drizzle-orm";
 import { bigint, boolean, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
@@ -76,12 +77,34 @@ export const costEntries = pgTable("cost_entries", {
   at: tstz("at").notNull().defaultNow(),
 });
 
-/** Read-only: the ledger checks a trial belongs to the run and user it is billed to. */
+/**
+ * Read-only. The ledger reads a trial's owner, run and state in the same transaction as the fee
+ * (FOR SHARE), so only a trial that the DATABASE says is billable gets billed.
+ */
 export const trials = pgTable("trials", {
   id: uuid("id").primaryKey().defaultRandom(),
   ownerId: uuid("owner_id").notNull(),
   runId: uuid("run_id").notNull(),
+  state: text("state", { enum: TRIAL_STATES }).notNull(),
+});
+
+/**
+ * Read-only. Comp status comes from the run (set by the admin comp action, 10.8, with its
+ * interventions row), never from the caller.
+ */
+export const runs = pgTable("runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull(),
+  compedBy: text("comped_by"),
+  compInterventionId: uuid("comp_intervention_id"),
 });
 
 /** Every mirrored table, for the drift test. */
-export const LEDGER_TABLES = { billingAccounts, usageEntries, creditGrants, costEntries, trials };
+export const LEDGER_TABLES = {
+  billingAccounts,
+  usageEntries,
+  creditGrants,
+  costEntries,
+  trials,
+  runs,
+};

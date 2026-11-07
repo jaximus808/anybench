@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   balanceFromNet,
   createLedger,
+  LedgerError,
   managedTokensIdempotencyKey,
   trialFeeIdempotencyKey,
   type Ledger,
@@ -28,8 +29,15 @@ const MARKUP_BPS = 2000;
 const SIGNUP_GRANT = 5_000_000n;
 
 type Op =
-  | { kind: "fee"; u: number; t: number; state: TrialState }
-  | { kind: "tokens"; u: number; k: number }
+  | {
+      kind: "fee";
+      u: number;
+      t: number;
+      state: TrialState;
+      useDbState: boolean;
+      assertComp: boolean;
+    }
+  | { kind: "tokens"; u: number; k: number; assertComp: boolean }
   | { kind: "grant"; u: number; amount: bigint; signup: boolean }
   | { kind: "report"; u: number }
   | { kind: "audit"; u: number };
@@ -47,7 +55,11 @@ const op: fc.Arbitrary<Op> = fc.oneof(
       kind: fc.constant("fee" as const),
       u: user,
       t: fc.integer({ min: 0, max: TRIALS - 1 }),
+      // The caller usually reports the trial's real state, but not always: then it must not bill.
       state,
+      useDbState: fc.boolean(),
+      // Pass the (correct) comp flag, or forget it: the run decides either way.
+      assertComp: fc.boolean(),
     }),
     weight: 5,
   },
@@ -56,6 +68,7 @@ const op: fc.Arbitrary<Op> = fc.oneof(
       kind: fc.constant("tokens" as const),
       u: user,
       k: fc.integer({ min: 0, max: TOKEN_KEYS - 1 }),
+      assertComp: fc.boolean(),
     }),
     weight: 3,
   },
@@ -72,16 +85,20 @@ const op: fc.Arbitrary<Op> = fc.oneof(
   { arbitrary: fc.record({ kind: fc.constant("audit" as const), u: user }), weight: 2 },
 );
 
-/** Per-scenario constants: a trial's fee and comp flag never vary between its (duplicate) writes. */
+/**
+ * Per-scenario constants: a trial's fee and stored state, a token key's cost and a run's comp never
+ * vary between duplicate writes.
+ */
 const scenario = fc.record({
   fees: fc.array(
     fc.array(fc.bigInt({ min: 0n, max: 2_000_000n }), { minLength: TRIALS, maxLength: TRIALS }),
     { minLength: USERS, maxLength: USERS },
   ),
-  feeComped: fc.array(fc.array(fc.boolean(), { minLength: TRIALS, maxLength: TRIALS }), {
+  dbStates: fc.array(fc.array(state, { minLength: TRIALS, maxLength: TRIALS }), {
     minLength: USERS,
     maxLength: USERS,
   }),
+  runComped: fc.array(fc.boolean(), { minLength: USERS, maxLength: USERS }),
   tokenCosts: fc.array(
     fc.array(fc.bigInt({ min: 0n, max: 5_000_000n }), {
       minLength: TOKEN_KEYS,
@@ -89,10 +106,6 @@ const scenario = fc.record({
     }),
     { minLength: USERS, maxLength: USERS },
   ),
-  tokenComped: fc.array(fc.array(fc.boolean(), { minLength: TOKEN_KEYS, maxLength: TOKEN_KEYS }), {
-    minLength: USERS,
-    maxLength: USERS,
-  }),
   ops: fc.array(op, { minLength: 1, maxLength: 40 }),
 });
 
@@ -109,25 +122,36 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
     await h?.drop();
   });
 
-  it("cache == sums, idempotent, failed_infra never billed, comped never counted or reported", async () => {
+  it("cache == sums, idempotent, only DB-billable trials billed, comped runs never counted or reported", async () => {
     await fc.assert(
       fc.asyncProperty(scenario, async (s) => {
         const us: FixtureUserTdm87[] = [];
-        for (let i = 0; i < USERS; i++) us.push(await seedUserTdm87(h.pool, TRIALS));
+        for (let i = 0; i < USERS; i++) {
+          us.push(
+            await seedUserTdm87(h.pool, TRIALS, {
+              states: s.dbStates[i]!,
+              comped: s.runComped[i]!,
+            }),
+          );
+        }
+        const callerState = (o: Extract<Op, { kind: "fee" }>) =>
+          o.useDbState ? s.dbStates[o.u]![o.t]! : o.state;
+        /** Billed iff the caller's state is billable AND the database agrees. */
+        const bills = (o: Extract<Op, { kind: "fee" }>) =>
+          isBillableTrialState(callerState(o)) && callerState(o) === s.dbStates[o.u]![o.t]!;
         const tokenKey = (u: number, k: number) => `${us[u]!.userId}:${k}`;
 
         const run = (o: Op) => {
           const u = us[o.u]!;
-          const comp = { by: "jaxon", interventionId: u.interventionId };
           switch (o.kind) {
             case "fee":
               return ledger.recordTrialUsage({
                 runId: u.runId,
                 trialId: u.trialIds[o.t]!,
                 userId: u.userId,
-                trialState: o.state,
+                trialState: callerState(o),
                 amount: s.fees[o.u]![o.t]!,
-                comped: s.feeComped[o.u]![o.t]! ? comp : null,
+                comped: o.assertComp ? s.runComped[o.u]! : undefined,
               });
             case "tokens":
               return ledger.recordManagedTokens({
@@ -136,7 +160,7 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
                 cost: s.tokenCosts[o.u]![o.k]!,
                 markupBps: MARKUP_BPS,
                 idempotencyKey: tokenKey(o.u, o.k),
-                comped: s.tokenComped[o.u]![o.k]! ? comp : null,
+                comped: o.assertComp ? s.runComped[o.u]! : undefined,
               });
             case "grant":
               return o.signup
@@ -168,13 +192,30 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
         };
 
         // Everything at once: the pool (12 connections) interleaves the transactions.
-        const results = await Promise.all(s.ops.map(run));
+        // A rejected call resolves to its error code so the batch always completes.
+        const results = await Promise.all(
+          s.ops.map((o) =>
+            run(o).then(
+              (r) => r as unknown,
+              (e: unknown) => ({ error: e instanceof LedgerError ? e.code : String(e) }),
+            ),
+          ),
+        );
 
         for (let i = 0; i < s.ops.length; i++) {
           const o = s.ops[i]!;
-          const r = results[i] as { status?: string; ok?: boolean };
-          if (o.kind === "fee" && !isBillableTrialState(o.state)) {
-            expect(r).toEqual({ status: "skipped", reason: "not_billable" });
+          const r = results[i] as { status?: string; ok?: boolean; error?: string };
+          if (o.kind === "fee") {
+            if (!isBillableTrialState(callerState(o))) {
+              expect(r).toEqual({ status: "skipped", reason: "not_billable" });
+            } else if (!bills(o)) {
+              // The caller said done/failed_subject but the database disagrees: refused.
+              expect(r).toEqual({ error: "trial_state_mismatch" });
+            } else {
+              expect(["recorded", "duplicate"]).toContain(r.status);
+            }
+          } else {
+            expect(r.error, `${o.kind} failed`).toBeUndefined();
           }
           // An audit taken mid-flight sees the cache and the rows from one snapshot: always equal.
           if (o.kind === "audit") expect(r.ok).toBe(true);
@@ -202,7 +243,7 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
           let signup = false;
           for (const o of s.ops) {
             if (o.u !== ui) continue;
-            if (o.kind === "fee" && isBillableTrialState(o.state)) billedTrials.add(o.t);
+            if (o.kind === "fee" && bills(o)) billedTrials.add(o.t);
             if (o.kind === "tokens") touchedTokens.add(o.k);
             if (o.kind === "grant") {
               if (o.signup) signup = true;
@@ -210,10 +251,12 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
             }
           }
           if (signup) grants += SIGNUP_GRANT;
+          // A comped run contributes nothing, whatever the caller passed.
           let usage = 0n;
-          for (const t of billedTrials) if (!s.feeComped[ui]![t]) usage += s.fees[ui]![t]!;
-          for (const k of touchedTokens) {
-            if (!s.tokenComped[ui]![k]) usage += withMarkupBps(s.tokenCosts[ui]![k]!, MARKUP_BPS);
+          if (!s.runComped[ui]) {
+            for (const t of billedTrials) usage += s.fees[ui]![t]!;
+            for (const k of touchedTokens)
+              usage += withMarkupBps(s.tokenCosts[ui]![k]!, MARKUP_BPS);
           }
 
           const audit = await ledger.auditAccount(u.userId);
@@ -260,6 +303,8 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
           );
           // Comped rows are never reported; reported rows carry their meter event id.
           for (const r of rows) {
+            // Every entry of a comped run is comped (and so never reportable), none otherwise.
+            expect(r.comped_by !== null).toBe(s.runComped[ui]!);
             if (r.comped_by !== null) expect(r.reported_at).toBeNull();
             if (r.reported_at !== null) expect(r.stripe_meter_event_id).toBe(`mev_${r.id}`);
           }
