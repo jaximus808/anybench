@@ -1,5 +1,7 @@
 // Integration test for TDM-32 (3.11): S3 artifact transfer against a throwaway MinIO container.
 // Skips cleanly when Docker (or a MinIO image) is unavailable. The container is removed afterwards.
+// Safe under parallel worktrees: every run gets its own container name (random suffix) and lets
+// Docker pick a free host port (`-p 127.0.0.1::9000`, read back with `docker port`).
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
@@ -16,7 +18,8 @@ import {
   type UploadPlan,
 } from "../src/storage.js";
 
-const TDM32_CONTAINER = "ab-minio-tdm32";
+const TDM32_CONTAINER = `ab-minio-tdm32-${process.pid}-${randomBytes(4).toString("hex")}`;
+const TDM32_LABEL = "anybench.test=tdm32-minio";
 const TDM32_IMAGES = ["minio/minio:latest", "pgsty/minio:latest"];
 const TDM32_USER = "tdm32minio";
 const TDM32_PASS = "tdm32minio-test-only";
@@ -61,17 +64,37 @@ describe.skipIf(!tdm32Image)("S3 artifact transfer against MinIO (TDM-32)", () =
   let store: ArtifactStore;
   let dir: string;
 
+  let containerStarted = false;
+
+  function removeContainer(): void {
+    if (!containerStarted) return;
+    try {
+      docker(["rm", "-f", "-v", TDM32_CONTAINER]);
+      containerStarted = false;
+    } catch {
+      // already gone
+    }
+  }
+
   beforeAll(async () => {
     try {
-      docker(["rm", "-f", TDM32_CONTAINER]);
-    } catch {
-      // not running
+      await startMinio();
+    } catch (err) {
+      // Don't leak the container if startup fails part-way (afterAll also removes it).
+      removeContainer();
+      throw err;
     }
+  }, 240_000);
+
+  async function startMinio(): Promise<void> {
+    containerStarted = true; // set before `run`: a half-created container must still be removed
     docker([
       "run",
       "-d",
       "--name",
       TDM32_CONTAINER,
+      "--label",
+      TDM32_LABEL,
       "-p",
       "127.0.0.1::9000",
       "-e",
@@ -84,6 +107,7 @@ describe.skipIf(!tdm32Image)("S3 artifact transfer against MinIO (TDM-32)", () =
     ]);
     const mapped = docker(["port", TDM32_CONTAINER, "9000/tcp"]).split("\n")[0] ?? "";
     const port = mapped.slice(mapped.lastIndexOf(":") + 1);
+    if (!/^\d+$/.test(port)) throw new Error(`could not read MinIO host port from "${mapped}"`);
     const endpoint = `http://127.0.0.1:${port}`;
 
     const deadline = Date.now() + 60_000;
@@ -107,16 +131,15 @@ describe.skipIf(!tdm32Image)("S3 artifact transfer against MinIO (TDM-32)", () =
     });
     await store.client.send(new CreateBucketCommand({ Bucket: TDM32_BUCKET }));
     dir = await mkdtemp(join(tmpdir(), "anybench-tdm32-"));
-  }, 240_000);
+  }
 
   afterAll(async () => {
-    store?.client.destroy();
     try {
-      docker(["rm", "-f", TDM32_CONTAINER]);
-    } catch {
-      // already gone
+      store?.client.destroy();
+    } finally {
+      removeContainer();
+      if (dir) await rm(dir, { recursive: true, force: true });
     }
-    if (dir) await rm(dir, { recursive: true, force: true });
   });
 
   async function writeRandomFile(name: string, sizeBytes: number): Promise<string> {
