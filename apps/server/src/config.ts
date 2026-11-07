@@ -69,6 +69,24 @@ export const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().min(10).max(60_000).default(1_000),
   ),
+  // ── Auth (TDM-65, plan.md section 9). Optional at boot (the worker never needs them); the
+  // /auth routes answer 503 until GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and SESSION_SECRET are set.
+  GITHUB_CLIENT_ID: optionalString,
+  GITHUB_CLIENT_SECRET: optionalString,
+  GITHUB_OAUTH_CALLBACK_URL: optionalUrl,
+  /** HMAC key for the OAuth state cookie. */
+  SESSION_SECRET: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32, { error: "must be at least 32 characters" }).optional(),
+  ),
+  /** e.g. `.anybench.jaxonp.com`; unset = host-only cookie on the API host. */
+  SESSION_COOKIE_DOMAIN: optionalString,
+  /** Comma list of exact origins for CORS (with credentials) and the CSRF Origin check. */
+  ALLOWED_ORIGINS: optionalString,
+  /** Comma list of GitHub logins that are admins, checked per request (case-insensitive). */
+  ADMIN_GITHUB_LOGINS: optionalString,
+  /** Where sign-in lands afterwards; defaults to the first ALLOWED_ORIGINS entry. */
+  PUBLIC_WEB_URL: optionalUrl,
 });
 export type Env = z.infer<typeof EnvSchema>;
 
@@ -78,6 +96,10 @@ export interface Config extends Env {
   /** Resolved direct URL (DATABASE_URL_DIRECT, else DATABASE_URL / local outside production). */
   databaseUrlDirect: string;
   isProduction: boolean;
+  /** ALLOWED_ORIGINS parsed into serialized origins (`https://anybench.jaxonp.com`). */
+  allowedOrigins: readonly string[];
+  /** ADMIN_GITHUB_LOGINS, lowercased. Admin is decided per request from this, never stored. */
+  adminGithubLogins: readonly string[];
 }
 
 export interface ConfigIssue {
@@ -136,7 +158,59 @@ function bootAssertions(env: Env): ConfigIssue[] {
   if (prod && !env.DATABASE_URL_DIRECT) {
     issues.push({ path: "DATABASE_URL_DIRECT", message: "required when NODE_ENV=production" });
   }
+
+  const origins = parseOrigins(env.ALLOWED_ORIGINS);
+  for (const bad of origins.invalid) {
+    issues.push({
+      path: "ALLOWED_ORIGINS",
+      message: `'${bad}' is not an origin (scheme://host[:port], http or https, no path)`,
+    });
+  }
+  if (prod && env.GITHUB_OAUTH_CALLBACK_URL?.startsWith("http://")) {
+    issues.push({
+      path: "GITHUB_OAUTH_CALLBACK_URL",
+      message: "must be https when NODE_ENV=production",
+    });
+  }
+  const domain = env.SESSION_COOKIE_DOMAIN;
+  if (domain !== undefined && !/^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(domain)) {
+    issues.push({ path: "SESSION_COOKIE_DOMAIN", message: "must be a domain like .example.com" });
+  }
   return issues;
+}
+
+/** Split a comma list into exact origins. An entry with a path, query or other scheme is invalid. */
+export function parseOrigins(list: string | undefined): { valid: string[]; invalid: string[] } {
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const raw of (list ?? "").split(",").map((s) => s.trim())) {
+    if (!raw) continue;
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      invalid.push(raw);
+      continue;
+    }
+    const bare = /^https?:\/\/[^/?#@\s]+\/?$/i.test(raw);
+    if (!bare || (url.protocol !== "https:" && url.protocol !== "http:")) {
+      invalid.push(raw);
+      continue;
+    }
+    if (!valid.includes(url.origin)) valid.push(url.origin);
+  }
+  return { valid, invalid };
+}
+
+function parseLogins(list: string | undefined): string[] {
+  return [
+    ...new Set(
+      (list ?? "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 /** Validate `source` (default process.env). Throws one ConfigError listing every bad var. */
@@ -161,6 +235,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     databaseUrl,
     databaseUrlDirect: env.DATABASE_URL_DIRECT ?? env.DATABASE_URL ?? local,
     isProduction: env.NODE_ENV === "production",
+    allowedOrigins: parseOrigins(env.ALLOWED_ORIGINS).valid,
+    adminGithubLogins: parseLogins(env.ADMIN_GITHUB_LOGINS),
   };
 }
 
@@ -173,5 +249,7 @@ export function configSecrets(config: Config): Record<string, string | undefined
     STRIPE_TEST_SECRET_KEY: config.STRIPE_TEST_SECRET_KEY,
     STRIPE_LIVE_SECRET_KEY: config.STRIPE_LIVE_SECRET_KEY,
     SENTRY_DSN: config.SENTRY_DSN,
+    GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
+    SESSION_SECRET: config.SESSION_SECRET,
   };
 }

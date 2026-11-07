@@ -5,6 +5,7 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import type { DbActor } from "./db/scoped.js";
 import type { EventFanout } from "./lib/events.js";
+import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { Logger } from "./lib/logger.js";
 import type { SentryHandle } from "./lib/sentry.js";
 
@@ -24,6 +25,8 @@ export interface AppDeps {
    * EVENTS_STREAM_MODE=listen. Without it the event stream polls.
    */
   eventFanout?: EventFanout;
+  /** GitHub OAuth client (TDM-65). Default: built from GITHUB_* config; tests pass a fake. */
+  github?: GitHubOAuth;
 }
 
 /** Hono env for every router: `new Hono<AppEnv>()`. `c.get("log")` is a per-request child logger. */
