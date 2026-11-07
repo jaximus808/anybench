@@ -1,5 +1,5 @@
 // Trial routes (plan.md sections 5 and 6): the tile grid, the trial drawer, log tail and
-// transcript. Tickets 7.3, 8.3 and 8.5. Runner ingest lives in events.ts.
+// transcript. Tickets 7.3, 8.3 and 8.5. Runner ingest lives in runner.ts.
 import { z } from "zod";
 import { ComputerIdSchema, ContenderIdSchema, RunIdSchema, TrialIdSchema } from "../ids.js";
 import { NonNegativeMicroUsdSchema } from "../money.js";

@@ -1,5 +1,5 @@
 // Event routes (plan.md section 6): page a run's events by seq, stream them live over SSE, and the
-// in-VM runner's ingest endpoint. Tickets 8.1 (writer + SSE) and 5.2 (runner ingest).
+// Naïve webhook. Ticket 8.1 (writer + SSE). The runner's ingest routes live in runner.ts.
 //
 // SSE wire format for `GET /runs/:id/stream` (one frame per event):
 //
@@ -17,7 +17,6 @@
 // client reconnects with `Last-Event-ID: <last seq>` and the server replays from the table.
 import { z } from "zod";
 import { RunIdSchema, TrialIdSchema } from "../ids.js";
-import { NonNegativeMicroUsdSchema } from "../money.js";
 import {
   AnybenchEventSchema,
   AnybenchEventTypeSchema,
@@ -25,8 +24,7 @@ import {
   EventSourceSchema,
 } from "../schemas/event.js";
 import { RunStateSchema } from "../state/run.js";
-import { TrialStateSchema } from "../state/trial.js";
-import { IsoDateTimeSchema, OkSchema, csvListSchema } from "./common.js";
+import { OkSchema, csvListSchema } from "./common.js";
 import { defineRoute, defineRoutes } from "./route.js";
 
 export const EVENTS_PAGE_LIMIT_MAX = 1000;
@@ -50,94 +48,6 @@ const eventFilters = {
   severities: csvListSchema(EventSeveritySchema).optional(),
   trial_id: TrialIdSchema.optional(),
 };
-
-// ---------------------------------------------------------------------------------------------
-// Runner ingest (`POST /v1/trials/:id/events`). Versioned because the runner binary is baked into
-// VM snapshots and outlives a deploy. The runner does not know run seqs; the server assigns them,
-// maps runner events to AnybenchEvents and validates each with AnybenchEventSchema.
-
-/** The runner's own phases, written to `~/eval/out/status.json` (plan.md P1). */
-export const RUNNER_PHASES = [
-  "prepare",
-  "healthcheck",
-  "warmup",
-  "run",
-  "collect",
-  "freeze",
-  "upload",
-  "done",
-  "failed",
-] as const;
-export const RunnerPhaseSchema = z.enum(RUNNER_PHASES);
-export type RunnerPhase = z.infer<typeof RunnerPhaseSchema>;
-
-/** Interval at which the runner posts a heartbeat batch, and how many misses fire an alert. */
-export const RUNNER_HEARTBEAT_MS = 15_000;
-export const RUNNER_INGEST_MAX_EVENTS = 500;
-
-const at = IsoDateTimeSchema;
-
-export const RunnerEventSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("phase"),
-    phase: RunnerPhaseSchema,
-    at,
-    detail: z.string().optional(),
-  }),
-  /** Bulk bytes went to object storage by presigned PUT; this only points at them. */
-  z.object({
-    kind: z.literal("log_chunk"),
-    stream: z.enum(["stdout", "stderr", "transcript", "runner"]),
-    offset: z.int().nonnegative(),
-    bytes: z.int().positive(),
-    key: z.string().min(1),
-    at,
-  }),
-  /** `machine.json`: lscpu, uname, nproc, meminfo, load_1m, steal. */
-  z.object({ kind: z.literal("machine"), machine: z.record(z.string(), z.unknown()), at }),
-  /** A raw collector reading. Not a score: it only counts once the trial's gate passed. */
-  z.object({
-    kind: z.literal("metric"),
-    name: z.string().min(1),
-    value: z.number().finite(),
-    unit: z.string().min(1).optional(),
-    at,
-  }),
-  /** Token usage from Claude Code stream-json (BYOK token cap). Money in integer micro-USD. */
-  z.object({
-    kind: z.literal("usage"),
-    input_tokens: z.int().nonnegative(),
-    output_tokens: z.int().nonnegative(),
-    cost_micro_usd: NonNegativeMicroUsdSchema,
-    at,
-  }),
-  z.object({ kind: z.literal("error"), message: z.string().min(1), at }),
-]);
-export type RunnerEvent = z.infer<typeof RunnerEventSchema>;
-
-export const RunnerIngestBodySchema = z.object({
-  /** Runner-local, strictly increasing per trial attempt; the server drops a batch it has seen. */
-  batch_seq: z.int().nonnegative(),
-  attempt: z.int().positive(),
-  sent_at: at,
-  heartbeat: z.object({
-    phase: RunnerPhaseSchema,
-    log_offset: z.int().nonnegative(),
-    load_1m: z.number().nonnegative().optional(),
-  }),
-  events: z.array(RunnerEventSchema).max(RUNNER_INGEST_MAX_EVENTS),
-});
-export type RunnerIngestBody = z.infer<typeof RunnerIngestBodySchema>;
-
-export const RunnerIngestResponseSchema = z.object({
-  accepted: z.int().nonnegative(),
-  /** True when this batch_seq was already ingested (nothing new was written). */
-  duplicate: z.boolean(),
-  /** The runner stops the workload and uploads what it has. */
-  cancel_requested: z.boolean(),
-  trial_state: TrialStateSchema,
-  lease_until: at,
-});
 
 // ---------------------------------------------------------------------------------------------
 
@@ -174,16 +84,6 @@ export const eventRoutes = defineRoutes({
     kind: "sse",
     response: AnybenchEventSchema,
     stream: { event: AnybenchEventSchema, end: StreamEndSchema },
-  }),
-  ingest: defineRoute({
-    id: "events.ingest",
-    method: "POST",
-    path: "/v1/trials/:id/events",
-    auth: ["runner"],
-    summary: "Runner ingest: a batch of runner events plus the 15 s heartbeat for one trial.",
-    params: z.object({ id: TrialIdSchema }),
-    body: RunnerIngestBodySchema,
-    response: RunnerIngestResponseSchema,
   }),
   naiveWebhook: defineRoute({
     id: "events.naiveWebhook",

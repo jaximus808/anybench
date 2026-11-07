@@ -13,6 +13,7 @@ import { outreachRoutes } from "./outreach.js";
 import { publishRoutes } from "./publish.js";
 import { reportRoutes } from "./reports.js";
 import type { RouteSpec } from "./route.js";
+import { runnerRoutes } from "./runner.js";
 import { runRoutes } from "./runs.js";
 import { scanRoutes } from "./scan.js";
 import { secretRoutes } from "./secrets.js";
@@ -25,6 +26,7 @@ export const apiRoutes = {
   kits: kitRoutes,
   trials: trialRoutes,
   events: eventRoutes,
+  runner: runnerRoutes,
   alerts: alertRoutes,
   billing: billingRoutes,
   admin: adminRoutes,

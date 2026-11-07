@@ -1,0 +1,92 @@
+{
+  "url": "http://ingest.test/v1/trials/0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b/events",
+  "headers": {
+    "authorization": "Bearer t",
+    "content-type": "application/json",
+    "idempotency-key": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:1:0"
+  },
+  "body": {
+    "trial_id": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+    "attempt": 1,
+    "batch_seq": 0,
+    "events": [
+      {
+        "run_id": "0197a1b2-c3d4-7e5f-8a9b-1c1d2e3f4a5c",
+        "seq": 0,
+        "source_id": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        "severity": "info",
+        "actor": {
+          "kind": "runner",
+          "id": "runner-tdm10"
+        },
+        "cost_delta_micro_usd": "0",
+        "at": "2026-11-07T21:00:00.000Z",
+        "type": "trial.phase",
+        "source": "trial",
+        "payload": {
+          "from": "warming",
+          "to": "running",
+          "attempt": 1
+        }
+      },
+      {
+        "run_id": "0197a1b2-c3d4-7e5f-8a9b-1c1d2e3f4a5c",
+        "seq": 1,
+        "source_id": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        "severity": "info",
+        "actor": {
+          "kind": "runner",
+          "id": "runner-tdm10"
+        },
+        "cost_delta_micro_usd": "0",
+        "at": "2026-11-07T21:00:00.000Z",
+        "type": "trial.heartbeat",
+        "source": "trial",
+        "payload": {
+          "phase": "running",
+          "lease_owner": "runner-tdm10",
+          "lease_until": "2026-11-07T21:00:00.000Z",
+          "log_offset": 128
+        }
+      }
+    ],
+    "status": {
+      "trial_id": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+      "run_id": "0197a1b2-c3d4-7e5f-8a9b-1c1d2e3f4a5c",
+      "attempt": 1,
+      "runner_version": "0.0.0",
+      "pid": 4242,
+      "hostname": "naive-vm",
+      "phase": "run",
+      "trial_state": "running",
+      "started_at": "2026-11-07T21:00:00.000Z",
+      "updated_at": "2026-11-07T21:00:00.000Z",
+      "heartbeat_at": "2026-11-07T21:00:00.000Z",
+      "phases": [
+        {
+          "phase": "prepare",
+          "started_at": "2026-11-07T21:00:00.000Z",
+          "ended_at": "2026-11-07T21:00:00.000Z"
+        },
+        {
+          "phase": "run",
+          "started_at": "2026-11-07T21:00:00.000Z",
+          "ended_at": null
+        }
+      ],
+      "push": {
+        "mode": "push",
+        "sent_batches": 0,
+        "failed_posts": 0,
+        "last_error": null
+      },
+      "events": {
+        "count": 2,
+        "bytes": 600
+      },
+      "run": null,
+      "upload": null,
+      "result": null
+    }
+  }
+}

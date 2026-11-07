@@ -9,6 +9,7 @@ export * from "./runs.js";
 export * from "./kits.js";
 export * from "./trials.js";
 export * from "./events.js";
+export * from "./runner.js";
 export * from "./alerts.js";
 export * from "./notifications.js";
 export * from "./reports.js";

@@ -16,7 +16,11 @@ const Sha256Schema = z
 const ByteCountSchema = z.int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const HeadersSchema = z.record(z.string(), z.string());
 
-/** Same shape as `@anybench/envs` UploadPlan, in snake_case for the wire. */
+/**
+ * The plan for a user upload (browser or CLI), in this contract's snake_case. Its own shape, not
+ * `@anybench/envs` UploadPlan; the runner's trial uploads use TrialUploadPlanSchema (runner.ts),
+ * which is exactly the envs shape.
+ */
 export const UploadPlanSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("single"),

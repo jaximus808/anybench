@@ -113,13 +113,7 @@ function buildStubTdm10() {
     });
   });
   impl(apiRoutes.reports.markdown, () => "# Report\n\nTandem x3 wins.");
-  impl(apiRoutes.events.ingest, (req) => ({
-    accepted: req.body.events.length,
-    duplicate: false,
-    cancel_requested: false,
-    trial_state: "running" as const,
-    lease_until: NOW_TDM10,
-  }));
+  impl(apiRoutes.runner.ingest, (req) => ({ accepted: req.body.events.length }));
   // A broken handler: returns a float where money belongs. The contract catches it server-side.
   impl(apiRoutes.billing.summary, () => ({ broken: 1.5 }) as never);
 
@@ -303,23 +297,19 @@ describe("hono stub + client", () => {
 
   it("posts runner ingest batches with the runner token", async () => {
     const { api, calls } = clientTdm10({ kind: "runner", token: "trial-token-tdm10" });
-    const res = await api.events.ingest({
-      params: { id: newId(TrialIdSchema) },
+    const trialId = newId(TrialIdSchema);
+    const res = await api.runner.ingest({
+      params: { id: trialId },
+      headers: { "idempotency-key": `${trialId}:1:0` },
       body: {
-        batch_seq: 0,
+        trial_id: trialId,
         attempt: 1,
-        sent_at: NOW_TDM10,
-        heartbeat: { phase: "run", log_offset: 0 },
+        batch_seq: 0,
         events: [
-          { kind: "phase", phase: "run", at: NOW_TDM10 },
-          {
-            kind: "usage",
-            input_tokens: 10,
-            output_tokens: 5,
-            cost_micro_usd: 1234n,
-            at: NOW_TDM10,
-          },
+          encodeAnybenchEvent(event(RUN_ID_TDM10, 0)),
+          encodeAnybenchEvent(event(RUN_ID_TDM10, 1)),
         ],
+        status: null,
       },
     });
     expect(res.accepted).toBe(2);
