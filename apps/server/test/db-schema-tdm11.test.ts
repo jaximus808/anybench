@@ -33,6 +33,7 @@ const PLAN_TABLES = [
   "alert_deliveries",
   "kill_switches",
   "webhook_inbox",
+  "worker_heartbeats", // TDM-14: worker liveness for /health/worker
   // billing
   "billing_accounts",
   "usage_entries",

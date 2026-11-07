@@ -15,6 +15,13 @@
       "when": 1794087301185,
       "tag": "0001_rls_and_intervention_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794087921709,
+      "tag": "0002_worker_heartbeats",
+      "breakpoints": true
     }
   ]
 }

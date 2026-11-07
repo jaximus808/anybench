@@ -1,0 +1,163 @@
+// Server config (TDM-14): every env var the API and worker read, validated once at boot with zod.
+//
+// Conventions for later tickets:
+// - Add a var here AND to .env.example (same name). Empty strings count as unset, because
+//   .env.example ships `KEY=` lines.
+// - Cross-field rules go in `bootAssertions` below, each pushing a `{ path, message }` issue; never
+//   throw one at a time. `loadConfig` throws a single ConfigError that lists every bad var.
+// - Read config from `deps.config`, never from `process.env`, outside this file and the entries.
+import { z } from "zod";
+import { DEFAULT_LOCAL_DATABASE_URL } from "./db/client.js";
+
+const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+const optionalString = z.preprocess(emptyToUndefined, z.string().optional());
+const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
+const flag = z
+  .preprocess(emptyToUndefined, z.enum(["0", "1"]).default("0"))
+  .transform((v) => v === "1");
+
+const postgresUrl = z
+  .string()
+  .refine((v) => /^postgres(ql)?:\/\//.test(v), "must be a postgres:// or postgresql:// URL");
+
+export const BILLING_MODES = ["off", "test", "live"] as const;
+export type BillingMode = (typeof BILLING_MODES)[number];
+
+export const EnvSchema = z.object({
+  NODE_ENV: z.preprocess(
+    emptyToUndefined,
+    z.enum(["development", "test", "production"]).default("development"),
+  ),
+  ANYBENCH_ENV: z.preprocess(
+    emptyToUndefined,
+    z.enum(["local", "staging", "prod"]).default("local"),
+  ),
+  PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(65535).default(8787)),
+  LOG_LEVEL: z.preprocess(
+    emptyToUndefined,
+    z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  ),
+  /** Neon pooled URL (PgBouncer, transaction mode): API queries. */
+  DATABASE_URL: z.preprocess(emptyToUndefined, postgresUrl.optional()),
+  /** Neon direct URL: migrations, graphile-worker, LISTEN/NOTIFY. */
+  DATABASE_URL_DIRECT: z.preprocess(emptyToUndefined, postgresUrl.optional()),
+  LOCAL_DATABASE_URL: z.preprocess(emptyToUndefined, postgresUrl.optional()),
+  ANYBENCH_PAUSE: flag,
+  BILLING_MODE: z.preprocess(emptyToUndefined, z.enum(BILLING_MODES).default("test")),
+  /** The key the app uses; deploy maps it from STRIPE_TEST_SECRET_KEY or STRIPE_LIVE_SECRET_KEY. */
+  STRIPE_SECRET_KEY: optionalString,
+  STRIPE_TEST_SECRET_KEY: optionalString,
+  STRIPE_LIVE_SECRET_KEY: optionalString,
+  SENTRY_DSN: optionalUrl,
+  /** Defaults to `<hostname>:<pid>`. */
+  WORKER_ID: optionalString,
+  WORKER_CONCURRENCY: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(64).default(5),
+  ),
+});
+export type Env = z.infer<typeof EnvSchema>;
+
+export interface Config extends Env {
+  /** Resolved pooled URL (DATABASE_URL, else the local Docker Postgres outside production). */
+  databaseUrl: string;
+  /** Resolved direct URL (DATABASE_URL_DIRECT, else DATABASE_URL / local outside production). */
+  databaseUrlDirect: string;
+  isProduction: boolean;
+}
+
+export interface ConfigIssue {
+  path: string;
+  message: string;
+}
+
+export class ConfigError extends Error {
+  readonly issues: ConfigIssue[];
+  constructor(issues: ConfigIssue[]) {
+    super(
+      `Invalid server environment (${issues.length} problem${issues.length === 1 ? "" : "s"}):\n` +
+        issues.map((i) => `  - ${i.path}: ${i.message}`).join("\n"),
+    );
+    this.name = "ConfigError";
+    this.issues = issues;
+  }
+}
+
+const STRIPE_PREFIXES: Record<Exclude<BillingMode, "off">, readonly string[]> = {
+  test: ["sk_test_", "rk_test_"],
+  live: ["sk_live_", "rk_live_"],
+};
+
+function stripeKeyIssue(key: string | undefined, mode: "test" | "live"): string | undefined {
+  if (key === undefined) return undefined;
+  const allowed = STRIPE_PREFIXES[mode];
+  if (allowed.some((p) => key.startsWith(p))) return undefined;
+  // Never echo the key itself: only the first segment, which is not secret.
+  const seen = /^[a-z]{2,4}_[a-z]+_/.exec(key)?.[0] ?? "an unrecognised prefix";
+  return `must start with ${allowed.join(" or ")} for ${mode} mode (got ${seen})`;
+}
+
+function bootAssertions(env: Env): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  const prod = env.NODE_ENV === "production";
+
+  if (env.BILLING_MODE === "off" && prod) {
+    issues.push({
+      path: "BILLING_MODE",
+      message: "off is only allowed in local dev; refusing to boot with NODE_ENV=production",
+    });
+  }
+  if (env.BILLING_MODE !== "off") {
+    const msg = stripeKeyIssue(env.STRIPE_SECRET_KEY, env.BILLING_MODE);
+    if (msg) issues.push({ path: "STRIPE_SECRET_KEY", message: msg });
+  }
+  const testMsg = stripeKeyIssue(env.STRIPE_TEST_SECRET_KEY, "test");
+  if (testMsg) issues.push({ path: "STRIPE_TEST_SECRET_KEY", message: testMsg });
+  const liveMsg = stripeKeyIssue(env.STRIPE_LIVE_SECRET_KEY, "live");
+  if (liveMsg) issues.push({ path: "STRIPE_LIVE_SECRET_KEY", message: liveMsg });
+
+  if (prod && !env.DATABASE_URL) {
+    issues.push({ path: "DATABASE_URL", message: "required when NODE_ENV=production" });
+  }
+  if (prod && !env.DATABASE_URL_DIRECT) {
+    issues.push({ path: "DATABASE_URL_DIRECT", message: "required when NODE_ENV=production" });
+  }
+  return issues;
+}
+
+/** Validate `source` (default process.env). Throws one ConfigError listing every bad var. */
+export function loadConfig(source: Record<string, string | undefined> = process.env): Config {
+  const parsed = EnvSchema.safeParse(source);
+  if (!parsed.success) {
+    throw new ConfigError(
+      parsed.error.issues.map((i) => ({
+        path: i.path.join(".") || "(root)",
+        message: i.message,
+      })),
+    );
+  }
+  const env = parsed.data;
+  const issues = bootAssertions(env);
+  if (issues.length > 0) throw new ConfigError(issues);
+
+  const local = env.LOCAL_DATABASE_URL ?? DEFAULT_LOCAL_DATABASE_URL;
+  const databaseUrl = env.DATABASE_URL ?? local;
+  return {
+    ...env,
+    databaseUrl,
+    databaseUrlDirect: env.DATABASE_URL_DIRECT ?? env.DATABASE_URL ?? local,
+    isProduction: env.NODE_ENV === "production",
+  };
+}
+
+/** Secret values in this config, for the log/Sentry redactor (exact-match redaction). */
+export function configSecrets(config: Config): Record<string, string | undefined> {
+  return {
+    DATABASE_URL: config.DATABASE_URL,
+    DATABASE_URL_DIRECT: config.DATABASE_URL_DIRECT,
+    STRIPE_SECRET_KEY: config.STRIPE_SECRET_KEY,
+    STRIPE_TEST_SECRET_KEY: config.STRIPE_TEST_SECRET_KEY,
+    STRIPE_LIVE_SECRET_KEY: config.STRIPE_LIVE_SECRET_KEY,
+    SENTRY_DSN: config.SENTRY_DSN,
+  };
+}

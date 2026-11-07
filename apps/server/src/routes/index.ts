@@ -1,0 +1,17 @@
+// Route registry (TDM-14). THE shared file every API-route ticket appends to.
+//
+// Pattern, one resource per file:
+//   1. Create src/routes/<resource>.ts exporting `export function <resource>Routes(deps: AppDeps)`
+//      that returns `new Hono<AppEnv>()` with paths RELATIVE to its mount point.
+//   2. Add ONE import line and ONE `app.route(...)` line below, in your ticket's slot. Keep lines
+//      sorted by mount path; on a rebase conflict keep both sides' lines.
+//   3. Validate params/body with zod (@anybench/core contracts); errors are `ErrorBody` JSON.
+//   4. Use deps.db (pooled) through scopedDb(actor, deps.db) for tenant data; c.get("log") to log.
+//   No module-level state in route files: everything comes from deps.
+import type { Hono } from "hono";
+import type { AppDeps, AppEnv } from "../types.js";
+import { healthRoutes } from "./health.js";
+
+export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
+  app.route("/health", healthRoutes(deps));
+}

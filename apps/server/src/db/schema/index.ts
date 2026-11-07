@@ -36,3 +36,4 @@ export * from "./usage_entries.js";
 export * from "./user_secrets.js";
 export * from "./users.js";
 export * from "./webhook_inbox.js";
+export * from "./worker_heartbeats.js";
