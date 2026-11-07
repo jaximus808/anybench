@@ -10,3 +10,5 @@ plan.md
 kits/
 # drizzle-kit generated migration snapshots (TDM-11)
 apps/server/drizzle/meta/
+# Kit fixtures with intentional errors, byte-exact for expected.txt (TDM-33)
+packages/kit/test/fixtures/kits-tdm33/

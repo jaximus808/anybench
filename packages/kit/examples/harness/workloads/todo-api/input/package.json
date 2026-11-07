@@ -1,0 +1,9 @@
+{
+  "name": "todo-api",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

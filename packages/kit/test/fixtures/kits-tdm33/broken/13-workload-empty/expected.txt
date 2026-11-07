@@ -1,0 +1,1 @@
+anybench.yaml:16:5: workloads[1]: workload 'large' has no bytes: add workloads/large/input/ or workloads/large/instruction.md, or set input

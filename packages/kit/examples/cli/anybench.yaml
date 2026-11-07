@@ -1,0 +1,93 @@
+# Example kit for driver.type: cli (TDM-33 [4.1]). Validate with: anybench kit validate packages/kit/examples/cli
+schema_version: 2
+
+subject:
+  kind: software
+  name: ripgrep
+  summary: A line-oriented search tool that recursively searches directories for a regex.
+  better_means:
+    - same matches as grep
+    - less wall-clock time
+    - lower peak memory
+
+contenders:
+  - id: ripgrep
+    role: subject
+    source: { github: BurntSushi/ripgrep, ref: "14.1.1" }
+    driver:
+      type: cli
+      verbs:
+        run: adapters/ripgrep/driver.sh run {in} {out}
+      wall_clock_cap_s: 300
+    version: ripgrep 14.1.1
+  - id: gnu-grep
+    role: baseline
+    source:
+      binary_url: https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz
+      sha256: 1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab
+    driver:
+      type: cli
+      verbs:
+        run: adapters/gnu-grep/driver.sh run {in} {out}
+    found_by: "researcher: the plain default"
+
+workloads:
+  - id: literal-search
+    title: Literal string over a small source tree
+    params: { pattern: PM_RESUME }
+    # sha256 of the workload manifest (sha256 per file under workloads/literal-search/), checked on load.
+    sha256: 28044ce06b1fa2ac0919d3b9d4541f6b6f0482a407f5ea7984f8406f81735119
+  - id: unicode-regex
+    title: Unicode class regex over mixed-script text
+    params: { pattern: '\p{Greek}+' }
+    timeout_s: 120
+
+gates:
+  - id: same-matches
+    kind: output-diff
+    reference: reference/same-matches/
+    description: Sorted path:line:match output equals the reference for every workload.
+
+requirements:
+  - id: wall
+    type: measured
+    title: Median wall time
+    metric: wall_s
+    unit: s
+    better: lower
+    gate_id: same-matches
+  - id: rss
+    type: measured
+    title: Peak RSS
+    metric: peak_rss_kb
+    unit: KiB
+    better: lower
+    gate_id: same-matches
+
+proof:
+  oracle:
+    id: grep-reference
+    dir: proof/oracle/
+    contender: gnu-grep
+    description: GNU grep -rnoP is the known-good answer; it must pass same-matches at 100%.
+  do_less:
+    - id: first-match-only
+      dir: proof/do_less/first-match/
+      contender: ripgrep
+      env: { MAX_COUNT: "1" }
+      description: Stops after the first match per file, so it must fail same-matches.
+  regression:
+    id: single-thread
+    dir: proof/regression/
+    contender: ripgrep
+    env: { THREADS: "1" }
+    description: One search thread; must score lower on wall time.
+
+scoring:
+  weights: { wall: 70, rss: 30 }
+repeats: 10
+
+env:
+  profile: base
+  resources: { vcpu: 2, memory_gb: 4, disk_gb: 20 }
+  os_packages: [hyperfine]

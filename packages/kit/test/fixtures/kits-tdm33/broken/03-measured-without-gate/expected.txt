@@ -1,0 +1,1 @@
+anybench.yaml:20:5: requirements[0].gate_id: measured requirement must name a gate_id: no speed or quality number without a correctness gate

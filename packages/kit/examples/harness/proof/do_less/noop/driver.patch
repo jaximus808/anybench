@@ -1,0 +1,10 @@
+--- a/adapters/tandem/driver.sh
++++ b/adapters/tandem/driver.sh
+@@ -10,6 +10,4 @@ case "$verb" in
+     task="${2:?task}" ws="${3:?workspace}"
+     set -a; source "$EVAL_SECRETS"; set +a
+-    tandem run --workers "${WORKERS:-3}" --task "$task" --workspace "$ws" \
+-      --events "$EVAL_OUT/tandem/events.jsonl" \
+-      --claude-args "--output-format stream-json --verbose" > "$EVAL_OUT/stream.jsonl"
++    : > "$EVAL_OUT/stream.jsonl"
+     ;;

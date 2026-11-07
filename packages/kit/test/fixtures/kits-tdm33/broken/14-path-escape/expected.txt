@@ -1,0 +1,1 @@
+anybench.yaml:16:12: workloads[0].input: must be a path relative to the kit root, with no leading '/', '~' or '..' segments

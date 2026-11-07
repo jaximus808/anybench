@@ -1,0 +1,1 @@
+anybench.yaml:29:12: scoring.weights: weights must sum to 100, got 90

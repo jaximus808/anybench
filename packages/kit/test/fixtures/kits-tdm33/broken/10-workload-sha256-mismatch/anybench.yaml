@@ -1,0 +1,31 @@
+schema_version: 2
+subject:
+  kind: software
+  name: tool
+  summary: A tiny CLI used by the broken-kit fixtures.
+  better_means: [faster]
+contenders:
+  - id: tool
+    role: subject
+    source: { github: example/tool, ref: v1 }
+    driver:
+      type: cli
+      verbs: { run: "adapters/tool/driver.sh run {in} {out}" }
+workloads:
+  - id: small
+    sha256: 5f3c9a0e1d2b4c6a8e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d
+gates:
+  - id: same-output
+    kind: output-diff
+requirements:
+  - id: wall
+    type: measured
+    title: Wall time
+    metric: wall_s
+    better: lower
+    gate_id: same-output
+proof:
+  oracle: { id: reference, dir: proof/oracle/ }
+scoring:
+  weights: { wall: 100 }
+repeats: 3

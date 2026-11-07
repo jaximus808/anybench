@@ -1,0 +1,1 @@
+anybench.yaml:17:5: gates[0].check: gates/same-output/check.sh does not exist (the default for check; create it or set check to another path)

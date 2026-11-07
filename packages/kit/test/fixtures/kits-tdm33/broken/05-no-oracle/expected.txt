@@ -1,0 +1,1 @@
+anybench.yaml:1:1: proof.oracle: measured gate 'same-output' (used by requirements[0]) has no oracle: add proof.oracle so the gate is proven to pass on a known-good answer

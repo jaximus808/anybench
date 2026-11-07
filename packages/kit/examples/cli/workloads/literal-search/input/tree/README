@@ -1,0 +1,1 @@
+Send PM_RESUME after wake. PM_RESUME is idempotent.

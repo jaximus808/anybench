@@ -1,0 +1,1 @@
+anybench.yaml:8:5: contenders[0].install.script: adapters/tool/install.sh does not exist (the default for install.script; create it or set install.script to another path)

@@ -1,0 +1,1 @@
+anybench.yaml:12:7: contenders[0].driver.script: adapters/tool/driver.sh does not exist (the default for driver.script; create it or set driver.script to another path)

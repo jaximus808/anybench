@@ -1,0 +1,3 @@
+tree/mixed.txt:1:Ω
+tree/mixed.txt:1:α
+tree/mixed.txt:2:λόγος

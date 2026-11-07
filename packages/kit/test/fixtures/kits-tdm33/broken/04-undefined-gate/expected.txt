@@ -1,0 +1,1 @@
+anybench.yaml:25:14: requirements[0].gate_id: gate 'same-outptu' is not defined in gates[]
