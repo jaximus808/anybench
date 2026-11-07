@@ -15,14 +15,19 @@ import { KeyIdSchema, SIGNATURE_ALG, type SigningKey } from "./keys.js";
 
 export const ATTESTATION_SCHEMA = "anybench.attestation/v1";
 
-/** The six proof checks (plan.md P2). All must pass before a run can be published. */
+/**
+ * The six proof checks (plan.md P2), named as in core `KitProofSchema` where it has a key:
+ * oracle passes; do-less fails the gate; smoke run passes on the real profile; planted
+ * regression scores lower; known baselines land in range; no secret in the kit. Ids name the
+ * check, not its expected outcome. All must pass before a run can be published.
+ */
 export const PROOF_CHECK_IDS = [
-  "oracle_passes",
-  "do_less_fails",
-  "smoke_passes",
-  "regression_scores_lower",
-  "baselines_in_range",
-  "no_secrets",
+  "oracle",
+  "do_less",
+  "smoke",
+  "planted_regression",
+  "baseline_sanity",
+  "no_secret",
 ] as const;
 export type ProofCheckId = (typeof PROOF_CHECK_IDS)[number];
 
@@ -76,29 +81,49 @@ export const AttestedScoreSchema = z.discriminatedUnion("scored", [
 ]);
 export type AttestedScore = z.infer<typeof AttestedScoreSchema>;
 
-export const AttestationPayloadSchema = z.strictObject({
-  schema: z.literal(ATTESTATION_SCHEMA),
-  kit_hash: Sha256HexSchema,
-  run_id: IdSchema.optional(),
-  /** A comped (free) run is published with a "comped" note. */
-  comped: z.boolean(),
-  contenders: z
-    .array(z.strictObject({ contender_id: IdSchema, version: z.string().min(1) }))
-    .min(1),
-  snapshots: z.array(z.strictObject({ id: IdSchema, sha256: Sha256HexSchema })).min(1),
-  trial_count: z.int().min(1),
-  proof_checks: z.strictObject(
-    Object.fromEntries(PROOF_CHECK_IDS.map((id) => [id, PassedProofCheckSchema])) as Record<
-      ProofCheckId,
-      typeof PassedProofCheckSchema
-    >,
-  ),
-  scores: z.array(AttestedScoreSchema).min(1),
-  /** Scored contender ids, best first (unscored contenders are never ranked). */
-  ranking: z.array(IdSchema),
-  issued_at: z.iso.datetime(),
-  key_id: KeyIdSchema,
+/**
+ * Where the attestation is shown: the published benchmark and its immutable version. The
+ * publish flow (12.2) always sets it. A verifier of a public page must check it matches the
+ * page (`/b/<owner>/<slug>`, version shown), or a valid attestation could be replayed elsewhere.
+ */
+export const AttestedBenchmarkSchema = z.strictObject({
+  owner: IdSchema,
+  slug: IdSchema,
+  version: z.int().min(1),
 });
+export type AttestedBenchmark = z.infer<typeof AttestedBenchmarkSchema>;
+
+export const AttestationPayloadSchema = z
+  .strictObject({
+    schema: z.literal(ATTESTATION_SCHEMA),
+    kit_hash: Sha256HexSchema,
+    run_id: IdSchema.optional(),
+    benchmark: AttestedBenchmarkSchema.optional(),
+    /** A comped (free) run is published with a "comped" note. Always stated, never defaulted. */
+    comped: z.boolean(),
+    /** Why the run was comped. Only when `comped` is true. */
+    comped_reason: z.string().min(1).max(500).optional(),
+    contenders: z
+      .array(z.strictObject({ contender_id: IdSchema, version: z.string().min(1) }))
+      .min(1),
+    snapshots: z.array(z.strictObject({ id: IdSchema, sha256: Sha256HexSchema })).min(1),
+    trial_count: z.int().min(1),
+    proof_checks: z.strictObject(
+      Object.fromEntries(PROOF_CHECK_IDS.map((id) => [id, PassedProofCheckSchema])) as Record<
+        ProofCheckId,
+        typeof PassedProofCheckSchema
+      >,
+    ),
+    scores: z.array(AttestedScoreSchema).min(1),
+    /** Scored contender ids, best first (unscored contenders are never ranked). */
+    ranking: z.array(IdSchema),
+    issued_at: z.iso.datetime(),
+    key_id: KeyIdSchema,
+  })
+  .refine((p) => p.comped || p.comped_reason === undefined, {
+    message: "comped_reason only when comped is true",
+    path: ["comped_reason"],
+  });
 export type AttestationPayload = z.infer<typeof AttestationPayloadSchema>;
 
 export const SignedAttestationSchema = z.strictObject({
@@ -147,7 +172,11 @@ export const KitScoreInputSchema = z.object({
 export const AttestInputSchema = z.strictObject({
   kitHash: Sha256HexSchema,
   runId: IdSchema.optional(),
-  comped: z.boolean().default(false),
+  /** The published benchmark this attestation is for (set by the publish flow). */
+  benchmark: AttestedBenchmarkSchema.optional(),
+  /** Required: a comped run must say so. */
+  comped: z.boolean(),
+  compedReason: z.string().min(1).max(500).optional(),
   /** Every contender in the score, each with its pinned version. */
   contenders: z.array(z.strictObject({ id: IdSchema, version: z.string().min(1) })).min(1),
   snapshots: z.array(z.strictObject({ id: IdSchema, sha256: Sha256HexSchema })).min(1),
@@ -274,7 +303,9 @@ export function buildAttestationPayload(
     schema: ATTESTATION_SCHEMA,
     kit_hash: inp.kitHash,
     ...(inp.runId !== undefined ? { run_id: inp.runId } : {}),
+    ...(inp.benchmark !== undefined ? { benchmark: { ...inp.benchmark } } : {}),
     comped: inp.comped,
+    ...(inp.compedReason !== undefined ? { comped_reason: inp.compedReason } : {}),
     contenders: scoredIds.map((id) => ({ contender_id: id, version: versionOf.get(id)! })),
     snapshots: inp.snapshots.map((s) => ({ id: s.id, sha256: s.sha256 })),
     trial_count: scores.reduce((n, s) => n + s.trials, 0),

@@ -98,6 +98,8 @@ function inputTdm109(score: KitScore = scoreKit(KIT_TDM109, trialsTdm109())): At
   return {
     kitHash: "a".repeat(64),
     runId: "019a5f00-0000-7000-8000-000000000109",
+    benchmark: { owner: "jaximus808", slug: "tandem-vs-claude-code", version: 3 },
+    comped: false,
     contenders: [
       { id: "tandem", version: "tandem@0.4.2+claude-code@2.1.0" },
       { id: "claude-code", version: "claude-code@2.1.0" },
@@ -266,9 +268,9 @@ describe("attest", () => {
 
   it("refuses when a proof check never ran, or an unknown one is passed", () => {
     const key = loadSigningKey(keyEnvTdm109());
-    const { no_secrets: _skip, ...five } = PASSED_TDM109;
+    const { no_secret: _skip, ...five } = PASSED_TDM109;
     expect(() => attest({ ...inputTdm109(), proofChecks: five }, key)).toThrow(
-      expect.objectContaining({ code: "proof_check_missing", details: ["no_secrets"] }),
+      expect.objectContaining({ code: "proof_check_missing", details: ["no_secret"] }),
     );
     expect(() =>
       attest({ ...inputTdm109(), proofChecks: { ...PASSED_TDM109, vibes: { pass: true } } }, key),
@@ -360,7 +362,7 @@ describe("verify", () => {
       payload: { proof_checks: Record<string, { pass: boolean }> };
       signature: string;
     };
-    forged.payload.proof_checks.no_secrets = { pass: false };
+    forged.payload.proof_checks.no_secret = { pass: false };
     forged.signature = signPayload(forged.payload as never, key);
     expect(verify(forged, wellKnownKeys(env))).toMatchObject({ valid: false, code: "schema" });
   });
@@ -390,5 +392,132 @@ describe("verify", () => {
       code: "not_canonical",
     });
     expect(verify("{not json", keys)).toMatchObject({ valid: false, code: "malformed" });
+  });
+
+  it("fails on truncated text, trailing bytes, or a BOM prefix", () => {
+    const env = keyEnvTdm109();
+    const keys = wellKnownKeys(env);
+    const text = serializeAttestation(signedTdm109(env));
+    const bytes = Buffer.from(text, "utf8");
+    for (const cut of [1, 2, 10, Math.floor(bytes.length / 2), bytes.length - 1]) {
+      expect(verify(bytes.subarray(0, cut), keys).valid).toBe(false);
+      expect(verify(text.slice(0, cut), keys).valid).toBe(false);
+    }
+    for (const tail of ["\n", " ", "x", "{}", "\u0000"]) {
+      expect(verify(text + tail, keys).valid).toBe(false);
+      expect(verify(Buffer.concat([bytes, Buffer.from(tail)]), keys).valid).toBe(false);
+    }
+    const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]);
+    expect(verify(bom, keys)).toMatchObject({ valid: false, code: "malformed" });
+    expect(verify("\uFEFF" + text, keys)).toMatchObject({ valid: false, code: "malformed" });
+  });
+
+  it("fails on a wrong alg or an envelope-only key_id change", () => {
+    const env = keyEnvTdm109();
+    const keys = wellKnownKeys(env);
+    const att = signedTdm109(env);
+    for (const alg of ["HS256", "EdDSA", "ed25519", "none", ""]) {
+      expect(verify({ ...att, alg }, keys)).toMatchObject({ valid: false, code: "schema" });
+    }
+    expect(verify({ ...att, key_id: "ab-test-2" }, keys)).toMatchObject({
+      valid: false,
+      code: "key_id_mismatch",
+    });
+  });
+
+  it("never throws, even on hostile objects", () => {
+    const keys = wellKnownKeys(keyEnvTdm109());
+    const hostile = {
+      get payload(): unknown {
+        throw new Error("boom");
+      },
+      alg: "Ed25519",
+      key_id: "ab-test-1",
+      signature: "AA==",
+    };
+    const proxy = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("trap");
+        },
+        ownKeys() {
+          throw new Error("trap");
+        },
+      },
+    );
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    for (const bad of [hostile, proxy, cyclic, null, undefined, 42, [], Symbol("s")]) {
+      expect(() => verify(bad, keys)).not.toThrow();
+      expect(verify(bad, keys).valid).toBe(false);
+    }
+    expect(verify(signedTdm109(), proxy).valid).toBe(false);
+  });
+
+  it("binds the attestation to its benchmark page; changing it fails", () => {
+    const env = keyEnvTdm109();
+    const keys = wellKnownKeys(env);
+    const att = signedTdm109(env);
+    expect(att.payload.benchmark).toEqual({
+      owner: "jaximus808",
+      slug: "tandem-vs-claude-code",
+      version: 3,
+    });
+    for (const change of [{ slug: "other" }, { owner: "someone" }, { version: 4 }]) {
+      const copy = structuredClone(att);
+      copy.payload.benchmark = { ...copy.payload.benchmark!, ...change };
+      expect(verify(copy, keys)).toMatchObject({ valid: false, code: "bad_signature" });
+    }
+  });
+
+  it("rejects a keyset with a duplicated key_id", () => {
+    const env = keyEnvTdm109();
+    const att = signedTdm109(env);
+    const keys = wellKnownKeys(env);
+    const dup = { ...keys, keys: [keys.keys[0]!, { ...keys.keys[0]!, status: "previous" }] };
+    expect(verify(att, dup)).toMatchObject({ valid: false, code: "bad_keyset" });
+    expect(WellKnownKeysSchema.safeParse(dup).success).toBe(false);
+  });
+});
+
+describe("comped runs", () => {
+  it("requires comped to be stated", () => {
+    const key = loadSigningKey(keyEnvTdm109());
+    const { comped: _c, ...noComped } = inputTdm109();
+    expect(() => attest(noComped as AttestInput, key)).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
+  });
+
+  it("signs comped: true with a reason, and flipping it fails verify", () => {
+    const env = keyEnvTdm109();
+    const keys = wellKnownKeys(env);
+    const att = attest(
+      { ...inputTdm109(), comped: true, compedReason: "launch partner" },
+      loadSigningKey(env),
+      { now: NOW },
+    );
+    expect(att.payload).toMatchObject({ comped: true, comped_reason: "launch partner" });
+    expect(serializeAttestation(att)).toContain('"comped":true');
+    expect(verify(att, keys).valid).toBe(true);
+
+    const flipped = structuredClone(att);
+    flipped.payload.comped = false;
+    delete flipped.payload.comped_reason;
+    expect(verify(flipped, keys).valid).toBe(false);
+    const hidden = structuredClone(att);
+    delete hidden.payload.comped_reason;
+    expect(verify(hidden, keys)).toMatchObject({ valid: false, code: "bad_signature" });
+    // And the text form: "comped":true → "comped":false.
+    const text = serializeAttestation(att).replace('"comped":true', '"comped":false');
+    expect(verify(text, keys).valid).toBe(false);
+  });
+
+  it("refuses a comped_reason on a run that is not comped", () => {
+    const key = loadSigningKey(keyEnvTdm109());
+    expect(() => attest({ ...inputTdm109(), compedReason: "why" }, key)).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
   });
 });

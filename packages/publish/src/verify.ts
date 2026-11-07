@@ -5,6 +5,10 @@
 // must be exactly the canonical serialization (`serializeAttestation`), so a change to any
 // single byte fails, including edits that would parse to the same value (`1e-7` → `1E-7`,
 // reordered keys, added whitespace, a different base64 spelling of the signature).
+//
+// A valid signature proves who signed the payload, not where it is displayed. A verifier of a
+// public benchmark page must also check `payload.benchmark` ({owner, slug, version}) matches the
+// page it is on; otherwise a genuine attestation for one benchmark could be shown on another.
 import { verify as edVerify } from "node:crypto";
 import {
   AttestationPayloadSchema,
@@ -59,6 +63,15 @@ const ED25519_SIGNATURE_BYTES = 64;
 export function verify(attestation: unknown, keyset: WellKnownKeys): VerifyResult;
 export function verify(attestation: unknown, keyset: unknown): VerifyResult;
 export function verify(attestation: unknown, keyset: unknown): VerifyResult {
+  try {
+    return verifyUnguarded(attestation, keyset);
+  } catch {
+    // Hostile input (a throwing getter or proxy, a cyclic object) must not escape as a throw.
+    return fail("malformed", "attestation could not be inspected");
+  }
+}
+
+function verifyUnguarded(attestation: unknown, keyset: unknown): VerifyResult {
   let value: unknown = attestation;
   if (attestation instanceof Uint8Array) {
     try {

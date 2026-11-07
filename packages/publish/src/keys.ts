@@ -129,7 +129,12 @@ export type WellKnownKey = z.infer<typeof WellKnownKeySchema>;
 
 export const WellKnownKeysSchema = z.strictObject({
   issuer: z.literal("anybench"),
-  keys: z.array(WellKnownKeySchema).min(1),
+  keys: z
+    .array(WellKnownKeySchema)
+    .min(1)
+    .refine((ks) => new Set(ks.map((k) => k.key_id)).size === ks.length, {
+      message: "duplicate key_id in keyset",
+    }),
 });
 /** The `/.well-known/anybench-keys.json` document. Also what `verify()` takes as a keyset. */
 export type WellKnownKeys = z.infer<typeof WellKnownKeysSchema>;
