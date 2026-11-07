@@ -1,0 +1,62 @@
+{
+  "workload": "auth-refactor",
+  "source": "written for this kit against workloads/auth-refactor/instruction.md",
+  "tests": [
+    {
+      "file": "bearer.test.ts",
+      "name": "GET /me accepts a bearer token"
+    },
+    {
+      "file": "bearer.test.ts",
+      "name": "a tampered payload is rejected with invalid_token"
+    },
+    {
+      "file": "bearer.test.ts",
+      "name": "a token signed with another secret is rejected with invalid_token"
+    },
+    {
+      "file": "bearer.test.ts",
+      "name": "alg none and other algorithms are rejected with invalid_token"
+    },
+    {
+      "file": "bearer.test.ts",
+      "name": "an expired token is rejected with token_expired"
+    },
+    {
+      "file": "bearer.test.ts",
+      "name": "admin routes check the role claim: 200 for admin, 403 forbidden for users"
+    },
+    {
+      "file": "lifecycle.test.ts",
+      "name": "logout revokes the token (204, then token_revoked)"
+    },
+    {
+      "file": "lifecycle.test.ts",
+      "name": "refresh issues a new token and revokes the old one"
+    },
+    {
+      "file": "lifecycle.test.ts",
+      "name": "tokens are stateless: another instance with the same secret accepts them"
+    },
+    {
+      "file": "token-format.test.ts",
+      "name": "login returns an HS256 JWT and expiresIn"
+    },
+    {
+      "file": "token-format.test.ts",
+      "name": "the signature is HMAC-SHA256 over header.payload with JWT_SECRET"
+    },
+    {
+      "file": "token-format.test.ts",
+      "name": "claims carry sub, role, iat, exp = iat + TOKEN_TTL_S and a unique jti"
+    },
+    {
+      "file": "token-format.test.ts",
+      "name": "sessions are gone: login sets no cookie and a sid cookie is not accepted"
+    },
+    {
+      "file": "token-format.test.ts",
+      "name": "jwt.ts exports signJwt and verifyJwt with typed errors"
+    }
+  ]
+}

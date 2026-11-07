@@ -1,0 +1,240 @@
+# Kit: does Tandem with 3 or 5 workers beat plain Claude Code, solo or with subagents?
+# The acceptance kit for Anybench (plan.md E14, ticket 14.2). Validated by KitSpecSchema
+# (packages/core) in packages/kit/test/tdm128-kit-tandem-vs-claude-code.test.ts.
+# Proof: scripts/verify-proof.sh, results in PROOF.md.
+schema_version: 2
+
+subject:
+  kind: harness
+  name: tandem
+  summary: >-
+    Tandem is a shared task board where a planner splits work into tickets and N Claude Code
+    workers claim them, with approvals. This kit compares Tandem with 3 and 5 workers against plain
+    Claude Code working alone and Claude Code with subagents, on three coding tasks graded by
+    hidden tests.
+  better_means:
+    - more trials pass every hidden test
+    - finishes sooner (wall clock)
+    - costs less per task (tokens x price)
+    - the API it builds is faster under load
+    - the code it leaves is easier to maintain
+
+# Interleave order: A B C D (C and D are the two `vary` setups of `tandem`).
+contenders:
+  - id: claude-code-solo
+    name: "A · Claude Code solo"
+    role: baseline
+    source:
+      upload: [adapters/claude-code-solo/CLAUDE.md]
+    install:
+      script: adapters/claude-code/install.sh
+      healthcheck: adapters/claude-code/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/claude-code/driver.sh
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 3600
+      token_cap: 5000000
+      env:
+        CC_SETUP: claude-code-solo
+        CC_DISALLOWED_TOOLS: Task
+    found_by: "researcher: the plain default (subagents removed)"
+
+  - id: claude-code-subagents
+    name: "B · Claude Code + subagents"
+    role: competitor
+    source:
+      upload:
+        - adapters/claude-code-subagents/CLAUDE.md
+        - adapters/claude-code-subagents/.claude/
+    install:
+      script: adapters/claude-code/install.sh
+      healthcheck: adapters/claude-code/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/claude-code/driver.sh
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 3600
+      token_cap: 5000000
+      env:
+        CC_SETUP: claude-code-subagents
+    found_by: "user: the setup Tandem has to beat"
+
+  - id: tandem
+    name: "Tandem (C ×3, D ×5)"
+    role: subject
+    source:
+      github: jaximus808/tandem
+      ref: main
+    install:
+      script: adapters/tandem/install.sh
+      healthcheck: adapters/tandem/healthcheck.sh
+    driver:
+      type: harness
+      script: adapters/tandem/driver.sh
+      verbs:
+        run: adapters/tandem/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 3600
+      token_cap: 8000000
+      env:
+        # Default for the key `vary` sets; only drivers that declare a vary key are expanded by it.
+        TANDEM_WORKERS: "3"
+
+workloads:
+  - id: todo-api
+    title: Build a REST API with auth and tests
+    input: workloads/todo-api/input/
+    instruction: workloads/todo-api/instruction.md
+    setup: workloads/todo-api/setup.sh
+    timeout_s: 3600
+    params:
+      shape: splits-cleanly
+      suggested_tickets: 5
+      hidden_tests: 16
+      api_rps: 50
+  - id: auth-refactor
+    title: Move sessions to JWT across 9 files
+    input: workloads/auth-refactor/input/
+    instruction: workloads/auth-refactor/instruction.md
+    setup: workloads/auth-refactor/setup.sh
+    timeout_s: 3600
+    params:
+      shape: tightly-coupled
+      coupled_files: 9
+      hidden_tests: 14
+  - id: bug-hunt
+    title: Fix the CSV bug from the reverted RFC 4180 commit
+    input: workloads/bug-hunt/input/
+    instruction: workloads/bug-hunt/instruction.md
+    setup: workloads/bug-hunt/setup.sh
+    timeout_s: 2400
+    params:
+      shape: from-a-reverted-commit
+      hidden_tests: 12
+
+# Collectors are omitted on purpose: each driver type gets its defaults (DRIVER_DEFAULT_COLLECTORS),
+# so A and B get stream-json and Tandem also gets tandem-board.
+
+gates:
+  - id: hidden-tests
+    kind: hidden-tests
+    check: gates/hidden-tests/check.sh
+    reference: gates/hidden-tests/
+    description: >-
+      Runs the workload's hidden tests (gates/hidden-tests/<workload>/, never in the workspace)
+      against a copy of the frozen workspace, offline. Passes only when every hidden test passes.
+    timeout_s: 900
+  - id: api-load
+    kind: custom
+    check: gates/api-load/check.sh
+    reference: gates/api-load/workloads.json
+    description: >-
+      todo-api only: re-runs the hidden tests, and only if all pass drives the API at 50 req/s and
+      reports p95. Other workloads answer pass:false "not applicable", so api-p95 is scored on
+      todo-api trials alone.
+    timeout_s: 900
+
+requirements:
+  - id: tests-pass
+    type: measured
+    title: Hidden tests pass (42 tests across 3 tasks)
+    metric: gate_pass_rate
+    unit: ratio
+    better: higher
+    target: at least 1.0 (every trial passes all of its task's hidden tests)
+    gate_id: hidden-tests
+  - id: api-p95
+    type: measured
+    title: API p95 latency at 50 requests/s (todo-api)
+    metric: api_p95_ms
+    unit: ms
+    better: lower
+    target: under 120 ms
+    gate_id: api-load
+  - id: wall
+    type: measured
+    title: Wall-clock time to finish
+    metric: wall_s
+    unit: s
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: cost
+    type: measured
+    title: Cost per task (tokens × price)
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: quality
+    type: reviewed
+    title: "Code quality: follows the repo's patterns, handles errors, tests check real behavior, no dead code"
+    rubric: rubric.md
+    criterion: code-quality
+    scale: { min: 1, max: 4 }
+    gate_id: hidden-tests
+
+proof:
+  oracle:
+    id: reference-solution
+    dir: proof/oracle/
+    contender: tandem
+    driver_patch: proof/oracle/driver.sh
+    gates: [hidden-tests, api-load]
+    description: Applies proof/oracle/<workload>/ (the reference solution) instead of running the harness.
+  do_less:
+    - id: do-nothing
+      dir: proof/do_less/do-nothing/
+      contender: tandem
+      driver_patch: proof/do_less/do-nothing/driver.sh
+      description: "No-op harness: leaves the starting repo untouched; must fail every hidden test and show 0 claims."
+  regression:
+    id: skip-tests
+    dir: proof/regression/skip-tests/
+    contender: claude-code-solo
+    env:
+      CLAUDE_MD_OVERLAY: proof/regression/skip-tests/CLAUDE.md
+    description: A CLAUDE.md that says "skip the tests"; must score lower than setup A.
+
+# Each value is one setup: C = TANDEM_WORKERS=3, D = TANDEM_WORKERS=5.
+vary:
+  TANDEM_WORKERS: [3, 5]
+
+human_in_loop:
+  kind: tandem
+  # A reviewer agent on a different model plays the human; it sees the task, not the hidden tests.
+  policy: llm-reviewer
+
+secrets: [ANTHROPIC_API_KEY]
+
+collect:
+  - stream.jsonl
+  - versions.json
+  - tandem/**
+
+transfer:
+  max_mb: 200
+
+scoring:
+  weights:
+    tests-pass: 50
+    api-p95: 10
+    wall: 10
+    cost: 10
+    quality: 20
+
+repeats: 5
+
+env:
+  profile: agent-cc
+  resources: { vcpu: 4, memory_gb: 8, disk_gb: 20 }
+  os_packages: [git]
+  toolchains:
+    - { name: node, version: "22" }
+  network:
+    # The agents need the model API and npm (snapshot build only). Gates run offline.
+    allow: [api.anthropic.com, registry.npmjs.org, github.com, "*.githubusercontent.com"]
+  region: us-east

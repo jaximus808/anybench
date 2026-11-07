@@ -1,0 +1,14 @@
+{
+  "name": "report-export",
+  "version": "1.4.0",
+  "private": true,
+  "description": "Exports orders to CSV for the finance team and imports them back. No runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  }
+}

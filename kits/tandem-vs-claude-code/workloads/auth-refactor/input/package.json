@@ -1,0 +1,15 @@
+{
+  "name": "auth-service",
+  "version": "1.6.0",
+  "private": true,
+  "description": "Login, profile and admin API with cookie sessions. No runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "todo-api": {
+    "rps": 50,
+    "duration_s": 20,
+    "warmup_requests": 50,
+    "seed_todos": 200,
+    "mix": ["GET /todos?limit=20", "POST /todos"]
+  }
+}

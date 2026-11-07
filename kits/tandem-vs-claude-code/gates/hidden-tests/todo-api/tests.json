@@ -1,0 +1,70 @@
+{
+  "workload": "todo-api",
+  "source": "written for this kit against workloads/todo-api/instruction.md",
+  "tests": [
+    {
+      "file": "auth.test.ts",
+      "name": "register creates a user and never returns the password"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "register rejects a duplicate email with 409 email_taken"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "register validates email and password length with 400 invalid_body"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "login returns a token for good credentials and 401 invalid_credentials otherwise"
+    },
+    {
+      "file": "listing.test.ts",
+      "name": "users cannot see or change each other's todos (404 not_found)"
+    },
+    {
+      "file": "listing.test.ts",
+      "name": "GET /todos lists only the caller's todos, oldest first"
+    },
+    {
+      "file": "listing.test.ts",
+      "name": "GET /todos?done= filters by completion"
+    },
+    {
+      "file": "listing.test.ts",
+      "name": "GET /todos pages with limit and cursor, without gaps or repeats"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "state survives a restart when dataFile is set"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "the data file stores a password hash, never the password"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "todo routes require a bearer token (401 unauthorized)"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "POST /todos creates a todo with the documented shape"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "POST /todos validates the body with 400 invalid_body"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "GET /todos/:id returns the todo"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "PATCH /todos/:id updates title and done, and the change sticks"
+    },
+    {
+      "file": "todos.test.ts",
+      "name": "DELETE /todos/:id answers 204 and the todo is gone"
+    }
+  ]
+}

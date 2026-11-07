@@ -1,0 +1,54 @@
+{
+  "workload": "bug-hunt",
+  "source": "tests added by the reverted fix commit (see workloads/bug-hunt/PROVENANCE.md)",
+  "tests": [
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "toCsv quotes a field that contains a comma"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "toCsv doubles quotes inside a quoted field"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "toCsv quotes fields with line breaks"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv unquotes a field that contains a comma"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv turns doubled quotes back into one"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv keeps line breaks inside quoted fields in the same row"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv accepts CRLF row endings"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv reads empty quoted fields and trailing empty fields"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv rejects an unterminated quoted field with CsvError"
+    },
+    {
+      "file": "csv-quoting.test.ts",
+      "name": "parseCsv(toCsv(rows)) round-trips awkward fields"
+    },
+    {
+      "file": "orders-roundtrip.test.ts",
+      "name": "orders with commas, quotes and multi-line notes round-trip (#212)"
+    },
+    {
+      "file": "orders-roundtrip.test.ts",
+      "name": "ordersFromCsv reads a CRLF export saved by Excel (#212)"
+    }
+  ]
+}

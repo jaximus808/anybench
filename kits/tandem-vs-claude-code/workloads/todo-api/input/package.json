@@ -1,0 +1,15 @@
+{
+  "name": "todo-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small todo REST API on node:http. No runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  }
+}
