@@ -1,0 +1,10 @@
+dist/
+node_modules/
+coverage/
+.next/
+pnpm-lock.yaml
+docs/
+plan.md
+*.html
+*.md
+kits/

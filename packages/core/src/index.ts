@@ -1,0 +1,2 @@
+// @anybench/core: zod schemas, state machines, events, API contract, money, redact. Placeholder from TDM-6 (1.0 scaffold).
+export {};

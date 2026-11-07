@@ -1,0 +1,26 @@
+{
+  "name": "@anybench/publish",
+  "version": "0.0.0",
+  "private": true,
+  "description": "attestation signing/verification, badge SVG, embed payloads",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anybench/core": "workspace:*"
+  }
+}

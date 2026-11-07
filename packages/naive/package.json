@@ -1,0 +1,27 @@
+{
+  "name": "@anybench/naive",
+  "version": "0.0.0",
+  "private": true,
+  "description": "wrapper over @usenaive-sdk/managed-agents + FakeNaive",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anybench/core": "workspace:*",
+    "@usenaive-sdk/managed-agents": "^0.12.3"
+  }
+}
