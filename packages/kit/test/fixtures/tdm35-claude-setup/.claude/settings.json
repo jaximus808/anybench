@@ -1,0 +1,7 @@
+{
+  "permissions": { "allow": ["Bash(pnpm test)"] },
+  "env": {
+    "NODE_ENV": "test",
+    "ACME_API_TOKEN": "acme-tdm35-settings-token-0001"
+  }
+}
