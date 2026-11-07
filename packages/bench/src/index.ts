@@ -4,3 +4,4 @@ export * from "./stats.js";
 export * from "./score.js";
 export * from "./metric.js";
 export * from "./collectors/index.js";
+export * from "./kit-adapter.js";

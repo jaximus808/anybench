@@ -10,7 +10,7 @@
 // Cross-field rules (refs, weights, oracle coverage) run only once every field is well-formed,
 // so a kit with field errors reports those first and the cross-field ones on the next attempt.
 import { z } from "zod";
-import { CollectorNameSchema, ContenderSchema } from "./contender.js";
+import { CollectorNameSchema, ContenderSchema, type DriverType } from "./contender.js";
 import { EnvSpecSchema } from "./env.js";
 import {
   KitEnvMapSchema,
@@ -78,6 +78,32 @@ export const KitScoringSchema = z.strictObject({
 });
 export type KitScoring = z.infer<typeof KitScoringSchema>;
 
+/** Driver types whose trials are short and self-contained enough to share one computer. */
+export const PACKABLE_DRIVER_TYPES: readonly DriverType[] = ["cli", "lib", "service"];
+
+export const DEFAULT_KIT_WARMUPS = 1;
+export const DEFAULT_KIT_BLOCK_SECONDS = 600;
+
+/**
+ * How the scheduler (packages/bench) lays out trials. Omit the whole object for the defaults:
+ * one discarded warm-up per contender × workload, no packing, a 600 s billing block.
+ */
+export const KitScheduleSchema = z.strictObject({
+  /** Discarded warm-up trials per contender × workload, run before the measured ones. */
+  warmups: z.int().min(0).max(100).default(DEFAULT_KIT_WARMUPS),
+  /** Expected wall time of one trial. Required when `packing` is on. */
+  est_trial_seconds: z.int().positive().max(86_400).optional(),
+  /**
+   * Pack several short trials onto one computer per billing block. Off by default; allowed only
+   * when every contender's driver type is cli, lib or service (agents and harnesses never share).
+   */
+  packing: z.boolean().default(false),
+  /** Provider billing block in seconds (Naïve: 600). */
+  block_seconds: z.int().positive().max(86_400).default(DEFAULT_KIT_BLOCK_SECONDS),
+});
+export type KitSchedule = z.infer<typeof KitScheduleSchema>;
+export type KitScheduleInput = z.input<typeof KitScheduleSchema>;
+
 export const KitSpecSchema = z
   .strictObject({
     schema_version: z.literal(KIT_SCHEMA_VERSION, {
@@ -105,6 +131,12 @@ export const KitSpecSchema = z
     repeats: z.int().min(1).max(100),
     /** The eval computer, when the kit carries it inline. */
     env: EnvSpecSchema.optional(),
+    /** Trial layout for the scheduler. Omit for the defaults (see KitScheduleSchema). */
+    schedule: KitScheduleSchema.default({
+      warmups: DEFAULT_KIT_WARMUPS,
+      packing: false,
+      block_seconds: DEFAULT_KIT_BLOCK_SECONDS,
+    }),
   })
   .superRefine((kit, ctx) => {
     const issue = (path: PropertyKey[], message: string) =>
@@ -211,6 +243,24 @@ export const KitSpecSchema = z
         );
       }
     });
+
+    // Packing: software drivers only, and it needs a per-trial time estimate to size the blocks.
+    if (kit.schedule.packing) {
+      kit.contenders.forEach((c, i) => {
+        if (!PACKABLE_DRIVER_TYPES.includes(c.driver.type)) {
+          issue(
+            ["schedule", "packing"],
+            `packing is allowed only when every contender's driver type is ${PACKABLE_DRIVER_TYPES.join(", ")}; contenders[${i}] '${c.id}' is '${c.driver.type}'`,
+          );
+        }
+      });
+      if (kit.schedule.est_trial_seconds === undefined) {
+        issue(
+          ["schedule", "est_trial_seconds"],
+          "packing needs est_trial_seconds to size the billing blocks",
+        );
+      }
+    }
 
     // Secrets: names only, each once, never also a vary key.
     const seenSecrets = new Set<string>();
