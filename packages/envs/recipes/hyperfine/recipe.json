@@ -1,0 +1,21 @@
+{
+  "name": "hyperfine",
+  "version": "1.21.0",
+  "description": "hyperfine 1.21.0 static musl build from the GitHub release.",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {},
+  "path": [],
+  "downloads": {
+    "x64": {
+      "url": "https://github.com/sharkdp/hyperfine/releases/download/v1.21.0/hyperfine-v1.21.0-x86_64-unknown-linux-musl.tar.gz",
+      "sha256": "2c64127c1a0fc3bc58e365060b4d8a09e4632082e4dea843b8e4afb6a7b09f36",
+      "checksumSource": "github-asset-digest"
+    },
+    "arm64": {
+      "url": "https://github.com/sharkdp/hyperfine/releases/download/v1.21.0/hyperfine-v1.21.0-aarch64-unknown-linux-musl.tar.gz",
+      "sha256": "fa5247dfe4d076843dac7feacc7cc954df2961da352292bc4bb04132fec1fea2",
+      "checksumSource": "github-asset-digest"
+    }
+  }
+}

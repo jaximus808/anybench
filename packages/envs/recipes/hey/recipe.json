@@ -1,0 +1,9 @@
+{
+  "name": "hey",
+  "version": "0.1.4",
+  "description": "hey 0.1.4 HTTP load generator from the distro's signed apt repo (upstream ships no arm64 binary).",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {},
+  "path": []
+}

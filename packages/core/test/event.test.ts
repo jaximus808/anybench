@@ -95,6 +95,15 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     { provider: "vultr", idle_s: 960, last_trial_id: "trial_1", action: "destroyed" },
     { severity: "critical", actor: { kind: "system" } },
   ),
+  "computer.recipe": tdm8Event("computer.recipe", {
+    recipe: "node22",
+    version: "22.23.4",
+    phase: "healthy",
+    step: "healthcheck",
+    arch: "arm64",
+    duration_ms: 812,
+    exit_code: 0,
+  }),
   "usage.recorded": tdm8Event(
     "usage.recorded",
     {
@@ -139,7 +148,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(17);
+    expect(EVENT_TYPES).toHaveLength(18);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

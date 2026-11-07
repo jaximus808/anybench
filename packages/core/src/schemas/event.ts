@@ -55,6 +55,7 @@ export const EVENT_TYPES = [
   "computer.created",
   "computer.destroyed",
   "computer.leaked",
+  "computer.recipe",
   "usage.recorded",
   "alert.fired",
   "alert.acked",
@@ -77,6 +78,7 @@ export const EVENT_SOURCE_BY_TYPE = {
   "computer.created": "computer",
   "computer.destroyed": "computer",
   "computer.leaked": "computer",
+  "computer.recipe": "computer",
   "usage.recorded": "ledger",
   "alert.fired": "alert",
   "alert.acked": "alert",
@@ -264,6 +266,23 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
       idle_s: offset,
       last_trial_id: id.optional(),
       action: z.enum(["destroyed", "flagged"]),
+    }),
+  ),
+  /**
+   * One step of an env recipe (packages/envs/recipes/<name>) on a computer; source_id is the
+   * computer id. `skipped` means the health check already passed, so install was not run.
+   */
+  eventOf(
+    "computer.recipe",
+    z.object({
+      recipe: id,
+      version: id,
+      phase: z.enum(["started", "installed", "healthy", "skipped", "failed"]),
+      step: z.enum(["install", "healthcheck"]).optional(),
+      arch: z.enum(["x64", "arm64"]).optional(),
+      duration_ms: offset.optional(),
+      exit_code: z.int().optional(),
+      error: z.string().optional(),
     }),
   ),
   eventOf(

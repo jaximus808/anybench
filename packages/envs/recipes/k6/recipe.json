@@ -1,0 +1,23 @@
+{
+  "name": "k6",
+  "version": "2.3.0",
+  "description": "Grafana k6 2.3.0 load tester (official linux tarball), usage reporting off.",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "K6_NO_USAGE_REPORT": "true"
+  },
+  "path": [],
+  "downloads": {
+    "x64": {
+      "url": "https://github.com/grafana/k6/releases/download/v2.3.0/k6-v2.3.0-linux-amd64.tar.gz",
+      "sha256": "39c3117b6af817592dcd0ce4242105c0a7af10948c2a425306f0be8f7a8a8ab1",
+      "checksumSource": "upstream"
+    },
+    "arm64": {
+      "url": "https://github.com/grafana/k6/releases/download/v2.3.0/k6-v2.3.0-linux-arm64.tar.gz",
+      "sha256": "5ca3433e8201da72a284aaa241a1bb5fb47f4abb4e384d39410ddd8062f49b90",
+      "checksumSource": "upstream"
+    }
+  }
+}

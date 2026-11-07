@@ -1,0 +1,12 @@
+{
+  "name": "git-time",
+  "version": "git2.43.0-time1.9",
+  "description": "git and GNU time (/usr/bin/time, for max RSS and wall/CPU time) from the distro's signed apt repo.",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "ANYBENCH_GNU_TIME": "/usr/bin/time",
+    "GIT_TERMINAL_PROMPT": "0"
+  },
+  "path": []
+}
