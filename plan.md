@@ -186,7 +186,7 @@ Section 8.
   - Backups: Neon point-in-time restore (history retention window) plus a weekly `pg_dump | age` to object storage as an off-provider copy.
 - **Object storage:** Cloudflare R2 (S3 API) for logs, transcripts, kits, artifacts, backups.
 - **Company agents:** scout and account manager as Naïve deployments on schedules.
-- **Outreach (GTM, E15):** Monid finds leads that need evals (agent builders, harnesses, CLIs and dev tools, perf claims with no gate) → scout scores fit → understander + researcher + kit designer pre-build a **free eval kit** from the public repo (no compute) → an insights brief (what they'd be compared against, what we'd measure, what to improve) → a personalized email from an AgentMail inbox with an invite link → `/i/<token>`: sign in with GitHub, see the kit, link a card, press Start evals → the account manager handles replies. Founder approves drafts at first; CAN-SPAM (unsubscribe, postal address, suppression list); funnel lead → emailed → clicked → signed in → card linked → run started → delivered → published on `/company`. Positioning against competing eval factories: a correctness gate on every number, competitor pass-through, signed publishable results.
+- **Outreach (GTM, E15):** Context.dev web search (`site:github.com` queries for perf/quality claims) plus the GitHub API find leads (Monid is an optional X-only source later; see the E15 hackathon cut) that need evals (agent builders, harnesses, CLIs and dev tools, perf claims with no gate) → scout scores fit → understander + researcher + kit designer pre-build a **free eval kit** from the public repo (no compute) → an insights brief (what they'd be compared against, what we'd measure, what to improve) → a personalized email from an AgentMail inbox with an invite link → `/i/<token>`: sign in with GitHub, see the kit, link a card, press Start evals → the account manager handles replies. Founder approves drafts at first; CAN-SPAM (unsubscribe, postal address, suppression list); funnel lead → emailed → clicked → signed in → card linked → run started → delivered → published on `/company`. Positioning against competing eval factories: a correctness gate on every number, competitor pass-through, signed publishable results.
 
 ## 4. Architecture
 
@@ -465,6 +465,20 @@ TDM-1 Naïve key + plan · TDM-2 Vultr (dropped: no free credit; see H14/H15) ·
 
 ### E15. Outreach (GTM)
 15.1 Monid + AgentMail spike · 15.2 leads schema + Monid sourcing + GitHub signals · 15.3 scout scoring + free pre-built kit · 15.4 insights brief · 15.5 personalized drafts + founder approval queue · 15.6 AgentMail sending, limits, suppression, webhooks · 15.7 invite links to a ready-to-run kit · 15.8 account manager replies · 15.9 funnel metrics · 15.10 compliance and deliverability. (TDM-134..143)
+
+**Hackathon cut (decided 2026-11-07).** Goal: the first founder-approved emails go out the morning of 2026-11-08, sent by the company's own agents. The original tickets wait on E6 agents, the E7 API, E10 billing and the E11 web app, none of which exist yet. So the cut removes those dependencies and keeps everything else in the plan:
+
+| Change | Why |
+|---|---|
+| **Lead source: Context.dev, not Monid.** `web-search` with `site:github.com` + claim phrases ("faster than", "benchmark", "-N% tokens", "Claude Code harness") and `freshness`; `people-enrich` (returns email) only for leads that pass the fit check; GitHub REST API for repo signals. Monid stays an optional X-only source. | Already have Context.dev credits (543 as of 2026-11-07, refills 1,000 on 11-29); a test search returned ideal leads (perf claims with no gate). Monid's docs don't confirm email lookup or GitHub. |
+| **Hackathon opt-in import.** `anybench outreach import <csv> --source hackathon_optin` (name, email, repo) from attendees who replied to the chat post. | Opt-in beats scraping attendee LinkedIns (ToS risk, wrong-person matches). No LinkedIn scraping, no GitHub commit-email harvesting. |
+| **Scout writes a claim brief, not a pre-built kit.** One Naïve scout session: lead + `ProjectDigest` (4.2, done) → fit, the claims they make (each cited to a README/repo line), what we'd measure, the gate we'd use, what they'd be compared against. | The full pre-built kit needs 6.2/6.3/6.6. That stays as 15.3 for after E6. |
+| **Approval queue is a CLI**, `anybench outreach review` (approve / edit / reject, `approved_by` + `interventions` row). | `/admin/outreach` needs 11.1 + 7.1. The web page stays as 15.5 for later. |
+| **CTA is "reply and we'll run it"**, not an invite link. | `/i/<token>` needs E10 + E11.5. Stays as 15.7. |
+| **Replies by polling AgentMail, not webhooks.** Unsubscribe is reply-based (`List-Unsubscribe: <mailto:…?subject=unsubscribe>`) plus the postal address. | No public API deployed yet (E13). CAN-SPAM accepts a working reply address as the opt-out mechanism. |
+| **Sending domain:** the custom subdomain if H7 DNS is done in time, otherwise the AgentMail default domain. Dry-run by default; `--send` required; `OUTREACH_DAILY_SEND_LIMIT` (25) enforced. | Don't block on DNS; don't burn a new domain with volume. |
+
+Hackathon tickets (TDM-162..167, plus human setup TDM-168; all depend only on done work plus keys): 15.1a Context.dev + AgentMail + GitHub spike · 15.2a sourcing + import · 15.3a scout claim brief · 15.5a writer + CLI review queue · 15.6a sending with limits and suppression (polling) · 15.8a reply polling, classification and `outreach stats`. The originals 15.1, 15.2, 15.4 are superseded; 15.3, 15.5, 15.6, 15.7, 15.8, 15.9, 15.10 stay for after the hackathon.
 
 ## 16. Conventions for the swarm
 
