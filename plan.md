@@ -4,7 +4,7 @@
 
 **Status:** building for production. v1 written 2026-11-07 for the YC Naïve hackathon; v2 the same day after four architecture reviews (eval computers, observability, billing and security, Tandem and the swarm). This file is the source of truth for the agent swarm; update it when a decision changes.
 
-**Ships at:** `https://anybench.jaxonp.com` (web, Vercel) and `https://api.anybench.jaxonp.com` (API + worker + Postgres, Vultr).
+**Ships at:** `https://anybench.jaxonp.com` (web, Vercel) and `https://api.anybench.jaxonp.com` (API + worker, Vultr) with the database on **Neon** Postgres ($250 Neon credit).
 
 **Acceptance test for the whole product:** benchmark **Tandem** (×1, ×3, ×5 workers) against plain Claude Code and Claude Code with subagents, end to end in prod, billed through Stripe (or comped by an admin), watched live, and published as an embeddable result (E14.4).
 
@@ -180,7 +180,10 @@ Section 8.
 - **Control-plane API and worker** (`apps/server`, Hono on Node, one image with two commands, on Vultr): REST + SSE, runner ingest, GitHub OAuth, Stripe and Naïve webhooks, graphile-worker jobs.
 - **MCP server** (`packages/mcp`, stdio and streamable HTTP at `/mcp`): agents look into running evals (section 6).
 - **CLI and Claude Code skill** (`apps/cli`): `anybench login | init | kit validate | run | watch | logs | report | publish | verify`, plus a `/anybench` skill that bundles a local repo or `.claude/` setup.
-- **Database:** Postgres 16 with Drizzle. **Jobs:** graphile-worker (Postgres only, no Redis).
+- **Database:** **Neon** serverless Postgres (16+) with Drizzle; $250 of Neon credit. Region `aws-us-east-1`, next to Vultr `ewr`. **Jobs:** graphile-worker (Postgres only, no Redis).
+  - Two connection strings: `DATABASE_URL` is Neon's **pooled** endpoint (PgBouncer, transaction mode) for API queries; `DATABASE_URL_DIRECT` is the **unpooled** endpoint for migrations, graphile-worker and the event `LISTEN` connection. LISTEN/NOTIFY and session-level `SET` don't survive transaction pooling, so anything that LISTENs or holds a session must use the direct URL. RLS uses `SET LOCAL` inside a transaction, which is pooler-safe.
+  - Neon branches: `main` = prod, `dev` = local development, and a throwaway branch per CI e2e run (created and deleted through the Neon API). Offline unit tests still use a local Docker Postgres.
+  - Backups: Neon point-in-time restore (history retention window) plus a weekly `pg_dump | age` to object storage as an off-provider copy.
 - **Object storage:** Vultr Object Storage (S3 API) for logs, transcripts, kits, artifacts, backups.
 - **Company agents:** scout and account manager as Naïve deployments on schedules.
 - **Outreach (GTM, E15):** Monid finds leads that need evals (agent builders, harnesses, CLIs and dev tools, perf claims with no gate) → scout scores fit → understander + researcher + kit designer pre-build a **free eval kit** from the public repo (no compute) → an insights brief (what they'd be compared against, what we'd measure, what to improve) → a personalized email from an AgentMail inbox with an invite link → `/i/<token>`: sign in with GitHub, see the kit, link a card, press Start evals → the account manager handles replies. Founder approves drafts at first; CAN-SPAM (unsubscribe, postal address, suppression list); funnel lead → emailed → clicked → signed in → card linked → run started → delivered → published on `/company`. Positioning against competing eval factories: a correctness gate on every number, competitor pass-through, signed publishable results.
@@ -195,7 +198,7 @@ Section 8.
                                 │ REST (cookie, same-site)           │ SSE /runs/:id/stream
                  ┌──────────────▼──────────── Vultr VM ──────────────┴──────────────┐
   agents ─MCP─▶  │ apps/server  api.anybench.jaxonp.com (Caddy TLS)                   │
-  CLI ────────▶  │  Hono API ── Postgres 16 ── graphile-worker (orchestrator, alerts) │
+  CLI ────────▶  │  Hono API ─────── graphile-worker (orchestrator, alerts) ── Neon  │
   Stripe ─hook─▶ │  /webhooks/stripe  /v1/trials/:id/events  /badge  /mcp            │
                  └──┬──────────────┬─────────────────┬──────────────┬───────────────┘
                     │ Naïve SDK    │ Naïve SDK        │ Vultr API    │ S3 API
@@ -367,12 +370,13 @@ All of our own agent work runs as Naïve agents and sessions, paid from the **$2
 | Piece | Where | How |
 |---|---|---|
 | `apps/web` | Vercel, `anybench.jaxonp.com` | GitHub integration; prod env in Vercel; `NEXT_PUBLIC_*` only for public values |
-| `apps/server` + worker + Postgres + Caddy | Vultr VM (Ubuntu, 4 vCPU), `api.anybench.jaxonp.com` | One image (GHCR), two commands. Docker Compose: `migrate` (one-shot), `server`, `worker`, `postgres`, `caddy`. Deploy script pulls and restarts |
+| `apps/server` + worker + Caddy | Vultr VM (Ubuntu, 4 vCPU), `api.anybench.jaxonp.com` | One image (GHCR), two commands. Docker Compose: `migrate` (one-shot), `server`, `worker`, `caddy`. Deploy script pulls and restarts |
+| Database | Neon Postgres, project `anybench`, region aws-us-east-1 | `main` branch for prod, `dev` branch for local, per-CI-run branches; pooled URL for the API, direct URL for worker, LISTEN and migrations |
 | Eval computers | Naïve (default), Vultr (heavy) | `packages/providers` |
 | Agents | Naïve | synced on deploy |
 | DNS (jaxonp.com zone) | registrar/DNS host | `anybench` CNAME `cname.vercel-dns.com`; `api.anybench` A/AAAA → Vultr IP; Resend SPF/DKIM/DMARC |
 | Secrets | `.env` locally (fill-in sheet at repo root), Vercel env, `/etc/anybench.env` on Vultr (root, 0600) | Never committed. `.env.example` lists every key |
-| Backups | Nightly `pg_dump | age` → object storage, 30 days, monthly restore drill | `BACKUP_AGE_RECIPIENT` |
+| Backups | Neon point-in-time restore + weekly `pg_dump | age` → object storage (off-provider copy), monthly restore drill into a Neon branch | `BACKUP_AGE_RECIPIENT` |
 | Migrations | `drizzle-kit generate` SQL committed; `migrate` runs before `server` | never `push` in prod |
 | CI/CD | GitHub Actions: build, typecheck, test → image → deploy on `main` | Vercel deploys web |
 
