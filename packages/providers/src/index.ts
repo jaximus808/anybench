@@ -1,2 +1,6 @@
-// @anybench/providers: ComputeProvider + naive, vultr, docker-local, fake. Placeholder from TDM-6 (1.0 scaffold).
-export {};
+// @anybench/providers: one ComputeProvider interface over naive, vultr, docker-local and fake.
+// The contract suite lives at the `@anybench/providers/contract` subpath (it imports vitest).
+export * from "./errors.js";
+export * from "./types.js";
+export * from "./helpers.js";
+export * from "./fake.js";
