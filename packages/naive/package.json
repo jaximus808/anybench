@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./fake": {
+      "types": "./dist/fake.d.ts",
+      "import": "./dist/fake.js"
     }
   },
   "main": "./dist/index.js",
@@ -22,6 +26,7 @@
   },
   "dependencies": {
     "@anybench/core": "workspace:*",
-    "@usenaive-sdk/managed-agents": "^0.12.3"
+    "@usenaive-sdk/managed-agents": "^0.12.3",
+    "zod": "^4.6.7"
   }
 }

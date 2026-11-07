@@ -1,2 +1,18 @@
-// @anybench/naive: wrapper over @usenaive-sdk/managed-agents + FakeNaive. Placeholder from TDM-6 (1.0 scaffold).
-export {};
+// @anybench/naive: the only path from Anybench's own agents to a model. Wraps
+// @usenaive-sdk/managed-agents behind `NaiveClient`; `FakeNaive` (also at `@anybench/naive/fake`)
+// implements the same interface in memory for offline tests.
+
+export * from "./money.js";
+export * from "./errors.js";
+export * from "./types.js";
+export {
+  createNaiveClient,
+  createNaiveClientFromEnv,
+  DEFAULT_NAIVE_BASE_URL,
+  NaiveClientOptionsSchema,
+  type NaiveClientOptions,
+} from "./client.js";
+export * from "./agents.js";
+export * from "./session.js";
+export * from "./credits.js";
+export * from "./fake.js";
