@@ -2,9 +2,39 @@
 
 git 2.50.1 (Apple Git-155), macOS, 2026-11-07.
 
-## Partial + shallow fetch without a checkout
+## Two-step partial + shallow fetch without a checkout
 
-We never `git clone`. `init` + `remote add` + one `fetch` gives a promisor repo we read straight from objects:
+We never `git clone` and never check out. `init` + `remote add -- origin <url>` + two fetches, read straight from objects:
+
+1. The tip with blobs up to 1 MiB: `fetch --no-tags --no-recurse-submodules --depth=1 --filter=blob:limit=1m origin --end-of-options <ref>`. The commit is then `rev-parse --verify -q --end-of-options FETCH_HEAD^{commit}`.
+2. History for the commit log, as commits and trees only: `fetch ... --deepen=<depth-1> --filter=blob:none origin --end-of-options <sha>`. Fetching by sha means a branch that moves between the two steps can't swap the tip.
+
+Run against a 4-commit file:// repo:
+
+```sh
+git -c remote.origin.promisor=true -c remote.origin.partialclonefilter=blob:limit=1m \
+  fetch -q --no-tags --no-recurse-submodules --depth=1 --filter=blob:limit=1m origin --end-of-options HEAD
+C=$(git rev-parse --verify -q --end-of-options 'FETCH_HEAD^{commit}')   # c963fb25...
+git -c remote.origin.promisor=true fetch -q --no-tags --no-recurse-submodules \
+  --deepen=199 --filter=blob:none origin --end-of-options $C              # exit 0
+git log --oneline $C | wc -l    # 4
+ls .git/shallow                 # No such file (deepening to the root clears it)
+```
+
+Gotchas:
+
+- Without `--verify`, `git rev-parse --end-of-options X` prints the literal `--end-of-options` as part of its output. Use `--verify -q`.
+- With `--end-of-options`, an option-shaped ref is read as a refspec and refused: `git fetch origin --end-of-options '--upload-pack=touch PWNED;git-upload-pack'` gives `fatal: invalid refspec '--upload-pack=...'` and no PWNED file. Refs are also validated up front (`isSafeGitRef`: no leading `-`, no whitespace, control characters, `..`, `:`, `^`, `~`, `?`, `*`, `[`, `\`, `@{` or `.lock`; any 40-hex sha is allowed). A bad URL ref gives `bad_url`, a bad local `rev` gives `bad_ref`.
+- git config is passed through `GIT_CONFIG_COUNT/KEY_n/VALUE_n`: `protocol.allow=never` plus `protocol.https.allow=always` and `protocol.file.allow=always` (no ext::, ssh or git://), `fetch.recurseSubmodules=false`, and the token header.
+
+## Bounds
+
+- Each git command has its own timeout (180 s) and shares the deadline of the whole ingest (`deadlineMs`, 300 s by default). Past it, ingest throws `timeout`.
+- Each git command's stdout is capped at 64 MiB, or `too_large`. Blob reads are cut short at their cap instead of failing.
+- A tree with more than 200,000 entries throws `too_large`.
+- Ordering uses code points, not `localeCompare`, so output is byte-identical across machines. Tests check this on two runs of the local path and two of the file:// path, and check that local and remote output match.
+
+## Filtered blobs and the commit log
 
 ```sh
 git init -q dst && cd dst && git remote add origin file://$PWD/../src
@@ -27,7 +57,7 @@ git ls-tree -r FETCH_HEAD | awk '{print $3}' \
 ## Fixture runs
 
 ```sh
-pnpm --filter @anybench/kit exec tsx scripts/gen-digest-fixtures.ts
-# agentcanvas: 92196 bytes, 628 files, 4445 ms
-# hyperfine: 39199 bytes, 75 files, 3507 ms
+pnpm --filter @anybench/kit exec tsx scripts/gen-digest-fixtures.ts /Users/jaxon/coding-project/agentcanvas
+# agentcanvas: 92196 bytes, 628 files, 5915 ms
+# hyperfine: 39199 bytes, 75 files, 4478 ms   (two-step fetch; commits_scanned 200)
 ```

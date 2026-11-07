@@ -172,7 +172,7 @@
       "total_bytes": 37064913
     },
     "suggested_driver_types": ["harness", "coding-agent", "cli", "service", "web", "lib"],
-    "ingested_at": "2026-11-07T21:50:07.442Z",
+    "ingested_at": "2026-11-07T22:34:47.043Z",
     "hash": "9c28642578d1a96f00f1c164d7ca36792c6fb0cb7ab90d3cac5cb54cf70f14fc"
   },
   "context": {
@@ -1071,15 +1071,15 @@
         "truncated": false
       },
       {
-        "path": "apps/api/go.mod",
-        "kind": "go.mod",
-        "text": "module github.com/agentcanvas/api\n\ngo 1.25.8\n\nrequire (\n\tgithub.com/go-chi/chi/v5 v5.1.0\n\tgithub.com/go-chi/cors v1.2.1\n\tgithub.com/golang-jwt/jwt/v5 v5.2.1\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/gorilla/websocket v1.5.3\n\tgoogle.golang.org/api v0.282.0\n\tmodernc.org/sqlite v1.59.0\n)\n\nrequire (\n\tcloud.google.com/go/auth v0.20.0 // indirect\n\tcloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect\n\tcloud.google.com/go/compute/metadata v0.9.0 // indirect\n\tgithub.com/cespare/xxhash/v2 v2.3.0 // indirect\n\tgithub.com/dustin/go-humanize v1.0.1 // indirect\n\tgithub.com/felixge/httpsnoop v1.0.4 // indirect\n\tgithub.com/go-logr/logr v1.4.3 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/google/s2a-go v0.1.9 // indirect\n\tgithub.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect\n\tgithub.com/googleapis/gax-go/v2 v2.22.0 // indirect\n\tgithub.com/mattn/go-isatty v0.0.24 // indirect\n\tgithub.com/ncruces/go-strftime v1.0.0 // indirect\n\tgithub.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect\n\tgo.opentelemetry.io/otel v1.43.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.43.0 // indirect\n\tgo.opentelemetry.io/otel/trace v1.43.0 // indirect\n\tgolang.org/x/crypto v0.51.0 // indirect\n\tgolang.org/x/net v0.55.0 // indirect\n\tgolang.org/x/oauth2 v0.36.0 // indirect\n\tgolang.org/x/sys v0.47.0 // indirect\n\tgolang.org/x/text v0.37.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect\n\tgoogle.golang.org/grpc v1.81.1 // indirect\n\tgoogle.golang.org/protobuf v1.36.11 // indirect\n\tmodernc.org/libc v1.75.7 // indirect\n\tmodernc.org/mathutil v1.7.1 // indirect\n\tmodernc.org/memory v1.12.1 // indirect\n)\n",
-        "truncated": false
-      },
-      {
         "path": "apps/api/Makefile",
         "kind": "Makefile",
         "text": ".PHONY: build run test tidy dist\n\n# Host-platform binary with the embedded web bundle → ../../dist/tandem\ndist:\n\t../../scripts/build.sh\n\n# API only (no web bundle refresh): quick local build\nbuild:\n\tgo build -o bin/tandem ./cmd/server\n\n# Local mode, data under ~/.tandem; set WEB_DIST_PATH=../../apps/web/dist to\n# serve a freshly built web bundle instead of the embedded one.\nrun:\n\tgo run ./cmd/server\n\ntest:\n\tgo test ./...\n\ntidy:\n\tgo mod tidy\n",
+        "truncated": false
+      },
+      {
+        "path": "apps/api/go.mod",
+        "kind": "go.mod",
+        "text": "module github.com/agentcanvas/api\n\ngo 1.25.8\n\nrequire (\n\tgithub.com/go-chi/chi/v5 v5.1.0\n\tgithub.com/go-chi/cors v1.2.1\n\tgithub.com/golang-jwt/jwt/v5 v5.2.1\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/gorilla/websocket v1.5.3\n\tgoogle.golang.org/api v0.282.0\n\tmodernc.org/sqlite v1.59.0\n)\n\nrequire (\n\tcloud.google.com/go/auth v0.20.0 // indirect\n\tcloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect\n\tcloud.google.com/go/compute/metadata v0.9.0 // indirect\n\tgithub.com/cespare/xxhash/v2 v2.3.0 // indirect\n\tgithub.com/dustin/go-humanize v1.0.1 // indirect\n\tgithub.com/felixge/httpsnoop v1.0.4 // indirect\n\tgithub.com/go-logr/logr v1.4.3 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/google/s2a-go v0.1.9 // indirect\n\tgithub.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect\n\tgithub.com/googleapis/gax-go/v2 v2.22.0 // indirect\n\tgithub.com/mattn/go-isatty v0.0.24 // indirect\n\tgithub.com/ncruces/go-strftime v1.0.0 // indirect\n\tgithub.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect\n\tgo.opentelemetry.io/otel v1.43.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.43.0 // indirect\n\tgo.opentelemetry.io/otel/trace v1.43.0 // indirect\n\tgolang.org/x/crypto v0.51.0 // indirect\n\tgolang.org/x/net v0.55.0 // indirect\n\tgolang.org/x/oauth2 v0.36.0 // indirect\n\tgolang.org/x/sys v0.47.0 // indirect\n\tgolang.org/x/text v0.37.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect\n\tgoogle.golang.org/grpc v1.81.1 // indirect\n\tgoogle.golang.org/protobuf v1.36.11 // indirect\n\tmodernc.org/libc v1.75.7 // indirect\n\tmodernc.org/mathutil v1.7.1 // indirect\n\tmodernc.org/memory v1.12.1 // indirect\n)\n",
         "truncated": false
       },
       {

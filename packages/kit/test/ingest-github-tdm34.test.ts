@@ -1,7 +1,15 @@
 // TDM-34 [4.2]: GitHub / local repo ingest. No network: a tiny git repo in a temp dir stands in for
 // GitHub (fetched over file://), plus the committed digest fixtures.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +23,7 @@ import {
   ingestLocalRepo,
   ingestRepo,
   isBenchPath,
+  isSafeGitRef,
   isTestPath,
   parseGitHubUrl,
   serializeRepoIngest,
@@ -125,6 +134,41 @@ describe("parseGitHubUrl", () => {
     for (const s of ["https://gitlab.com/a/b", "not a url", "https://github.com/onlyowner"]) {
       expect(() => parseGitHubUrl(s)).toThrow(IngestError);
     }
+  });
+
+  it("refuses refs that git could read as options or revision expressions", () => {
+    for (const s of [
+      "a/b#--upload-pack=x",
+      "a/b#--upload-pack=touch /tmp/PWNED;git-upload-pack",
+      "https://github.com/a/b/tree/-x",
+      "https://github.com/a/b#-c",
+      "a/b@-x",
+      "a/b#main~1",
+      "a/b#HEAD^",
+      "a/b#a..b",
+      "a/b#x:y",
+      "a/b#br anch",
+      "a/b#x@{1}",
+      "a/b#x*",
+      "a/b#x[1]",
+      "a/b#x\\y",
+      "a/b#x?",
+      "a/b#.hidden",
+      "a/b#x.lock",
+    ]) {
+      let err: unknown;
+      try {
+        parseGitHubUrl(s);
+      } catch (e) {
+        err = e;
+      }
+      expect(err, s).toBeInstanceOf(IngestError);
+      expect((err as IngestError).code, s).toBe("bad_url");
+    }
+    expect(isSafeGitRef("release/1.x")).toBe(true);
+    expect(isSafeGitRef("v1.2.0-beta.1")).toBe(true);
+    expect(isSafeGitRef("a".repeat(40).replace(/a/g, "f"))).toBe(true);
+    expect(isSafeGitRef("-f")).toBe(false);
   });
 });
 
@@ -245,6 +289,26 @@ describe("ingestLocalRepo", SLOW, () => {
     });
   });
 
+  it("refuses an unsafe rev before running git with it", async () => {
+    const marker = join(base, "PWNED-local");
+    for (const rev of [`--output=${marker}`, "-x", "HEAD~1", "main^{tree}", "a b"]) {
+      await expect(ingestLocalRepo(repo, { rev }), rev).rejects.toMatchObject({ code: "bad_ref" });
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("gives up at the deadline", async () => {
+    await expect(ingestLocalRepo(repo, { deadlineMs: 0 })).rejects.toMatchObject({
+      code: "timeout",
+    });
+  });
+
+  it("is byte-for-byte deterministic", async () => {
+    const a = serializeRepoIngest(await ingestLocalRepo(repo, { now: NOW }));
+    const b = serializeRepoIngest(await ingestLocalRepo(repo, { now: NOW }));
+    expect(b.equals(a)).toBe(true);
+  });
+
   it("rejects a non-repo", async () => {
     const plain = join(base, "plain");
     mkdirSync(plain);
@@ -298,6 +362,36 @@ describe("ingestGitHubRepo (fetched over file://, no network)", SLOW, () => {
     expect(r.context.commits_scanned).toBe(1);
     expect(r.context.recent_test_commits).toEqual([]);
     expect(r.context.tree.paths).not.toContain("src/other.ts");
+  });
+
+  it("does not let a ref inject git options (no upload-pack runs)", async () => {
+    const marker = join(base, "PWNED-remote");
+    const err = await ingestGitHubRepo(
+      `acme/widget#--upload-pack=touch ${marker};git-upload-pack`,
+      { cloneUrl: `file://${repo}` },
+    ).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "bad_url" });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("is byte-for-byte deterministic, and matches the local read", async () => {
+    const opts = { cloneUrl: `file://${repo}`, now: NOW };
+    const a = serializeRepoIngest(await ingestGitHubRepo("acme/widget", opts));
+    const b = serializeRepoIngest(await ingestGitHubRepo("acme/widget", opts));
+    expect(b.equals(a)).toBe(true);
+    const local = serializeRepoIngest(await ingestLocalRepo(repo, { now: NOW }));
+    expect(local.toString("utf8")).toBe(a.toString("utf8"));
+  });
+
+  it("fetches history without blobs (two-step fetch)", async () => {
+    const r = await ingestGitHubRepo("acme/widget", {
+      cloneUrl: `file://${repo}`,
+      now: NOW,
+      depth: 2,
+    });
+    // depth 2 = tip + one more commit; the second is the shallow boundary, so it is skipped.
+    expect(r.context.commits_scanned).toBe(2);
+    expect(r.context.recent_test_commits).toEqual([]);
   });
 
   it("ingestRepo routes local dirs and URLs", async () => {

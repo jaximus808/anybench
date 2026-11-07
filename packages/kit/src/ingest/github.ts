@@ -37,7 +37,14 @@ import {
 // Errors and options
 
 export type IngestErrorCode =
-  "bad_url" | "not_a_repo" | "no_github_remote" | "git_failed" | "too_large" | "invalid_digest";
+  | "bad_url"
+  | "bad_ref"
+  | "not_a_repo"
+  | "no_github_remote"
+  | "git_failed"
+  | "timeout"
+  | "too_large"
+  | "invalid_digest";
 
 export class IngestError extends Error {
   readonly code: IngestErrorCode;
@@ -57,8 +64,10 @@ export interface IngestOptions {
   now?: () => Date;
   /** Max serialized size of the result in bytes. Default (and ceiling) 200 KB. */
   maxBytes?: number;
-  /** Fetch timeout in ms. Default 180 s. */
+  /** Per-git-command timeout in ms. Default 180 s. */
   timeoutMs?: number;
+  /** Deadline for the whole ingest in ms (every git command shares it). Default 300 s. */
+  deadlineMs?: number;
 }
 
 export interface GitHubIngestOptions extends IngestOptions {
@@ -72,7 +81,7 @@ export interface GitHubIngestOptions extends IngestOptions {
 }
 
 export interface LocalIngestOptions extends IngestOptions {
-  /** Commit-ish to read. Default `HEAD`. */
+  /** Branch, tag or 40-hex sha to read (validated like a URL ref). Default `HEAD`. */
   rev?: string;
   /** GitHub URL for the digest's `source` when the repo has no github.com remote. */
   githubUrl?: string;
@@ -91,6 +100,35 @@ export interface GitHubRepoRef {
 }
 
 const NAME_RE = /^[A-Za-z0-9_.-]+$/;
+const SHA_RE = /^[a-f0-9]{40}$/;
+
+/**
+ * Is `ref` safe to hand to git as a branch, tag or sha? Refs come from user input (`#ref`, `@ref`,
+ * `/tree/<ref>`, `rev`) and end up as positional git arguments, so anything that could read as an
+ * option or a revision expression is refused: a leading `-`, whitespace or control characters,
+ * `..`, `:`, `^`, `~`, `?`, `*`, `[`, `\`, `@{`, and the other `git check-ref-format` rules.
+ * A 40-hex sha is always fine. (Every positional ref also goes after `--end-of-options`.)
+ */
+export function isSafeGitRef(ref: string): boolean {
+  if (SHA_RE.test(ref)) return true;
+  if (ref.length === 0 || ref.length > 255) return false;
+  if (ref.startsWith("-") || ref.startsWith("/") || ref.startsWith(".")) return false;
+  if (ref.endsWith("/") || ref.endsWith(".") || ref.endsWith(".lock")) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(ref)) return false;
+  if (ref.includes("..") || ref.includes("@{") || ref.includes("//") || ref === "@") return false;
+  return !ref.split("/").some((seg) => seg.startsWith(".") || seg.endsWith(".lock"));
+}
+
+function checkRef(ref: string, code: "bad_url" | "bad_ref", input: string): string {
+  if (!isSafeGitRef(ref)) {
+    throw new IngestError(
+      code,
+      `unsafe git ref ${JSON.stringify(ref)} in ${JSON.stringify(input)}`,
+    );
+  }
+  return ref;
+}
 
 /**
  * Accepts `https://github.com/o/r(.git)`, `https://github.com/o/r/tree/<ref>`, `github.com/o/r`,
@@ -143,6 +181,7 @@ export function parseGitHubUrl(input: string): GitHubRepoRef {
   if (ref === undefined && (parts[2] === "tree" || parts[2] === "commit") && parts.length > 3) {
     ref = parts.slice(3).join("/");
   }
+  if (ref !== undefined) checkRef(ref, "bad_url", input);
   return { owner, repo, ref, url: `https://github.com/${owner}/${repo}` };
 }
 
@@ -160,7 +199,14 @@ interface GitCtx {
   env: NodeJS.ProcessEnv;
   redact: Redactor;
   timeoutMs: number;
+  /** Epoch ms after which no git command may run. */
+  deadline: number;
 }
+
+/** Default cap on one git command's stdout. */
+const MAX_GIT_STDOUT = 64 * 1024 * 1024;
+/** Trees bigger than this are refused (`too_large`) rather than digested. */
+export const MAX_TREE_ENTRIES = 200_000;
 
 function baseGitEnv(token: string | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -175,48 +221,105 @@ function baseGitEnv(token: string | undefined): NodeJS.ProcessEnv {
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
   delete env.GIT_INDEX_FILE;
-  // The token goes in as config through the environment, never on the command line.
-  delete env.GIT_CONFIG_COUNT;
+  // Config goes in through the environment, so the token is never on the command line. Only the
+  // https and file transports are allowed (no ext::, ssh, git://), and submodules are never fetched.
+  const config: Array<[string, string]> = [
+    ["protocol.allow", "never"],
+    ["protocol.https.allow", "always"],
+    ["protocol.file.allow", "always"],
+    ["fetch.recurseSubmodules", "false"],
+  ];
   if (token) {
     const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
-    env.GIT_CONFIG_COUNT = "1";
-    env.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
-    env.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${basic}`;
+    config.push(["http.https://github.com/.extraheader", `AUTHORIZATION: basic ${basic}`]);
   }
+  for (const k of Object.keys(env))
+    if (/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)) delete env[k];
+  env.GIT_CONFIG_COUNT = String(config.length);
+  config.forEach(([k, v], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = k;
+    env[`GIT_CONFIG_VALUE_${i}`] = v;
+  });
   return env;
 }
 
-function runGit(ctx: GitCtx, args: string[], input?: string): Promise<GitResult> {
+interface RunOpts {
+  input?: string;
+  /** Max stdout bytes. Default 64 MiB. */
+  maxStdout?: number;
+  /** Past `maxStdout`, stop and return what was read instead of failing with `too_large`. */
+  truncate?: boolean;
+}
+
+function runGit(ctx: GitCtx, args: string[], ro: RunOpts = {}): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
+    const remaining = ctx.deadline - Date.now();
+    if (remaining <= 0) {
+      reject(new IngestError("timeout", "ingest deadline passed"));
+      return;
+    }
     const child = spawn("git", ["-c", "core.quotePath=false", ...args], {
       cwd: ctx.cwd,
       env: ctx.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    const maxStdout = ro.maxStdout ?? MAX_GIT_STDOUT;
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    const timer = setTimeout(() => child.kill("SIGKILL"), ctx.timeoutMs);
-    child.stdout.on("data", (b: Buffer) => out.push(b));
-    child.stderr.on("data", (b: Buffer) => err.push(b));
+    let outBytes = 0;
+    let errBytes = 0;
+    let stopped: "timeout" | "too_large" | "truncated" | undefined;
+    const timer = setTimeout(
+      () => {
+        stopped = "timeout";
+        child.kill("SIGKILL");
+      },
+      Math.min(ctx.timeoutMs, remaining),
+    );
+    child.stdout.on("data", (b: Buffer) => {
+      if (stopped) return;
+      if (outBytes + b.length > maxStdout) {
+        out.push(b.subarray(0, maxStdout - outBytes));
+        outBytes = maxStdout;
+        stopped = ro.truncate ? "truncated" : "too_large";
+        child.kill("SIGKILL");
+        return;
+      }
+      out.push(b);
+      outBytes += b.length;
+    });
+    child.stderr.on("data", (b: Buffer) => {
+      if (errBytes < 64 * 1024) err.push(b);
+      errBytes += b.length;
+    });
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(new IngestError("git_failed", ctx.redact(`could not run git: ${e.message}`)));
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      const what = args[0] ?? "git";
+      if (stopped === "timeout") {
+        reject(new IngestError("timeout", `git ${what} timed out`));
+        return;
+      }
+      if (stopped === "too_large") {
+        reject(new IngestError("too_large", `git ${what} printed more than ${maxStdout} bytes`));
+        return;
+      }
       resolvePromise({
         stdout: Buffer.concat(out),
         stderr: Buffer.concat(err).toString("utf8") + (signal ? `\n(killed by ${signal})` : ""),
-        code: code ?? 1,
+        code: stopped === "truncated" ? 0 : (code ?? 1),
       });
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(input ?? "");
+    child.stdin.end(ro.input ?? "");
   });
 }
 
-async function git(ctx: GitCtx, args: string[], input?: string): Promise<string> {
-  const r = await runGit(ctx, args, input);
+async function git(ctx: GitCtx, args: string[], ro: RunOpts = {}): Promise<string> {
+  const r = await runGit(ctx, args, ro);
   if (r.code !== 0) {
     const what = args
       .filter((a) => !a.includes("://"))
@@ -245,21 +348,22 @@ interface TreeEntry {
 const FILTER_LIMIT = 1024 * 1024;
 
 async function readTree(ctx: GitCtx, commit: string): Promise<TreeEntry[]> {
-  const raw = await git(ctx, ["ls-tree", "-r", "-z", "--full-tree", commit]);
+  const raw = await git(ctx, ["ls-tree", "-r", "-z", "--full-tree", "--end-of-options", commit]);
   const entries: TreeEntry[] = [];
   for (const rec of raw.split("\0")) {
     if (!rec) continue;
+    if (entries.length >= MAX_TREE_ENTRIES) {
+      throw new IngestError("too_large", `tree has more than ${MAX_TREE_ENTRIES} files`);
+    }
     const tab = rec.indexOf("\t");
     const [mode, type, sha] = rec.slice(0, tab).split(" ");
     if (type !== "blob" || !mode || !sha) continue; // submodules (type commit) are skipped
     entries.push({ path: rec.slice(tab + 1), mode, sha, size: 0, missing: false });
   }
   if (entries.length === 0) return entries;
-  const check = await git(
-    ctx,
-    ["cat-file", "--batch-check=%(objectname) %(objectsize)"],
-    entries.map((e) => e.sha).join("\n") + "\n",
-  );
+  const check = await git(ctx, ["cat-file", "--batch-check=%(objectname) %(objectsize)"], {
+    input: entries.map((e) => e.sha).join("\n") + "\n",
+  });
   const sizes = new Map<string, number>();
   for (const line of check.split("\n")) {
     const [sha, size] = line.split(" ");
@@ -279,9 +383,12 @@ async function readTree(ctx: GitCtx, commit: string): Promise<TreeEntry[]> {
 
 async function readBlob(ctx: GitCtx, entry: TreeEntry, cap: number): Promise<string | undefined> {
   if (entry.missing || entry.mode === "120000") return undefined;
-  const r = await runGit(ctx, ["cat-file", "blob", entry.sha]);
+  const r = await runGit(ctx, ["cat-file", "blob", entry.sha], {
+    maxStdout: cap * 4,
+    truncate: true,
+  });
   if (r.code !== 0) return undefined;
-  const buf = r.stdout.subarray(0, cap * 4);
+  const buf = r.stdout;
   if (buf.includes(0)) return undefined; // binary
   return buf.toString("utf8");
 }
@@ -306,6 +413,7 @@ async function readCommits(
     "--no-merges",
     "--name-only",
     "--format=%x1e%H%x1f%cI%x1f%s",
+    "--end-of-options",
     commit,
   ]);
   const commits: CommitInfo[] = [];
@@ -452,6 +560,8 @@ function manifestKind(path: string): RepoManifestKind | undefined {
   }
 }
 
+/** Code-point order: the same on every machine and locale, so digests are byte-reproducible. */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const depthOf = (p: string): number => p.split("/").length - 1;
 const dirOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
 
@@ -459,11 +569,11 @@ function groupPaths(paths: string[], maxDirs: number, maxSample: number): RepoPa
   const byDir = new Map<string, number>();
   for (const p of paths) byDir.set(dirOf(p), (byDir.get(dirOf(p)) ?? 0) + 1);
   const dirs = [...byDir.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .sort((a, b) => b[1] - a[1] || cmp(a[0], b[0]))
     .slice(0, maxDirs)
     .map(([d]) => d);
   const sample = [...paths]
-    .sort((a, b) => depthOf(a) - depthOf(b) || a.localeCompare(b))
+    .sort((a, b) => depthOf(a) - depthOf(b) || cmp(a, b))
     .slice(0, maxSample);
   return { files: paths.length, dirs, sample };
 }
@@ -613,7 +723,7 @@ function sortTags(tags: string[]): { latest?: string; tags: string[] } {
         const d = (b.k[i] ?? 0) - (a.k[i] ?? 0);
         if (d !== 0) return d;
       }
-      return a.t.localeCompare(b.t);
+      return cmp(a.t, b.t);
     })
     .map((x) => x.t);
   const rest = tags
@@ -659,7 +769,7 @@ async function analyze(a: Analysis): Promise<RepoIngest> {
   // --- manifests: root first, then shallow ones; never from noise dirs
   const manifestEntries = files
     .filter((f) => manifestKind(f.path) && !NOISE_DIR_RE.test(f.path) && depthOf(f.path) <= 3)
-    .sort((x, y) => depthOf(x.path) - depthOf(y.path) || x.path.localeCompare(y.path))
+    .sort((x, y) => depthOf(x.path) - depthOf(y.path) || cmp(x.path, y.path))
     .slice(0, CAPS.manifests);
   const manifests: RepoManifest[] = [];
   const manifestFull = new Map<string, string>();
@@ -700,7 +810,7 @@ async function analyze(a: Analysis): Promise<RepoIngest> {
     if (lang) langBytes.set(lang, (langBytes.get(lang) ?? 0) + f.size);
   }
   const languages = [...langBytes.entries()]
-    .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+    .sort((x, y) => y[1] - x[1] || cmp(x[0], y[0]))
     .slice(0, 15)
     .map(([name, bytes]) => ({ name, bytes }));
 
@@ -808,9 +918,7 @@ async function analyze(a: Analysis): Promise<RepoIngest> {
       : paths.filter((p) => p.startsWith(`${dir}/`)).map((p) => p.slice(dir.length + 1));
   const toolDirs = [
     ...new Set([...manifestFull.keys()].filter((p) => depthOf(p) <= 2).map(dirOf)),
-  ].sort((x, y) =>
-    x === "." ? -1 : y === "." ? 1 : depthOf(x) - depthOf(y) || x.localeCompare(y),
-  );
+  ].sort((x, y) => (x === "." ? -1 : y === "." ? 1 : depthOf(x) - depthOf(y) || cmp(x, y)));
   for (const dir of toolDirs) {
     const text = (name: string): string | undefined => manifestFull.get(at(dir, name));
     const rel = under(dir);
@@ -1095,7 +1203,7 @@ async function analyze(a: Analysis): Promise<RepoIngest> {
       tree: {
         paths: orderedPaths.slice(0, treeCap),
         dirs: [...dirStats.entries()]
-          .sort((x, y) => y[1].bytes - x[1].bytes || x[0].localeCompare(y[0]))
+          .sort((x, y) => y[1].bytes - x[1].bytes || cmp(x[0], y[0]))
           .slice(0, dirCap)
           .map(([path, s]) => ({ path, ...s })),
         truncated: orderedPaths.length > treeCap || dirStats.size > dirCap,
@@ -1164,6 +1272,7 @@ function resolveOpts(opts: IngestOptions): {
   now: Date;
   maxBytes: number;
   timeoutMs: number;
+  deadline: number;
   redact: Redactor;
 } {
   const token = opts.githubToken ?? process.env.GITHUB_TOKEN ?? undefined;
@@ -1174,13 +1283,16 @@ function resolveOpts(opts: IngestOptions): {
     now: (opts.now ?? (() => new Date()))(),
     maxBytes: Math.min(opts.maxBytes ?? REPO_INGEST_MAX_BYTES, REPO_INGEST_MAX_BYTES),
     timeoutMs: opts.timeoutMs ?? 180_000,
+    deadline: Date.now() + (opts.deadlineMs ?? 300_000),
     redact: createRedactor({ GITHUB_TOKEN: token }),
   };
 }
 
-const SHA_RE = /^[a-f0-9]{40}$/;
-
-/** Fetch a GitHub repo into a temp dir (partial, shallow, no checkout) and digest it. */
+/**
+ * Fetch a GitHub repo into a temp dir and digest it. Never checked out, never recursing into
+ * submodules, in two bounded steps: the tip with blobs up to 1 MiB (`--depth=1`), then the history
+ * (`--deepen=<depth-1>`) as commits and trees only (`--filter=blob:none`).
+ */
 export async function ingestGitHubRepo(
   input: string,
   opts: GitHubIngestOptions = {},
@@ -1193,11 +1305,13 @@ export async function ingestGitHubRepo(
     env: baseGitEnv(o.token),
     redact: o.redact,
     timeoutMs: o.timeoutMs,
+    deadline: o.deadline,
   };
   const remote = opts.cloneUrl ?? `${ref.url}.git`;
+  if (remote.startsWith("-")) throw new IngestError("bad_url", "clone URL must not start with '-'");
   try {
     await git(ctx, ["init", "-q"]);
-    await git(ctx, ["remote", "add", "origin", remote]);
+    await git(ctx, ["remote", "add", "--", "origin", remote]);
     let wantRef = ref.ref;
     let refName = ref.ref;
     if (!wantRef) {
@@ -1211,20 +1325,29 @@ export async function ingestGitHubRepo(
       .split("\n")
       .map((l) => /\srefs\/tags\/(.+)$/.exec(l)?.[1])
       .filter((t): t is string => !!t);
-    await git(ctx, [
+    const fetchArgs = (depthArg: string, filter: string, want: string): string[] => [
       "-c",
       "remote.origin.promisor=true",
       "-c",
-      "remote.origin.partialclonefilter=blob:limit=1m",
+      `remote.origin.partialclonefilter=${filter}`,
       "fetch",
       "-q",
       "--no-tags",
-      `--depth=${o.depth}`,
-      "--filter=blob:limit=1m",
+      "--no-recurse-submodules",
+      depthArg,
+      `--filter=${filter}`,
       "origin",
-      wantRef,
-    ]);
-    const commit = (await git(ctx, ["rev-parse", "FETCH_HEAD^{commit}"])).trim();
+      "--end-of-options",
+      want,
+    ];
+    // Step 1: the tip, with every blob up to 1 MiB (README, manifests, sizes).
+    await git(ctx, fetchArgs("--depth=1", "blob:limit=1m", wantRef));
+    const commit = (
+      await git(ctx, ["rev-parse", "--verify", "-q", "--end-of-options", "FETCH_HEAD^{commit}"])
+    ).trim();
+    // Step 2: history for the commit log, commits and trees only. Fetch by sha, so a branch that
+    // moves between the two steps cannot swap the tip.
+    if (o.depth > 1) await git(ctx, fetchArgs(`--deepen=${o.depth - 1}`, "blob:none", commit));
     const tree = await readTree(ctx, commit);
     const commits = await readCommits(ctx, commit, o.depth, await readShallow(ctx));
     return await analyze({
@@ -1289,12 +1412,19 @@ export async function ingestLocalRepo(
     env: baseGitEnv(undefined),
     redact: o.redact,
     timeoutMs: o.timeoutMs,
+    deadline: o.deadline,
   };
   const top = await runGit(ctx, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new IngestError("not_a_repo", `not a git repository: ${abs}`);
   ctx.cwd = top.stdout.toString("utf8").trim();
-  const rev = opts.rev ?? "HEAD";
-  const commitR = await runGit(ctx, ["rev-parse", "--verify", "-q", `${rev}^{commit}`]);
+  const rev = checkRef(opts.rev ?? "HEAD", "bad_ref", opts.rev ?? "HEAD");
+  const commitR = await runGit(ctx, [
+    "rev-parse",
+    "--verify",
+    "-q",
+    "--end-of-options",
+    `${rev}^{commit}`,
+  ]);
   if (commitR.code !== 0) throw new IngestError("not_a_repo", `no commit at ${rev} in ${ctx.cwd}`);
   const commit = commitR.stdout.toString("utf8").trim();
 
