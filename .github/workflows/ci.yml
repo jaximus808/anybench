@@ -8,6 +8,24 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # Local Postgres for the apps/server DB tests (TDM-11); they fail instead of skipping here.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: anybench
+          POSTGRES_PASSWORD: anybench
+          POSTGRES_DB: anybench
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U anybench -d anybench"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      LOCAL_DATABASE_URL: postgres://anybench:anybench@localhost:55432/anybench
+      ANYBENCH_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

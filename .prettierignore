@@ -8,3 +8,5 @@ plan.md
 *.html
 *.md
 kits/
+# drizzle-kit generated migration snapshots (TDM-11)
+apps/server/drizzle/meta/

@@ -1,2 +1,2 @@
-// server: Hono API + worker + Drizzle schema + migrations. Placeholder from TDM-6 (1.0 scaffold).
-export {};
+// server: Hono API + worker + Drizzle schema + migrations.
+export * as db from "./db/index.js";
