@@ -3,6 +3,8 @@
 import type { RequestIdVariables } from "hono/request-id";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
+import type { DbActor } from "./db/scoped.js";
+import type { EventFanout } from "./lib/events.js";
 import type { Logger } from "./lib/logger.js";
 import type { SentryHandle } from "./lib/sentry.js";
 
@@ -12,6 +14,16 @@ export interface AppDeps {
   /** Drizzle on the POOLED url (DATABASE_URL). Tenant queries go through scopedDb(actor, db). */
   db: Database;
   sentry: SentryHandle;
+  /**
+   * Who is calling a tenant route (session cookie or API key), or null when nobody is signed in.
+   * Wired by the auth ticket; until then tenant routes (events, TDM-72) answer 401.
+   */
+  authenticate?: (req: Request) => Promise<DbActor | null>;
+  /**
+   * The shared LISTEN connection (TDM-72), only in long-lived processes with
+   * EVENTS_STREAM_MODE=listen. Without it the event stream polls.
+   */
+  eventFanout?: EventFanout;
 }
 
 /** Hono env for every router: `new Hono<AppEnv>()`. `c.get("log")` is a per-request child logger. */

@@ -55,6 +55,20 @@ export const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().min(1).max(64).default(5),
   ),
+  /**
+   * `GET /runs/:id/stream` (TDM-72): `poll` re-reads events every EVENTS_POLL_INTERVAL_MS and ends
+   * the response after EVENTS_STREAM_MAX_DURATION_MS (required on Vercel Functions); `listen` wakes
+   * streams from one shared LISTEN connection on DATABASE_URL_DIRECT (long-lived Node only).
+   */
+  EVENTS_STREAM_MODE: z.preprocess(emptyToUndefined, z.enum(["poll", "listen"]).default("poll")),
+  EVENTS_STREAM_MAX_DURATION_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(100).max(3_600_000).default(50_000),
+  ),
+  EVENTS_POLL_INTERVAL_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(10).max(60_000).default(1_000),
+  ),
 });
 export type Env = z.infer<typeof EnvSchema>;
 

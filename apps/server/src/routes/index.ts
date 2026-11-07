@@ -10,8 +10,10 @@
 //   No module-level state in route files: everything comes from deps.
 import type { Hono } from "hono";
 import type { AppDeps, AppEnv } from "../types.js";
+import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 
 export function registerRoutes(app: Hono<AppEnv>, deps: AppDeps): void {
   app.route("/health", healthRoutes(deps));
+  app.route("/runs", eventsRoutes(deps));
 }
