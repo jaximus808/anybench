@@ -21,6 +21,7 @@ import { apiKeysRoutes } from "./api-keys.js";
 import { authRoutes } from "./auth.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
+import { runnerRoutes } from "./runner.js";
 
 export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // TDM-65/TDM-66: tenant routes take a Bearer API key or the session cookie unless the caller
@@ -40,4 +41,5 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   app.use("/runs/:id/events", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.use("/runs/:id/stream", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.route("/runs", eventsRoutes(deps));
+  app.route("/v1/trials", runnerRoutes(deps));
 }

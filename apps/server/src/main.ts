@@ -1,5 +1,6 @@
 // API entry for Node (local dev and any long-lived host): `pnpm --filter server dev`. TDM-14.
 // Production API runs on Vercel Functions through entry-vercel.ts; both wrap the same createApp.
+import { ArtifactStore } from "@anybench/envs";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import {
@@ -24,11 +25,14 @@ const eventFanout =
   config.EVENTS_STREAM_MODE === "listen"
     ? new EventFanout({ url: config.databaseUrlDirect, logger }).start()
     : undefined;
+// Runner uploads (TDM-47): presigned URLs from the S3_* bucket; without S3_BUCKET they answer 503.
+const artifacts = process.env.S3_BUCKET ? ArtifactStore.fromEnv() : undefined;
 const app = createApp({
   config,
   logger,
   db: dbh.db,
   sentry,
+  artifacts,
   ...(eventFanout ? { eventFanout } : {}),
 });
 const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {

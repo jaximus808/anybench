@@ -49,6 +49,11 @@ export const EnvSchema = z.object({
   STRIPE_TEST_SECRET_KEY: optionalString,
   STRIPE_LIVE_SECRET_KEY: optionalString,
   SENTRY_DSN: optionalUrl,
+  /** HMAC key for per-trial runner tokens (lib/runner-token.ts). Unset = runner ingest answers 503. */
+  RUNNER_TOKEN_SECRET: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32, { error: "must be at least 32 chars (openssl rand -base64 48)" }).optional(),
+  ),
   /** Defaults to `<hostname>:<pid>`. */
   WORKER_ID: optionalString,
   WORKER_CONCURRENCY: z.preprocess(
@@ -274,5 +279,6 @@ export function configSecrets(config: Config): Record<string, string | undefined
     SENTRY_DSN: config.SENTRY_DSN,
     GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
     SESSION_SECRET: config.SESSION_SECRET,
+    RUNNER_TOKEN_SECRET: config.RUNNER_TOKEN_SECRET,
   };
 }

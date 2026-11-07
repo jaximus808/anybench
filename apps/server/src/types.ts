@@ -8,6 +8,7 @@ import type { EventFanout } from "./lib/events.js";
 import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { Logger } from "./lib/logger.js";
 import type { SentryHandle } from "./lib/sentry.js";
+import type { EventsWriter, TrialArtifactStore } from "./routes/runner.js";
 
 export interface AppDeps {
   config: Config;
@@ -28,6 +29,10 @@ export interface AppDeps {
   eventFanout?: EventFanout;
   /** GitHub OAuth client (TDM-65). Default: built from GITHUB_* config; tests pass a fake. */
   github?: GitHubOAuth;
+  /** Event writer override (tests). Default: lib/events.ts `appendEvents`. */
+  events?: EventsWriter;
+  /** Trial artifact storage (`@anybench/envs` ArtifactStore). Upload routes answer 503 without it. */
+  artifacts?: TrialArtifactStore;
 }
 
 /** Hono env for every router: `new Hono<AppEnv>()`. `c.get("log")` is a per-request child logger. */

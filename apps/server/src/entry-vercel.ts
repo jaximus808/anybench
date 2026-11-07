@@ -3,6 +3,7 @@
 // in-process state: the only cached thing is the pooled-URL pg pool (DATABASE_URL, PgBouncer).
 // TDM-154: confirm the export shape against Vercel's Node runtime, set pool size, max duration,
 // SSE reconnect behaviour and Sentry flush-before-freeze.
+import { ArtifactStore } from "@anybench/envs";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { bootRuntime } from "./boot.js";
@@ -16,7 +17,8 @@ async function buildApp(): Promise<Hono<AppEnv>> {
   const config = loadConfig(); // throws ConfigError listing every bad var: the function fails loudly
   const runtime = await bootRuntime(config, "api");
   const dbh = createDb(config.databaseUrl, { max: 1 });
-  return createApp({ config, db: dbh.db, ...runtime });
+  const artifacts = process.env.S3_BUCKET ? ArtifactStore.fromEnv() : undefined; // TDM-47 uploads
+  return createApp({ config, db: dbh.db, artifacts, ...runtime });
 }
 
 export function getVercelApp(): Promise<Hono<AppEnv>> {
