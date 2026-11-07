@@ -1,0 +1,254 @@
+{
+  "data": [
+    {
+      "id": "req_01jx0000000000000000000004",
+      "object": "proxy_call_trace",
+      "dialect": "anthropic",
+      "actor": {
+        "type": "key",
+        "id": "key_01jx00000000000000000000kk"
+      },
+      "model": "openai/gpt-oss-120b",
+      "window": "immediate",
+      "resolved_model": "openai/gpt-oss-120b",
+      "provider": "groq",
+      "generation_id": "gen-0004",
+      "stop": "end_turn",
+      "usage": {
+        "input": 900,
+        "cache_write": 0,
+        "cache_read": 0,
+        "output": 40,
+        "reasoning": 0
+      },
+      "billed_micro_usd": 310,
+      "vendor_cost_micro_usd": 240,
+      "duration_ms": 620,
+      "content_scope": "full",
+      "source": "harness",
+      "session_id": "ses_01jx0000000000000000000bbb",
+      "seq": 1,
+      "board_card_id": null,
+      "tool_call_ids": [],
+      "tool_schema_hash": null,
+      "request_sha256": "0404040404040404040404040404040404040404040404040404040404040404",
+      "response_sha256": "1414141414141414141414141414141414141414141414141414141414141414",
+      "request_bytes": 4100,
+      "response_bytes": 516,
+      "request": {
+        "system": "You are a coding agent.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Fix the failing test in src/parse.js."
+          }
+        ],
+        "model": "openai/gpt-oss-120b",
+        "window": "immediate",
+        "tool_names": [
+          "bash",
+          "read_file"
+        ]
+      },
+      "response": {
+        "text": "ok",
+        "tool_calls": []
+      },
+      "truncated": false,
+      "created_at": "2026-11-07T21:10:09.000Z",
+      "expires_at": null
+    },
+    {
+      "id": "req_01jx0000000000000000000003",
+      "object": "proxy_call_trace",
+      "dialect": "anthropic",
+      "actor": {
+        "type": "key",
+        "id": "key_01jx00000000000000000000kk"
+      },
+      "model": "vetta/auto",
+      "window": "immediate",
+      "resolved_model": "anthropic/claude-haiku-4.5",
+      "provider": "anthropic",
+      "generation_id": "gen-0003",
+      "stop": null,
+      "usage": {
+        "input": 0,
+        "cache_write": 0,
+        "cache_read": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "billed_micro_usd": null,
+      "vendor_cost_micro_usd": null,
+      "duration_ms": 1840,
+      "content_scope": "full",
+      "source": "harness",
+      "session_id": "ses_01jx0000000000000000000aaa",
+      "seq": 3,
+      "board_card_id": null,
+      "tool_call_ids": [],
+      "tool_schema_hash": null,
+      "request_sha256": "0303030303030303030303030303030303030303030303030303030303030303",
+      "response_sha256": "1313131313131313131313131313131313131313131313131313131313131313",
+      "request_bytes": 4099,
+      "response_bytes": 515,
+      "request": {
+        "system": "You are a coding agent.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Fix the failing test in src/parse.js."
+          }
+        ],
+        "model": "vetta/auto",
+        "window": "immediate",
+        "tool_names": [
+          "bash",
+          "read_file"
+        ]
+      },
+      "response": {
+        "text": "",
+        "tool_calls": [],
+        "is_error": true,
+        "error_class": "rate_limited"
+      },
+      "truncated": false,
+      "created_at": "2026-11-07T21:10:07.250Z",
+      "expires_at": null
+    },
+    {
+      "id": "req_01jx0000000000000000000002",
+      "object": "proxy_call_trace",
+      "dialect": "anthropic",
+      "actor": {
+        "type": "key",
+        "id": "key_01jx00000000000000000000kk"
+      },
+      "model": "vetta/auto",
+      "window": "immediate",
+      "resolved_model": "anthropic/claude-haiku-4.5",
+      "provider": "anthropic",
+      "generation_id": "gen-0002",
+      "stop": "end_turn",
+      "usage": {
+        "input": 2310,
+        "cache_write": 0,
+        "cache_read": 1800,
+        "output": 220,
+        "reasoning": 0
+      },
+      "billed_micro_usd": 4180,
+      "vendor_cost_micro_usd": 3480,
+      "duration_ms": 2950,
+      "content_scope": "full",
+      "source": "harness",
+      "session_id": "ses_01jx0000000000000000000aaa",
+      "seq": 2,
+      "board_card_id": null,
+      "tool_call_ids": [],
+      "tool_schema_hash": null,
+      "request_sha256": "0202020202020202020202020202020202020202020202020202020202020202",
+      "response_sha256": "1212121212121212121212121212121212121212121212121212121212121212",
+      "request_bytes": 4098,
+      "response_bytes": 514,
+      "request": {
+        "system": "You are a coding agent.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Fix the failing test in src/parse.js."
+          }
+        ],
+        "model": "vetta/auto",
+        "window": "immediate",
+        "tool_names": [
+          "bash",
+          "read_file"
+        ]
+      },
+      "response": {
+        "text": "The off-by-one is fixed.",
+        "tool_calls": []
+      },
+      "truncated": false,
+      "created_at": "2026-11-07T21:10:05.500Z",
+      "expires_at": null
+    },
+    {
+      "id": "req_01jx0000000000000000000001",
+      "object": "proxy_call_trace",
+      "dialect": "anthropic",
+      "actor": {
+        "type": "key",
+        "id": "key_01jx00000000000000000000kk"
+      },
+      "model": "vetta/auto",
+      "window": "immediate",
+      "resolved_model": "z-ai/glm-5.3-flash",
+      "provider": "z-ai",
+      "generation_id": "gen-0001",
+      "stop": "tool_use",
+      "usage": {
+        "input": 1800,
+        "cache_write": 1800,
+        "cache_read": 0,
+        "output": 95,
+        "reasoning": 64
+      },
+      "billed_micro_usd": 1525,
+      "vendor_cost_micro_usd": 1270,
+      "duration_ms": 1410,
+      "content_scope": "full",
+      "source": "harness",
+      "session_id": "ses_01jx0000000000000000000aaa",
+      "seq": 1,
+      "board_card_id": null,
+      "tool_call_ids": [
+        "call_01",
+        "call_02"
+      ],
+      "tool_schema_hash": "9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c",
+      "request_sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+      "response_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "request_bytes": 4097,
+      "response_bytes": 513,
+      "request": {
+        "system": "You are a coding agent.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Fix the failing test in src/parse.js."
+          }
+        ],
+        "model": "vetta/auto",
+        "window": "immediate",
+        "tool_names": [
+          "bash",
+          "read_file"
+        ]
+      },
+      "response": {
+        "text": "",
+        "tool_calls": [
+          {
+            "name": "bash",
+            "arguments": "{\"command\":\"npm test\"}",
+            "id": "call_01"
+          },
+          {
+            "name": "read_file",
+            "arguments": "{\"path\":\"src/parse.js\"}",
+            "id": "call_02"
+          }
+        ]
+      },
+      "truncated": false,
+      "created_at": "2026-11-07T21:10:01.000Z",
+      "expires_at": null
+    }
+  ],
+  "has_more": false,
+  "next_cursor": null
+}
