@@ -4,7 +4,7 @@
 
 **Status:** building for production. v1 written 2026-11-07 for the YC Naïve hackathon; v2 the same day after four architecture reviews (eval computers, observability, billing and security, Tandem and the swarm). This file is the source of truth for the agent swarm; update it when a decision changes.
 
-**Ships at:** `https://anybench.jaxonp.com` (web, Vercel) and `https://api.anybench.jaxonp.com` (API + worker, Vultr) with the database on **Neon** Postgres ($250 Neon credit).
+**Ships at:** `https://anybench.jaxonp.com` (web, Vercel) and `https://api.anybench.jaxonp.com` (API on Vercel Functions; always-on worker on an Oracle Cloud Always Free VM) with the database on **Neon** Postgres ($250 Neon credit).
 
 **Acceptance test for the whole product:** benchmark **Tandem** (×1, ×3, ×5 workers) against plain Claude Code and Claude Code with subagents, end to end in prod, billed through Stripe (or comped by an admin), watched live, and published as an embeddable result (E14.4).
 
@@ -57,9 +57,9 @@ The agents choose the computer, not the user. It is never a plain empty VM.
 | `base` | node22, python3.12 + uv, git, GNU time, hyperfine, hey, k6, runner | Naïve | 2–4 vCPU |
 | `agent-cc` | base + pinned `@anthropic-ai/claude-code`, non-root `eval` user, Tandem binary + pinned `@jaximus/tandem-mcp`, warmed npx cache | Naïve | 4 vCPU / 8 GB / 20 GB |
 | `svc` | base + service recipes (postgres16, redis7, sqlite3, minio) | Naïve | 4 vCPU |
-| `tui` | base + Xvfb, Mesa llvmpipe, xdotool, ffmpeg, terminal emulators, `pyte` reference parser | Naïve if spike 2.5 passes, else Vultr | 4 vCPU |
+| `tui` | base + Xvfb, Mesa llvmpipe, xdotool, ffmpeg, terminal emulators, `pyte` reference parser | Naïve if spike 2.5 passes, else the Oracle worker VM or roadmap | 4 vCPU |
 | `web` | base + chromium + Playwright | Naïve | 4 vCPU |
-| `gui`, `docker`, `>16 vCPU`, GPU, long runs | — | Vultr | per kit |
+| `gui`, `docker`, `>16 vCPU`, GPU, long runs | — | roadmap (paid VMs later); small Docker evals via `docker-local` on the worker VM | per kit |
 
 **Service catalog** (`packages/envs/recipes/<name>/{install.sh, healthcheck.sh, env.json}`): each recipe exports connection env vars (`DATABASE_URL`, `REDIS_URL`, ...). One generic recipe runner executes them.
 
@@ -73,11 +73,11 @@ The agents choose the computer, not the user. It is never a plain empty VM.
 
 **Secrets:** Naïve vault `env_var` returns 501, so secrets are written with `fs.write` to `/home/naive/.anybench/env` (0600) right before the trial. Never on an `exec` command line: Naïve stores command history unredacted for 30 days.
 
-**Network:** `EnvSpec.network.allow` is *declared*, verified by a runner probe (allowed host + canary), not enforced on Naïve. Vultr eval VMs get an enforced egress allow-list through cloud-init.
+**Network:** `EnvSpec.network.allow` is *declared*, verified by a runner probe (allowed host + canary), not enforced on Naïve. Heavy VMs (roadmap) will get an enforced egress allow-list through cloud-init.
 
-**Artifact transfer:** trial outputs go to our S3 bucket (Vultr Object Storage) through presigned PUT/GET under `runs/<run>/trials/<trial>/`. The Naïve Files API (25 MiB cap) and base64 `fs/read` are too small or slow for 150 MB of scrollback.
+**Artifact transfer:** trial outputs go to our S3 bucket (Cloudflare R2, S3 API, free tier 10 GB, no egress fees) through presigned PUT/GET under `runs/<run>/trials/<trial>/`. The Naïve Files API (25 MiB cap) and base64 `fs/read` are too small or slow for 150 MB of scrollback.
 
-**Providers behind one interface** (`ComputeProvider`): `naive` (default), `vultr` (heavy), `docker-local` (dev, CI), `fake` (unit tests).
+**Providers behind one interface** (`ComputeProvider`): `naive` (default), `docker-local` on the worker VM for small Docker evals, a paid `vm` provider for heavy profiles later (roadmap), `docker-local` (dev, CI), `fake` (unit tests).
 
 **Fairness:** contenders interleaved A B A B on the same profile; warm-ups discarded; repeats spread across computers; `load_1m` and `steal` recorded and trials over a threshold discarded; region pinned; every version (subject, Claude Code, model, Tandem) recorded in the trial.
 
@@ -114,7 +114,7 @@ Also in `anybench.yaml`: `subject {kind, name, summary, better_means[]}`, `vary`
 | Service / API | `service` | `start` + `ready` URL; hey or k6 | p50/p95, RPS, RSS | golden request set → response diff; DB state check | svc |
 | Library | `lib` | generated bench shim (tinybench, pytest-benchmark, criterion) | ops/s, allocations | property tests against a reference implementation | base + toolchain |
 | Terminal emulator / TUI | `pty` | runner launches the emulator under Xvfb, streams `input.bin` through a PTY shim, appends a sentinel, waits until it's on screen | time to sentinel, bytes/s, RSS | **reference grid** from a VT parser (`pyte`) at the same rows × cols × scrollback; final screen diffed cell by cell, scrollback by line hash. Screen dump from the emulator's own export (kitty `@ get-text --extent=all`, alacritty ref-test), xdotool select-all as fallback | tui |
-| GUI app | `x11` | xdotool scripts, screenshots | task time | accessibility tree (AT-SPI) or the app's export file. No frame rates | gui (Vultr) |
+| GUI app | `x11` | xdotool scripts, screenshots | task time | accessibility tree (AT-SPI) or the app's export file. No frame rates | gui (roadmap) |
 | Web app | `web` | Playwright + k6 | TTFB, p95, Lighthouse | DOM assertions + golden responses | web |
 | Coding agent | `coding-agent` | `claude -p --output-format stream-json --verbose` on `instruction.md` in `EVAL_WS` | tokens, turns, cost, wall | hidden tests on the scoring computer | agent-cc |
 | API / chat agent | `http-agent` | runner posts a conversation set; a simulated user is a reviewer-model session | latency, cost, outcome | labeled answers / oracle match | base |
@@ -177,14 +177,14 @@ Section 8.
 ## 3. Everything around the pillars
 
 - **Web** (`apps/web`, Next.js on Vercel): landing, sign-in, New run, Test plan, Live run, Report, Publish, public benchmark page, embed, Scan, Company, Billing, Settings (API keys, model keys, notifications), Docs, legal pages.
-- **Control-plane API and worker** (`apps/server`, Hono on Node, one image with two commands, on Vultr): REST + SSE, runner ingest, GitHub OAuth, Stripe and Naïve webhooks, graphile-worker jobs.
+- **Control-plane API and worker** (`apps/server`, Hono; the **API runs on Vercel Functions** next to the web app, the **worker** runs as a long-lived Node process on an Oracle Cloud Always Free ARM VM (fallback: a Naïve computer)): REST + SSE, runner ingest, GitHub OAuth, Stripe and Naïve webhooks, graphile-worker jobs.
 - **MCP server** (`packages/mcp`, stdio and streamable HTTP at `/mcp`): agents look into running evals (section 6).
 - **CLI and Claude Code skill** (`apps/cli`): `anybench login | init | kit validate | run | watch | logs | report | publish | verify`, plus a `/anybench` skill that bundles a local repo or `.claude/` setup.
-- **Database:** **Neon** serverless Postgres (16+) with Drizzle; $250 of Neon credit. Region `aws-us-east-1`, next to Vultr `ewr`. **Jobs:** graphile-worker (Postgres only, no Redis).
+- **Database:** **Neon** serverless Postgres (16+) with Drizzle; $250 of Neon credit. Region `aws-us-east-1`, close to Vercel iad1 and Oracle us-ashburn-1. **Jobs:** graphile-worker (Postgres only, no Redis).
   - Two connection strings: `DATABASE_URL` is Neon's **pooled** endpoint (PgBouncer, transaction mode) for API queries; `DATABASE_URL_DIRECT` is the **unpooled** endpoint for migrations, graphile-worker and the event `LISTEN` connection. LISTEN/NOTIFY and session-level `SET` don't survive transaction pooling, so anything that LISTENs or holds a session must use the direct URL. RLS uses `SET LOCAL` inside a transaction, which is pooler-safe.
   - Neon branches: `main` = prod, `dev` = local development, and a throwaway branch per CI e2e run (created and deleted through the Neon API). Offline unit tests still use a local Docker Postgres.
   - Backups: Neon point-in-time restore (history retention window) plus a weekly `pg_dump | age` to object storage as an off-provider copy.
-- **Object storage:** Vultr Object Storage (S3 API) for logs, transcripts, kits, artifacts, backups.
+- **Object storage:** Cloudflare R2 (S3 API) for logs, transcripts, kits, artifacts, backups.
 - **Company agents:** scout and account manager as Naïve deployments on schedules.
 - **Outreach (GTM, E15):** Monid finds leads that need evals (agent builders, harnesses, CLIs and dev tools, perf claims with no gate) → scout scores fit → understander + researcher + kit designer pre-build a **free eval kit** from the public repo (no compute) → an insights brief (what they'd be compared against, what we'd measure, what to improve) → a personalized email from an AgentMail inbox with an invite link → `/i/<token>`: sign in with GitHub, see the kit, link a card, press Start evals → the account manager handles replies. Founder approves drafts at first; CAN-SPAM (unsubscribe, postal address, suppression list); funnel lead → emailed → clicked → signed in → card linked → run started → delivered → published on `/company`. Positioning against competing eval factories: a correctness gate on every number, competitor pass-through, signed publishable results.
 
@@ -196,14 +196,14 @@ Section 8.
   embeds ─────▶  │ site · app · /b/<slug> public page · /embed/<slug> iframe · OG     │
                  └──────────────┬───────────────────────────────────▲──────────────┘
                                 │ REST (cookie, same-site)           │ SSE /runs/:id/stream
-                 ┌──────────────▼──────────── Vultr VM ──────────────┴──────────────┐
+                 ┌──────────────▼─ Vercel Fn (API) + Oracle VM (worker) ─┴──────────────┐
   agents ─MCP─▶  │ apps/server  api.anybench.jaxonp.com (Caddy TLS)                   │
   CLI ────────▶  │  Hono API ─────── graphile-worker (orchestrator, alerts) ── Neon  │
   Stripe ─hook─▶ │  /webhooks/stripe  /v1/trials/:id/events  /badge  /mcp            │
                  └──┬──────────────┬─────────────────┬──────────────┬───────────────┘
-                    │ Naïve SDK    │ Naïve SDK        │ Vultr API    │ S3 API
+                    │ Naïve SDK    │ Naïve SDK        │ docker-local │ S3 API
          ┌──────────▼───────┐ ┌────▼──────────────┐ ┌─▼──────────┐ ┌─▼────────────────┐
-         │ Naïve sessions   │ │ Naïve computers   │ │ Vultr VMs  │ │ Object storage   │
+         │ Naïve sessions   │ │ Naïve computers   │ │ Worker VM  │ │ Object storage   │
          │ our agents:      │ │ profile snapshot  │ │ gui/docker │ │ logs, transcripts│
          │ understander,    │ │ → fork per trial  │ │ GPU, >16   │ │ kits, artifacts, │
          │ researcher, kit  │ │ runner inside ────┼─┼─ pushes ───┼─▶ backups          │
@@ -217,12 +217,12 @@ Section 8.
 ```
 apps/
   web/            Next.js site + app + public pages + embed (Vercel)
-  server/         Hono API + worker + Drizzle schema + migrations (Vultr)
+  server/         Hono API + worker + Drizzle schema + migrations (API on Vercel Functions, worker on the Oracle VM)
   cli/            anybench CLI + /anybench Claude Code skill
 packages/
   core/           zod schemas (one file per schema), state machines, events, API contract, money, redact
   naive/          wrapper over @usenaive-sdk/managed-agents + FakeNaive
-  providers/      ComputeProvider + naive, vultr, docker-local, fake
+  providers/      ComputeProvider + naive, docker-local, fake (vm provider later)
   envs/           recipes, profiles, EnvSpec builder, snapshot cache
   runner/         in-VM runner (bun-compiled binary)
   kit/            anybench.yaml loader/validator, ingest, drivers, proof checks, Harbor export
@@ -331,7 +331,7 @@ docs/
 - **Tenancy:** every tenant table has `owner_id`; every query goes through `scopedDb(actor)`; Postgres RLS on `runs, kits, trials, reviews, reports, events, user_secrets` with `SET LOCAL app.actor_id` as defense in depth.
 - **Customer model keys (BYOK):** envelope encryption: `ANYBENCH_KEK` wraps a random per-secret key; AES-256-GCM; stored with `kek_version` and `last4`; write-only API. Decrypted only right before a trial and written to the VM via `fs.write`.
 - **Redaction** (`packages/core/redact.ts`) before anything is persisted: patterns for `sk-ant-`, `sk-`/`sk-proj-`, `gh[pousr]_`, `[sr]k_live_`, `whsec_`, plus exact match on every secret in scope for that trial. Pino redacts auth headers and cookies; Sentry `beforeSend` scrubs.
-- **Abuse:** eval computers run strangers' code. No compute without a card on file or a grant; grants only for GitHub accounts older than 90 days; per-trial wall-clock cap; per-user concurrency, runs per day and daily spend caps; the reaper; egress allow-lists on Vultr; the AUP forbids mining. Per-IP rate limits on `/auth/*`, `/b/*`, `/badge/*`, `/embed/*`, `/webhooks/*`.
+- **Abuse:** eval computers run strangers' code. No compute without a card on file or a grant; grants only for GitHub accounts older than 90 days; per-trial wall-clock cap; per-user concurrency, runs per day and daily spend caps; the reaper; egress allow-lists on heavy VMs (roadmap); the AUP forbids mining. Per-IP rate limits on `/auth/*`, `/b/*`, `/badge/*`, `/embed/*`, `/webhooks/*`.
 
 ## 10. Data model (Postgres, Drizzle; one file per table)
 
@@ -340,7 +340,7 @@ docs/
 - Agents: `agent_sessions(id, run_id, role, naive_session_id, budget_micro_usd, cost_micro_usd, status, last_seq, stop_reason, pending_action)`, `agent_events(agent_session_id, naive_seq, type, payload)`.
 - Compute: `computers(id, provider, provider_id, run_id, trial_id, snapshot_id, status, created_at, destroyed_at, blocks_billed, cost_micro_usd, last_seen_at)`.
 - Observability and alerts: `events`, `alert_rules`, `alerts`, `alert_channels`, `alert_deliveries`, `kill_switches`, `webhook_inbox(provider, event_id UNIQUE, received_at, processed_at, payload)`.
-- Billing: `billing_accounts`, `usage_entries`, `credit_grants`, `stripe_events`, `cost_entries(source: naive|vultr|storage, run_id?, amount_micro_usd, at)` (our COGS).
+- Billing: `billing_accounts`, `usage_entries`, `credit_grants`, `stripe_events`, `cost_entries(source: naive|vm|storage|vercel, run_id?, amount_micro_usd, at)` (our COGS).
 - Publish: `published_benchmarks(id, owner_id, slug UNIQUE, run_id, visibility: public|unlisted|withdrawn, pinned_version?, auto_publish)`, `publish_versions(id, benchmark_id, version, report_json, attestation, signature, key_id, created_at)`, `embed_views(benchmark_id, kind: badge|embed|page, referrer_host, day, count)`.
 - Company: `interventions(id, run_id?, user_id?, who, what, why, at)`.
 - Outreach: `leads(id, source, query, company, contact, email, github_url, signals, fit, status, digest_id?, kit_id?, brief)`, `outreach_messages(id, lead_id, kind: initial|followup|reply, subject, html, text, status: draft|approved|sent|bounced|replied, agentmail_message_id, approved_by, sent_at)`, `invites(token_hash, lead_id, run_id, expires_at, clicked_at, claimed_by)`, `suppressions(email, reason, at)`.
@@ -370,12 +370,13 @@ All of our own agent work runs as Naïve agents and sessions, paid from the **$2
 | Piece | Where | How |
 |---|---|---|
 | `apps/web` | Vercel, `anybench.jaxonp.com` | GitHub integration; prod env in Vercel; `NEXT_PUBLIC_*` only for public values |
-| `apps/server` + worker + Caddy | Vultr VM (Ubuntu, 4 vCPU), `api.anybench.jaxonp.com` | One image (GHCR), two commands. Docker Compose: `migrate` (one-shot), `server`, `worker`, `caddy`. Deploy script pulls and restarts |
+| API (`apps/server` Hono app) | Vercel Functions (Node runtime), `api.anybench.jaxonp.com` as a second Vercel project or a rewrite | Request/response routes: REST, runner ingest, webhooks, badge, MCP. **SSE** streams poll `events` by seq (~1 s) for up to the function max duration, then the client reconnects with `Last-Event-ID` (already in the design). Needs Vercel Pro for commercial use |
+| Worker (`apps/server` worker entry) | Oracle Cloud Always Free Ampere VM (Ubuntu ARM, about 2 OCPU / 12 GB after the June 2026 cut), outbound-only | One image (GHCR, arm64), Docker Compose: `migrate` (one-shot) and `worker`; systemd restart; no inbound ports except SSH. Fallback: the worker on a Naïve computer from the $250 credit |
 | Database | Neon Postgres, project `anybench`, region aws-us-east-1 | `main` branch for prod, `dev` branch for local, per-CI-run branches; pooled URL for the API, direct URL for worker, LISTEN and migrations |
-| Eval computers | Naïve (default), Vultr (heavy) | `packages/providers` |
+| Eval computers | Naïve (default, 1–16 vCPU); `docker-local` on the worker VM; heavy VMs on the roadmap | `packages/providers` |
 | Agents | Naïve | synced on deploy |
-| DNS (jaxonp.com zone) | registrar/DNS host | `anybench` CNAME `cname.vercel-dns.com`; `api.anybench` A/AAAA → Vultr IP; Resend SPF/DKIM/DMARC |
-| Secrets | `.env` locally (fill-in sheet at repo root), Vercel env, `/etc/anybench.env` on Vultr (root, 0600) | Never committed. `.env.example` lists every key |
+| DNS (jaxonp.com zone) | registrar/DNS host | `anybench` CNAME `cname.vercel-dns.com`; `api.anybench` CNAME → Vercel (API project); Resend SPF/DKIM/DMARC |
+| Secrets | `.env` locally (fill-in sheet at repo root), Vercel env, `/etc/anybench.env` on the worker VM (root, 0600) | Never committed. `.env.example` lists every key |
 | Backups | Neon point-in-time restore + weekly `pg_dump | age` → object storage (off-provider copy), monthly restore drill into a Neon branch | `BACKUP_AGE_RECIPIENT` |
 | Migrations | `drizzle-kit generate` SQL committed; `migrate` runs before `server` | never `push` in prod |
 | CI/CD | GitHub Actions: build, typecheck, test → image → deploy on `main` | Vercel deploys web |
@@ -397,7 +398,7 @@ Write the answers to `docs/findings/<topic>.md` with the command and what it pri
 3. **Naïve agents** (`naive-agents.md`): `harnesses.list`, `models.list`, web search for the researcher, `output_schema`, `credits.show`, plan active.
 4. **Tandem headless** (`tandem-headless.md`): the binary under `up --foreground`, `TANDEM_AUTOSTART=0`, `PORT`, `TANDEM_DATA_DIR`, `CLAIM_TTL_MINUTES`; `approval-policy auto` PATCH; the cookie approve sequence for epics; peer review with cross-model.
 5. **TUI in a micro-VM** (`tui-in-vm.md`): Xvfb + Mesa llvmpipe; which terminal emulators install; screen and scrollback dump per emulator; `pyte` reference grid at 150 MB.
-6. **Vultr** (`vultr.md`): instance from snapshot, cloud-init egress allow-list, SSH exec, object storage presigned PUT/GET.
+6. **Hosting without Vultr** (`hosting.md`): Hono on Vercel Functions (max duration, SSE streaming + reconnect, cold starts, Neon pooled connections from functions); the Oracle Always Free ARM VM (actual free shape after the 2026 change, idle-reclaim policy, Docker, outbound to Neon/Naïve/Stripe); Cloudflare R2 presigned PUT/GET of a 200 MB file from a Naïve computer.
 7. **Stripe usage billing** (`stripe.md`): in a Stripe sandbox, a meter + metered price + subscription via Checkout; meter event dedupe on `identifier`; credit grant applied to the next invoice; threshold billing with meters; webhook sequence.
 
 ## 15. Work breakdown
@@ -418,16 +419,16 @@ The Tandem canvas `2BCM9U6Y` (http://127.0.0.1:7891/c/2BCM9U6Y) holds every tick
 Rules for parallel workers: each ticket owns a directory and lists the shared files it may touch; one schema per file in `packages/core`, one table per file in the Drizzle schema, one router file per resource in `apps/server`; migrations named by timestamp; `.env.example` changes only in the section for your package.
 
 ### E0. Human setup (assignee: human)
-TDM-1 Naïve key + plan · TDM-2 Vultr key + region · TDM-3 Vercel link + GitHub repo · TDM-4 GitHub OAuth app · TDM-5 Anthropic/OpenAI keys (domain decided: anybench.jaxonp.com). Added in v2: H6 Stripe account, sandbox and activation · H7 DNS records on jaxonp.com · H8 Resend, Slack webhook, Sentry · H9 Vultr object storage + backup age key · H10 GitHub repo created and initial commit pushed · H11 confirm pricing after the rate card · H12 Monid and AgentMail keys + outreach settings. (TDM-144..150)
+TDM-1 Naïve key + plan · TDM-2 Vultr (dropped: no free credit; see H14/H15) · TDM-3 Vercel link + GitHub repo · TDM-4 GitHub OAuth app · TDM-5 Anthropic/OpenAI keys (domain decided: anybench.jaxonp.com). Added in v2: H6 Stripe account, sandbox and activation · H7 DNS records on jaxonp.com · H8 Resend, Slack webhook, Sentry · H9 Vultr object storage + backup age key · H10 GitHub repo created and initial commit pushed · H11 confirm pricing after the rate card · H12 Monid and AgentMail keys + outreach settings. (TDM-144..150)
 
 ### E1. Contracts and scaffold
 1.0 monorepo scaffold + CI · 1.1 core kit and env schemas (KitSpec v2 with layers and drivers) · 1.2 core run/trial state machines + event schema · 1.3 core money, ids, redact · 1.4 core API contract (zod routes) · 1.5 Drizzle schema, migrations, `scopedDb`, RLS · 1.6 `ComputeProvider` + FakeProvider + contract test suite · 1.7 `packages/naive` + FakeNaive · 1.8 server skeleton (config, /health, pino, Sentry, graphile-worker).
 
 ### E2. Spikes
-2.1 Naïve computers · 2.2 Claude Code in VM + proxy · 2.3 Naïve agents · 2.4 Tandem headless + approvals · 2.5 TUI in micro-VM · 2.6 Vultr · 2.7 Stripe usage billing.
+2.1 Naïve computers · 2.2 Claude Code in VM + proxy · 2.3 Naïve agents · 2.4 Tandem headless + approvals · 2.5 TUI in micro-VM · 2.6 Vultr (superseded by 2.8 hosting spike) · 2.7 Stripe usage billing.
 
 ### E3. Eval computers (P1)
-3.1 naive provider · 3.2 docker-local provider · 3.3 vultr provider · 3.4 recipe runner + base recipes · 3.5 service recipes · 3.6 agent recipes (claude-code, tandem, playwright) · 3.7 tui recipes · 3.8 EnvSpec builder + snapshot cache · 3.9 VM profiles · 3.10 computer registry + reaper · 3.11 artifact transfer (S3 presigned).
+3.1 naive provider · 3.2 docker-local provider · 3.3 vultr provider (deferred to roadmap) · 3.4 recipe runner + base recipes · 3.5 service recipes · 3.6 agent recipes (claude-code, tandem, playwright) · 3.7 tui recipes · 3.8 EnvSpec builder + snapshot cache · 3.9 VM profiles · 3.10 computer registry + reaper · 3.11 artifact transfer (S3 presigned).
 
 ### E4. Eval kit (P2)
 4.1 loader/validator + folder layout · 4.2 ingest GitHub · 4.3 ingest binary + docs + Claude Code setup · 4.4 driver `cli` · 4.5 driver `service` · 4.6 driver `lib` · 4.7 driver `coding-agent` · 4.8 driver `http-agent` · 4.9 driver `harness` + Tandem adapter · 4.10 driver `pty` + reference grid gate · 4.11 driver `web` · 4.12 proof checks + repair loop · 4.13 Harbor export.
@@ -457,7 +458,7 @@ TDM-1 Naïve key + plan · TDM-2 Vultr key + region · TDM-3 Vercel link + GitHu
 12.1 attestation signing + verify · 12.2 publish flow + versions · 12.3 public benchmark page · 12.4 badge SVG · 12.5 embed widget + oEmbed + script loader · 12.6 OG image · 12.7 publish dialog UI · 12.8 rerun on release + regression hold · 12.9 embed analytics · 12.10 gallery.
 
 ### E13. Ship
-13.1 Docker image + compose + Caddy · 13.2 Vultr provisioning + deploy script · 13.3 backups · 13.4 CI/CD · 13.5 Vercel prod on anybench.jaxonp.com · 13.6 security review · 13.7 `smoke:prod` · 13.8 runbook.
+13.1 worker image + compose (no Caddy/postgres) · 13.2 (superseded by 13.11) · 13.10 API on Vercel Functions · 13.11 Oracle worker VM provisioning + deploy · 13.3 backups · 13.4 CI/CD · 13.5 Vercel prod on anybench.jaxonp.com · 13.6 security review · 13.7 `smoke:prod` · 13.8 runbook.
 
 ### E14. Acceptance and launch
 14.1 kit honest-vs-cheater · 14.2 kit tandem-vs-claude-code · 14.3 kit terminal-throughput · 14.4 Tandem benchmark in prod, published · 14.5 GitHub scan + 2 delivered reports · 14.6 company agents + `/company` · 14.7 launch checklist.
@@ -471,7 +472,7 @@ TDM-1 Naïve key + plan · TDM-2 Vultr key + region · TDM-3 Vercel link + GitHu
 - Work in a git worktree per ticket (`git worktree add ../anybench-wt/<ticket> -b <ticket>`); merge to `main` only with `pnpm -r build && pnpm -r test` passing.
 - TypeScript, ESM, Node ≥ 22, pnpm. zod at every boundary. Money in integer micro-USD.
 - All our own agent calls go through `packages/naive`. Direct Anthropic/OpenAI keys only for the agent under test.
-- Tests never spend money by default: use `FakeProvider` and `FakeNaive`; live tests run only with `NAIVE_LIVE=1`, `STRIPE_LIVE_TEST=1`, `VULTR_LIVE=1`.
+- Tests never spend money by default: use `FakeProvider` and `FakeNaive`; live tests run only with `NAIVE_LIVE=1`, `STRIPE_LIVE_TEST=1`, `VM_LIVE=1`.
 - No secrets in git. Add every new env var to `.env.example`.
 - No speed or quality number without a correctness gate.
 - Write what you learn about external systems to `docs/findings/`.
