@@ -290,6 +290,12 @@ importers:
       '@anybench/core':
         specifier: workspace:*
         version: link:../core
+      '@anybench/envs':
+        specifier: workspace:*
+        version: link:../envs
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
 packages:
 
