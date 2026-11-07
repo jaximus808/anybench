@@ -21,6 +21,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anybench/core": "workspace:*"
+    "@anybench/core": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@anybench/bench": "workspace:*"
   }
 }
