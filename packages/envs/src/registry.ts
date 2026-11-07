@@ -34,6 +34,13 @@ export const REGISTRY_COMPUTER_STATUSES = [
 export const RegistryComputerStatusSchema = z.enum(REGISTRY_COMPUTER_STATUSES);
 export type RegistryComputerStatus = z.infer<typeof RegistryComputerStatusSchema>;
 
+/**
+ * Tag prefix for our own infrastructure computers (e.g. the always-on worker host on the same Naïve
+ * account). The reaper never touches a computer carrying a tag that starts with it. Trial tags are
+ * `ab-<32 hex>-<32 hex>`, so they can never collide with it.
+ */
+export const INFRA_COMPUTER_TAG_PREFIX = "ab-infra-";
+
 /** Naïve's billing block. Used when the provider bills per second/hour, so cost is still blocky. */
 export const DEFAULT_BLOCK_SECONDS = 600;
 
@@ -142,8 +149,12 @@ export interface ComputerRegistry {
   waitReady(computerId: string, opts?: WaitReadyOptions): Promise<ComputerInfo>;
   /** Record activity (heartbeat, exec) so the reaper's idle clock restarts. */
   touch(computerId: string): Promise<void>;
-  /** Status destroying → provider.destroy → destroyed + blocks/cost. Rethrows provider errors. */
-  destroy(computerId: string): Promise<DestroyedComputer>;
+  /**
+   * Status destroying → provider.destroy → destroyed + blocks/cost. Rethrows provider errors.
+   * On a row already `destroyed` it still calls provider.destroy (idempotent) but returns the
+   * stored blocks/cost unchanged, unless `recost` asks to re-cost up to now.
+   */
+  destroy(computerId: string, opts?: { recost?: boolean }): Promise<DestroyedComputer>;
   /** Track a provider computer that has no row (found by the reaper), so it can be destroyed and costed. */
   adopt(
     info: ComputerInfo,
@@ -249,10 +260,14 @@ export function createComputerRegistry(options: ComputerRegistryOptions): Comput
       await store.update(computerId, { lastSeenAt: now() });
     },
 
-    async destroy(computerId) {
+    async destroy(computerId, opts = {}) {
       const row = await mustGet(computerId);
-      // BEFORE the provider call. Always call it, even for a row already `destroyed`: the reaper
-      // only gets here when the provider still lists the computer, so it is still billing.
+      if (row.status === "destroyed" && !opts.recost) {
+        // Already closed and costed: make sure it is gone, but never bill it twice.
+        if (row.providerId) await provider.destroy(row.providerId);
+        return { computerId, blocksBilled: row.blocksBilled, costMicroUsd: row.costMicroUsd };
+      }
+      // BEFORE the provider call.
       await store.update(computerId, { status: "destroying" });
       if (row.providerId) await provider.destroy(row.providerId);
       const at = now();

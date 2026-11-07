@@ -6,11 +6,13 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "../src/db/client.js";
 import { computers, contenders, kits, runs, trials, users } from "../src/db/schema/index.js";
+import { newId, RunIdSchema, TRIAL_MAX_INFRA_RETRIES, TrialIdSchema } from "@anybench/core";
 import {
   COMPUTER_REAP_INTERVAL_MS,
   computerReapJob,
   createComputerReapJob,
   reapComputers,
+  trialHoldsComputer,
   type EventDraft,
   type EventsPort,
 } from "../src/jobs/computer-reap.js";
@@ -30,12 +32,17 @@ interface Seed {
   contenderId: string;
 }
 
-async function seedRunTdm31(db: Database, login: string, githubId: number): Promise<Seed> {
+async function seedRunTdm31(
+  db: Database,
+  login: string,
+  githubId: number,
+  state: (typeof runs.$inferInsert)["state"] = "running",
+): Promise<Seed> {
   const [u] = await db.insert(users).values({ githubLogin: login, githubId }).returning();
   const ownerId = u!.id;
   const [run] = await db
     .insert(runs)
-    .values({ ownerId, question: "faster?", budgetMicroUsd: 5_000_000n, state: "running" })
+    .values({ ownerId, question: "faster?", budgetMicroUsd: 5_000_000n, state })
     .returning();
   const [kit] = await db
     .insert(kits)
@@ -49,7 +56,12 @@ async function seedRunTdm31(db: Database, login: string, githubId: number): Prom
 }
 
 let repeatSeq = 0;
-async function trialTdm31(db: Database, s: Seed, state: (typeof trials.$inferInsert)["state"]) {
+async function trialTdm31(
+  db: Database,
+  s: Seed,
+  state: (typeof trials.$inferInsert)["state"],
+  extra: Partial<typeof trials.$inferInsert> = {},
+) {
   const [t] = await db
     .insert(trials)
     .values({
@@ -59,6 +71,7 @@ async function trialTdm31(db: Database, s: Seed, state: (typeof trials.$inferIns
       workloadId: "w1",
       repeat: repeatSeq++,
       state,
+      ...extra,
     })
     .returning();
   return t!.id;
@@ -207,7 +220,7 @@ describe.skipIf(!available)("computer.reap (TDM-31, FakeProvider + local Postgre
 
   it("leaves a recently active non-live computer for later", async () => {
     const { clock, fake, registry, reap } = setupTdm31(h);
-    const trialId = await trialTdm31(h.db, seed, "failed_infra");
+    const trialId = await trialTdm31(h.db, seed, "done");
     const { computerId, info } = await registry.create({ runId: seed.runId, trialId });
     clock.advance(20 * MIN);
     await registry.touch(computerId); // e.g. the executor is still collecting logs
@@ -287,6 +300,123 @@ describe.skipIf(!available)("computer.reap (TDM-31, FakeProvider + local Postgre
     expect((await rowTdm31(h.db, computerId)).status).toBe("destroyed");
     expect(events.calls).toHaveLength(2);
     expect(events.calls[1]!.events[0]!.payload).toMatchObject({ action: "destroyed" });
+  });
+
+  it("never destroys an ab- computer it cannot prove is ours", async () => {
+    const { clock, fake, events, reap } = setupTdm31(h);
+    const a = await fake.create({ tags: ["ab-test"] });
+    const b = await fake.create({ tags: ["ab-foo-bar"] });
+    // A well-formed trial tag from another deployment: no row, no such trial in this DB.
+    const c = await fake.create({
+      tags: [trialTag(newId(RunIdSchema), newId(TrialIdSchema))],
+    });
+    // A real trial id but the wrong run: still not provably ours.
+    const doneTrial = await trialTdm31(h.db, seed, "done");
+    const d = await fake.create({ tags: [trialTag(newId(RunIdSchema), doneTrial)] });
+
+    clock.advance(24 * 60 * MIN);
+    const report = await reap();
+    expect(report).toMatchObject({ checked: 4, foreign: 4, reaped: [], failed: [], alerts: [] });
+    for (const x of [a, b, c, d]) expect((await fake.inspect(x.id)).status).toBe("running");
+    expect(events.calls).toEqual([]);
+    const rows = await h.db.select().from(computers).where(eq(computers.provider, fake.name));
+    expect(rows).toEqual([]);
+  });
+
+  it("never touches ab-infra-* computers, even with an orphaned trial tag", async () => {
+    const { clock, fake, reap } = setupTdm31(h);
+    const trialId = await trialTdm31(h.db, seed, "done");
+    const host = await fake.create({ tags: ["ab-infra-worker", trialTag(seed.runId, trialId)] });
+    clock.advance(24 * 60 * MIN);
+    const report = await reap();
+    expect(report).toMatchObject({ checked: 1, infra: 1, reaped: [] });
+    expect((await fake.inspect(host.id)).status).toBe("running");
+  });
+
+  it("packed blocks: another live trial with computer_id = this computer keeps it", async () => {
+    const { clock, fake, registry, reap } = setupTdm31(h);
+    const trialA = await trialTdm31(h.db, seed, "done");
+    const { computerId, info } = await registry.create({ runId: seed.runId, trialId: trialA });
+    await h.db.update(trials).set({ computerId }).where(eq(trials.id, trialA));
+    await trialTdm31(h.db, seed, "running", { computerId });
+
+    clock.advance(2 * 60 * MIN);
+    const report = await reap();
+    expect(report).toMatchObject({ checked: 1, live: 1, reaped: [] });
+    expect((await fake.inspect(info.id)).status).toBe("running");
+    await registry.destroy(computerId);
+  });
+
+  it("a trial still forking (computer_id not written yet) keeps its tagged computer", async () => {
+    const { clock, fake, registry, reap } = setupTdm31(h);
+    const trialId = await trialTdm31(h.db, seed, "forking");
+    const { computerId, info } = await registry.create({ runId: seed.runId, trialId });
+    clock.advance(60 * MIN);
+    expect(await reap()).toMatchObject({ live: 1, reaped: [] });
+    expect((await fake.inspect(info.id)).status).toBe("running");
+    await registry.destroy(computerId);
+  });
+
+  it("held runs (needs_human, paused_budget) keep their trials' computers", async () => {
+    const { clock, fake, registry, reap } = setupTdm31(h);
+    const held = [
+      await seedRunTdm31(h.db, "held-human", 3111, "needs_human"),
+      await seedRunTdm31(h.db, "held-budget", 3112, "paused_budget"),
+    ];
+    const made = [];
+    for (const s of held) {
+      const trialId = await trialTdm31(h.db, s, "running");
+      const r = await registry.create({ runId: s.runId, trialId });
+      await h.db.update(trials).set({ computerId: r.computerId }).where(eq(trials.id, trialId));
+      made.push(r);
+    }
+    clock.advance(3 * 60 * MIN);
+    expect(await reap()).toMatchObject({ checked: 2, live: 2, reaped: [] });
+    for (const r of made) expect((await fake.inspect(r.info.id)).status).toBe("running");
+    for (const r of made) await registry.destroy(r.computerId);
+  });
+
+  it("a terminal run releases its non-terminal trial's computer", async () => {
+    const { clock, registry, reap } = setupTdm31(h);
+    const cancelled = await seedRunTdm31(h.db, "cancelled-run", 3113, "cancelled");
+    const trialId = await trialTdm31(h.db, cancelled, "running");
+    const { computerId } = await registry.create({ runId: cancelled.runId, trialId });
+    await h.db.update(trials).set({ computerId }).where(eq(trials.id, trialId));
+    clock.advance(16 * MIN);
+    expect((await reap()).reaped.map((l) => l.computerId)).toEqual([computerId]);
+  });
+
+  it("failed_infra that can still retry keeps its computer", async () => {
+    const { clock, fake, registry, reap } = setupTdm31(h);
+    const trialId = await trialTdm31(h.db, seed, "failed_infra", { attempt: 1 });
+    const { computerId, info } = await registry.create({ runId: seed.runId, trialId });
+    await h.db.update(trials).set({ computerId }).where(eq(trials.id, trialId));
+    clock.advance(60 * MIN);
+    expect(await reap()).toMatchObject({ live: 1, reaped: [] });
+    expect((await fake.inspect(info.id)).status).toBe("running");
+    await registry.destroy(computerId);
+  });
+
+  it("trialHoldsComputer: failed_infra holds until retries run out; terminal states never do", () => {
+    const runState = "running" as const;
+    expect(trialHoldsComputer({ state: "failed_infra", attempt: 1, runState })).toBe(true);
+    expect(
+      trialHoldsComputer({ state: "failed_infra", attempt: TRIAL_MAX_INFRA_RETRIES, runState }),
+    ).toBe(true);
+    expect(
+      trialHoldsComputer({
+        state: "failed_infra",
+        attempt: TRIAL_MAX_INFRA_RETRIES + 1,
+        runState,
+      }),
+    ).toBe(false);
+    for (const state of ["done", "failed_subject", "cancelled"] as const) {
+      expect(trialHoldsComputer({ state, attempt: 1, runState })).toBe(false);
+    }
+    expect(trialHoldsComputer({ state: "running", attempt: 1, runState: "needs_human" })).toBe(
+      true,
+    );
+    expect(trialHoldsComputer({ state: "running", attempt: 1, runState: "delivered" })).toBe(false);
   });
 
   it("a provider whose list fails is skipped; the sweep still completes", async () => {

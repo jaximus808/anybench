@@ -197,6 +197,45 @@ describe("ComputerRegistry (TDM-31, FakeProvider)", () => {
     expect((await store.get(computerId))!.status).toBe("destroyed");
   });
 
+  it("destroy on an already-destroyed row never re-costs unless asked", async () => {
+    const clock = clockTdm31();
+    const fake = new FakeProvider({ now: clock.nowMs });
+    const store = new MemoryComputerStore();
+    const reg = createComputerRegistry({
+      provider: fake,
+      store,
+      pricing: { pricePerBlockMicroUsd: 100n },
+      now: clock.now,
+    });
+    const { computerId, info } = await reg.create({ runId, trialId });
+    clock.advance(5 * 60_000);
+    expect(await reg.destroy(computerId)).toMatchObject({ blocksBilled: 1, costMicroUsd: 100n });
+    const closed = await store.get(computerId);
+
+    clock.advance(60 * 60_000);
+    const log: string[] = [];
+    const { tracedStore, tracedProvider } = tracedTdm31(fake, store, log);
+    const again = createComputerRegistry({
+      provider: tracedProvider,
+      store: tracedStore,
+      pricing: { pricePerBlockMicroUsd: 100n },
+      now: clock.now,
+    });
+    expect(await again.destroy(computerId)).toEqual({
+      computerId,
+      blocksBilled: 1,
+      costMicroUsd: 100n,
+    });
+    expect(log).toEqual(["provider.destroy"]); // idempotent provider call, no store writes
+    expect(await store.get(computerId)).toEqual(closed);
+    expect((await fake.list({ includeDestroyed: true }))[0]!.id).toBe(info.id);
+
+    expect(await again.destroy(computerId, { recost: true })).toMatchObject({
+      blocksBilled: 7,
+      costMicroUsd: 700n,
+    });
+  });
+
   it("adopt tracks an unknown provider computer once", async () => {
     const fake = new FakeProvider();
     const store = new MemoryComputerStore();

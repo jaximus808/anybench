@@ -5,12 +5,32 @@
 // critical). A destroy that fails is flagged `leaked` and retried on the next tick; the job never
 // throws for it, because a throw would only make graphile-worker retry the whole sweep.
 //
+// Ours or not: the reaper only ever destroys a computer it can prove is ours, i.e. one with a
+// `computers` row, or one whose `ab-<run>-<trial>` tag names a trial in THIS database. Anything
+// else carrying an `ab-` tag (another deployment, `ab-test`, a hand-made box) is logged and left
+// alone, and `ab-infra-*` (our own infrastructure, e.g. the worker host) is never touched.
+//
 // "Live" is deliberately generous, because destroying a live trial's computer is worse than
-// paying for one more tick: the trial row exists, its state is not terminal, its run is not
-// terminal, and either the trial has no computer_id yet or it points at this computer.
-import type { AnybenchEvent } from "@anybench/core";
-import { AnybenchEventSchema } from "@anybench/core";
-import { createComputerRegistry, type ComputerRecord, type ComputerRegistry } from "@anybench/envs";
+// paying for one more tick. A computer is live if a trial still holds it (trialHoldsComputer:
+// trial not terminal, failed_infra only while it may still retry, run not terminal), where
+// "holds" means either
+//   - the trial named in its tag, with no computer_id yet (forking) or computer_id = this row, or
+//   - any trial whose computer_id = this row (packed blocks: several trials share one computer).
+import {
+  AnybenchEventSchema,
+  isTerminalRunState,
+  isTerminalTrialState,
+  TRIAL_MAX_INFRA_RETRIES,
+  type AnybenchEvent,
+  type RunState,
+  type TrialState,
+} from "@anybench/core";
+import {
+  createComputerRegistry,
+  INFRA_COMPUTER_TAG_PREFIX,
+  type ComputerRecord,
+  type ComputerRegistry,
+} from "@anybench/envs";
 import {
   ANYBENCH_TAG_PREFIX,
   hyphenateUuid,
@@ -18,7 +38,7 @@ import {
   type ComputeProvider,
   type ComputerInfo,
 } from "@anybench/providers";
-import { inArray } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { runs } from "../db/schema/runs.js";
@@ -31,9 +51,6 @@ export const COMPUTER_REAP_INTERVAL_MS = 60_000;
 /** plan.md section 7: "Computer alive with no live trial for > 15 min". */
 export const COMPUTER_LEAK_IDLE_MS = 15 * 60_000;
 export const COMPUTER_LEAK_RULE_KEY = "computer.leaked";
-
-const TERMINAL_TRIAL_STATES = new Set(["done", "failed_infra", "failed_subject", "cancelled"]);
-const TERMINAL_RUN_STATES = new Set(["delivered", "failed", "cancelled"]);
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 /** An event before the appender assigns `run_id` and the run-wide `seq`. */
@@ -87,6 +104,10 @@ export interface ReapReport {
   live: number;
   /** Left alone: not live, but active within the idle window. */
   recent: number;
+  /** Left alone: an `ab-` tag we cannot prove is ours (no row, no trial in this DB). */
+  foreign: number;
+  /** Left alone: tagged `ab-infra-*`. */
+  infra: number;
   reaped: LeakedComputer[];
   failed: LeakedComputer[];
   alerts: ComputerLeakAlert[];
@@ -107,11 +128,27 @@ export interface ReapDeps {
 interface TrialLiveness {
   id: string;
   runId: string;
-  state: string;
-  runState: string | null;
+  state: TrialState;
+  attempt: number;
+  runState: RunState;
   computerId: string | null;
   updatedAt: Date;
   endedAt: Date | null;
+}
+
+/**
+ * Whether a trial may still be using a computer. failed_infra is not terminal: a retry may reuse
+ * the computer, so it holds it while `attempt <= TRIAL_MAX_INFRA_RETRIES` and not after.
+ */
+export function trialHoldsComputer(t: {
+  state: TrialState;
+  attempt: number;
+  runState: RunState;
+}): boolean {
+  if (isTerminalRunState(t.runState)) return false;
+  if (isTerminalTrialState(t.state)) return false;
+  if (t.state === "failed_infra" && t.attempt > TRIAL_MAX_INFRA_RETRIES) return false;
+  return true;
 }
 
 function trialRef(info: ComputerInfo): { runId: string; trialId: string } | null {
@@ -121,58 +158,49 @@ function trialRef(info: ComputerInfo): { runId: string; trialId: string } | null
     try {
       return { runId: hyphenateUuid(parsed.runId), trialId: hyphenateUuid(parsed.trialId) };
     } catch {
-      // An ab- tag whose parts are not UUIDs: not ours to interpret.
+      // An ab- tag whose parts are not UUIDs (`ab-foo-bar`): not ours to interpret.
     }
   }
   return null;
 }
 
-async function loadTrials(db: Database, trialIds: string[]): Promise<Map<string, TrialLiveness>> {
-  const out = new Map<string, TrialLiveness>();
-  if (trialIds.length === 0) return out;
-  const rows = await db
+/** Trials named by a tag, plus every trial pointing at one of these computers rows. */
+async function loadTrials(
+  db: Database,
+  trialIds: string[],
+  computerIds: string[],
+): Promise<TrialLiveness[]> {
+  const conds = [
+    ...(trialIds.length > 0 ? [inArray(trials.id, trialIds)] : []),
+    ...(computerIds.length > 0 ? [inArray(trials.computerId, computerIds)] : []),
+  ];
+  if (conds.length === 0) return [];
+  return db
     .select({
       id: trials.id,
       runId: trials.runId,
       state: trials.state,
+      attempt: trials.attempt,
+      runState: runs.state,
       computerId: trials.computerId,
       updatedAt: trials.updatedAt,
       endedAt: trials.endedAt,
     })
     .from(trials)
-    .where(inArray(trials.id, trialIds));
-  const runIds = [...new Set(rows.map((r) => r.runId))];
-  const runStates = new Map<string, string>();
-  if (runIds.length > 0) {
-    for (const r of await db
-      .select({ id: runs.id, state: runs.state })
-      .from(runs)
-      .where(inArray(runs.id, runIds))) {
-      runStates.set(r.id, r.state);
-    }
-  }
-  for (const r of rows) out.set(r.id, { ...r, runState: runStates.get(r.runId) ?? null });
-  return out;
-}
-
-function isLive(trial: TrialLiveness | undefined, record: ComputerRecord | null): boolean {
-  if (!trial) return false;
-  if (TERMINAL_TRIAL_STATES.has(trial.state)) return false;
-  if (trial.runState !== null && TERMINAL_RUN_STATES.has(trial.runState)) return false;
-  return trial.computerId === null || (record !== null && trial.computerId === record.id);
+    .innerJoin(runs, eq(runs.id, trials.runId))
+    .where(or(...conds));
 }
 
 function lastActivity(
   info: ComputerInfo,
   record: ComputerRecord | null,
-  trial: TrialLiveness | undefined,
+  related: readonly TrialLiveness[],
 ): Date {
   const times = [
     Date.parse(info.createdAt),
     record?.createdAt.getTime(),
     record?.lastSeenAt?.getTime(),
-    trial?.updatedAt.getTime(),
-    trial?.endedAt?.getTime(),
+    ...related.flatMap((t) => [t.updatedAt.getTime(), t.endedAt?.getTime()]),
   ].filter((t): t is number => typeof t === "number" && Number.isFinite(t));
   return new Date(Math.max(...times));
 }
@@ -238,6 +266,8 @@ export async function reapComputers(deps: ReapDeps): Promise<ReapReport> {
     checked: 0,
     live: 0,
     recent: 0,
+    foreign: 0,
+    infra: 0,
     reaped: [],
     failed: [],
     alerts: [],
@@ -257,28 +287,61 @@ export async function reapComputers(deps: ReapDeps): Promise<ReapReport> {
     listed = listed.filter((c) => c.status !== "destroyed");
     report.checked += listed.length;
 
-    const refs = new Map(listed.map((c) => [c.id, trialRef(c)]));
-    const trialIds = [...new Set([...refs.values()].flatMap((r) => (r ? [r.trialId] : [])))];
-    const liveness = await loadTrials(deps.db, trialIds);
-
+    const candidates: {
+      info: ComputerInfo;
+      ref: ReturnType<typeof trialRef>;
+      record: ComputerRecord | null;
+    }[] = [];
     for (const info of listed) {
-      const ref = refs.get(info.id) ?? null;
-      let record = await registry.findByProviderId(info.id);
-      const trial = ref ? liveness.get(ref.trialId) : undefined;
-      if (isLive(trial, record)) {
+      if (info.tags.some((t) => t.startsWith(INFRA_COMPUTER_TAG_PREFIX))) {
+        report.infra++;
+        continue;
+      }
+      candidates.push({
+        info,
+        ref: trialRef(info),
+        record: await registry.findByProviderId(info.id),
+      });
+    }
+    const trialIds = [...new Set(candidates.flatMap((c) => (c.ref ? [c.ref.trialId] : [])))];
+    const computerIds = candidates.flatMap((c) => (c.record ? [c.record.id] : []));
+    const loaded = await loadTrials(deps.db, trialIds, computerIds);
+    const byId = new Map(loaded.map((t) => [t.id, t]));
+
+    for (const c of candidates) {
+      const { info, ref } = c;
+      let record = c.record;
+      const named = ref ? byId.get(ref.trialId) : undefined;
+      const tagTrial = named && named.runId === ref!.runId ? named : undefined;
+      if (!record && !tagTrial) {
+        // Not provably ours: never destroy it.
+        report.foreign++;
+        deps.logger?.info(
+          { provider: provider.name, providerId: info.id, tags: info.tags },
+          "computer.reap: ab- tagged computer with no row and no trial here; left alone",
+        );
+        continue;
+      }
+      const holders = record ? loaded.filter((t) => t.computerId === record!.id) : [];
+      const tagHolds =
+        tagTrial !== undefined &&
+        trialHoldsComputer(tagTrial) &&
+        (tagTrial.computerId === null || tagTrial.computerId === record?.id);
+      if (tagHolds || holders.some(trialHoldsComputer)) {
         report.live++;
         continue;
       }
       const at = now();
-      const idle = at.getTime() - lastActivity(info, record, trial).getTime();
+      const related = [...(tagTrial ? [tagTrial] : []), ...holders];
+      const idle = at.getTime() - lastActivity(info, record, related).getTime();
       if (idle <= idleMs) {
         report.recent++;
         continue;
       }
 
       // Only now (well past any create→update window) do we adopt a computer with no row.
-      const runId = record?.runId ?? (trial ? trial.runId : null);
-      const trialId = record?.trialId ?? (trial ? trial.id : null);
+      const runId = record?.runId ?? tagTrial?.runId ?? null;
+      const trialId = record?.trialId ?? tagTrial?.id ?? null;
       const wasFlagged = record?.status === "leaked";
       const leak: LeakedComputer = {
         computerId: "",
