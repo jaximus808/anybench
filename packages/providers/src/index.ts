@@ -4,3 +4,4 @@ export * from "./errors.js";
 export * from "./types.js";
 export * from "./helpers.js";
 export * from "./fake.js";
+export * from "./docker.js";

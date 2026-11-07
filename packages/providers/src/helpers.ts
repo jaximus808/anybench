@@ -23,30 +23,51 @@ import {
 export const ANYBENCH_TAG_PREFIX = "ab-";
 const ID_PART = /^[A-Za-z0-9_]+$/;
 
-function checkIdPart(kind: string, value: string): void {
-  if (!ID_PART.test(value)) {
+/**
+ * An id as it appears inside a tag: hyphens stripped, so a lowercase UUIDv7
+ * (`0190…-…`) becomes its 32 hex digits and `-` stays the tag's only separator.
+ */
+function tagPart(kind: string, value: string): string {
+  const part = value.replaceAll("-", "");
+  if (!ID_PART.test(part)) {
     throw new ProviderValidationError(
-      `${kind} id ${JSON.stringify(value)} must be [A-Za-z0-9_]+ to fit a tag`,
+      `${kind} id ${JSON.stringify(value)} must be [A-Za-z0-9_-]+ to fit a tag`,
     );
   }
+  return part;
 }
 
-/** `ab-<run>-<trial>`: the tag every trial computer carries. */
+/**
+ * `ab-<run>-<trial>`: the tag every trial computer carries. Hyphens are stripped from
+ * both ids, so UUID ids give `ab-<run 32 hex>-<trial 32 hex>`; `hyphenateUuid` undoes it.
+ */
 export function trialTag(runId: string, trialId: string): string {
-  checkIdPart("run", runId);
-  checkIdPart("trial", trialId);
-  return TagSchema.parse(`${ANYBENCH_TAG_PREFIX}${runId}-${trialId}`);
+  return TagSchema.parse(
+    `${ANYBENCH_TAG_PREFIX}${tagPart("run", runId)}-${tagPart("trial", trialId)}`,
+  );
 }
 
 /** `ab-<run>-`: pass as `list({ tagPrefix })` to find every computer of a run. */
 export function runTagPrefix(runId: string): string {
-  checkIdPart("run", runId);
-  return `${ANYBENCH_TAG_PREFIX}${runId}-`;
+  return `${ANYBENCH_TAG_PREFIX}${tagPart("run", runId)}-`;
 }
 
+/** Split a trial tag into its (hyphenless) run and trial parts; null if it is not one. */
 export function parseTrialTag(tag: string): { runId: string; trialId: string } | null {
   const m = /^ab-([A-Za-z0-9_]+)-([A-Za-z0-9_]+)$/.exec(tag);
   return m ? { runId: m[1]!, trialId: m[2]! } : null;
+}
+
+/**
+ * Re-hyphenate a 32-hex UUID taken from a tag (`parseTrialTag`) into the canonical
+ * lowercase 8-4-4-4-12 form the database uses. An already hyphenated UUID is normalized.
+ */
+export function hyphenateUuid(hex: string): string {
+  const h = hex.replaceAll("-", "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(h)) {
+    throw new ProviderValidationError(`${JSON.stringify(hex)} is not a 32-hex UUID`);
+  }
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 export function matchesTags(

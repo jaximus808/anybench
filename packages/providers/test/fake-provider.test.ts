@@ -5,6 +5,7 @@ import {
   ProviderCapacityError,
   ProviderError,
   buildDetachedCommand,
+  hyphenateUuid,
   isProviderError,
   parseDetachedPid,
   parseTrialTag,
@@ -38,9 +39,28 @@ describe("tags", () => {
     expect(runTagPrefix("r1")).toBe("ab-r1-");
   });
 
-  it("refuses ids that would make the tag ambiguous", () => {
-    expect(() => trialTag("run-1", "t1")).toThrow(ProviderError);
+  it("strips hyphens so UUID ids fit, and refuses ids that cannot", () => {
+    expect(trialTag("run-1", "t1")).toBe("ab-run1-t1");
+    expect(() => trialTag("r1", "t 1")).toThrow(ProviderError);
     expect(() => trialTag("r1", "t 1")).toThrow(/trial id/);
+    expect(() => runTagPrefix("r 1")).toThrow(/run id/);
+  });
+
+  it("round-trips UUIDv7 run and trial ids", () => {
+    const run = "0190f3a2-7b1c-7def-8a12-3456789abcde";
+    const trial = "0190f3a2-7b1d-7000-9fff-000000000001";
+    const tag = trialTag(run, trial);
+    expect(tag).toBe("ab-0190f3a27b1c7def8a123456789abcde-0190f3a27b1d70009fff000000000001");
+    expect(tag.startsWith(runTagPrefix(run))).toBe(true);
+    const parts = parseTrialTag(tag);
+    expect(parts).toEqual({
+      runId: "0190f3a27b1c7def8a123456789abcde",
+      trialId: "0190f3a27b1d70009fff000000000001",
+    });
+    expect(hyphenateUuid(parts!.runId)).toBe(run);
+    expect(hyphenateUuid(parts!.trialId)).toBe(trial);
+    expect(hyphenateUuid(run.toUpperCase())).toBe(run);
+    expect(() => hyphenateUuid("run1")).toThrow(ProviderError);
   });
 });
 
