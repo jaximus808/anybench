@@ -1,0 +1,3 @@
+# Kit bytes are hashed raw (packages/kit/src/hash.ts): never convert line endings in example kits or fixtures (TDM-33).
+packages/kit/examples/** -text
+packages/kit/test/fixtures/kits-tdm33/** -text

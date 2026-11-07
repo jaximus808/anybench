@@ -8,6 +8,7 @@
 export type KitIssueCode =
   | "kit_dir_missing"
   | "manifest_missing"
+  | "manifest_symlink"
   | "yaml_syntax"
   | "yaml_warning"
   | "schema"

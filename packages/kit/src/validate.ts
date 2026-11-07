@@ -7,10 +7,10 @@
 // 3. Every workload's bytes hash deterministically (sha256 per file + manifest), and a declared
 //    `sha256` matches.
 // Errors point at anybench.yaml:LINE:COL of the field that references the file.
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { formatIssuePath, type KitSpec } from "@anybench/core";
-import { hashKitPaths, type TreeHash } from "./hash.js";
+import { findKitSymlinks, hashKitPaths, isInsideDir, type TreeHash } from "./hash.js";
 import { formatKitIssue, type KitIssue, type KitIssueCode } from "./issues.js";
 import { KIT_LAYOUT, normalizeKitPath } from "./layout.js";
 import { parseKitManifest } from "./manifest.js";
@@ -97,7 +97,14 @@ class KitChecker {
   async path(
     rel: string,
     at: FieldPath,
-    opts: { kind: Kind; required: boolean; executable?: boolean; defaultOf?: string },
+    opts: {
+      kind: Kind;
+      required: boolean;
+      executable?: boolean;
+      defaultOf?: string;
+      /** Skip the symlink scan of a directory (workloads reject every symlink when hashed). */
+      skipLinkScan?: boolean;
+    },
   ): Promise<boolean> {
     const abs = path.join(this.dir, rel);
     let st;
@@ -113,7 +120,7 @@ class KitChecker {
       return false;
     }
     const real = await realpath(abs);
-    if (real !== this.realDir && !real.startsWith(this.realDir + path.sep)) {
+    if (!isInsideDir(this.realDir, real)) {
       this.add("error", "outside_kit", at, `${rel} resolves outside the kit (symlink to ${real})`);
       return false;
     }
@@ -124,6 +131,20 @@ class KitChecker {
     if (opts.kind === "dir" && !st.isDirectory()) {
       this.add("error", "wrong_file_type", at, `${rel} is not a directory`);
       return false;
+    }
+    if (st.isDirectory() && !opts.skipLinkScan) {
+      let escaped = false;
+      for (const link of await findKitSymlinks(this.dir, rel)) {
+        if (link.inside) continue;
+        escaped = true;
+        this.add(
+          "error",
+          "outside_kit",
+          at,
+          `${link.path} is a symlink that resolves outside the kit (or dangles)`,
+        );
+      }
+      if (escaped) return false;
     }
     if (opts.executable && st.isFile() && (st.mode & 0o111) === 0) {
       this.add("warning", "not_executable", at, `${rel} is not executable (chmod +x ${rel})`);
@@ -149,14 +170,6 @@ class KitChecker {
         .sort();
     } catch {
       return [];
-    }
-  }
-
-  async isDir(rel: string): Promise<boolean> {
-    try {
-      return (await stat(path.join(this.dir, rel))).isDirectory();
-    } catch {
-      return false;
     }
   }
 }
@@ -229,12 +242,18 @@ async function checkWorkloads(c: KitChecker, spec: KitSpec): Promise<WorkloadDig
         kind,
         required: true,
         executable: field === "setup",
+        skipLinkScan: true,
       });
       if (ok) parts.push(rel);
       else missing = true;
     }
-    if (await c.isDir(wdir)) parts.push(wdir);
+    // A bad explicit path is already reported; skip the default folder so one cause gives one error.
     if (missing) continue;
+    // The default folder is optional, but must not resolve outside the kit (workloads -> /elsewhere).
+    const before = c.errors.length;
+    if (await c.path(wdir, base, { kind: "dir", required: false, skipLinkScan: true }))
+      parts.push(wdir);
+    if (c.errors.length > before) continue;
     if (parts.length === 0) {
       c.add(
         "error",
@@ -253,6 +272,8 @@ async function checkWorkloads(c: KitChecker, spec: KitSpec): Promise<WorkloadDig
           base,
           `${p.path} is a symlink: workload files must be plain files so their bytes hash the same on every machine`,
         );
+      else if (p.kind === "outside")
+        c.add("error", "outside_kit", base, `${p.path} resolves outside the kit`);
       else if (p.kind === "special")
         c.add(
           "error",
@@ -300,8 +321,13 @@ async function checkGates(c: KitChecker, spec: KitSpec): Promise<ResolvedGate[]>
     if (g.reference !== undefined) {
       if (await c.path(g.reference, [...base, "reference"], { kind: "any", required: true }))
         reference = g.reference;
-    } else if (await c.isDir(`${KIT_LAYOUT.gateDir(g.id)}/reference`)) {
-      reference = `${KIT_LAYOUT.gateDir(g.id)}/reference/`;
+    } else if (
+      await c.path(`${KIT_LAYOUT.gateDir(g.id)}/reference`, [...base, "reference"], {
+        kind: "any",
+        required: false,
+      })
+    ) {
+      reference = `${KIT_LAYOUT.gateDir(g.id)}/reference`;
     }
     out.push({ id: g.id, check, ...(reference ? { reference } : {}) });
   }
@@ -434,6 +460,20 @@ export async function validateKitDir(dir: string = "."): Promise<KitValidation> 
   const manifestPath = path.join(abs, file);
   let text: string;
   try {
+    if ((await lstat(manifestPath)).isSymbolicLink()) {
+      return result(
+        abs,
+        [
+          {
+            severity: "error",
+            code: "manifest_symlink",
+            file,
+            message: "is a symlink; the manifest must be a regular file inside the kit",
+          },
+        ],
+        [],
+      );
+    }
     text = await readFile(manifestPath, "utf8");
   } catch {
     return result(

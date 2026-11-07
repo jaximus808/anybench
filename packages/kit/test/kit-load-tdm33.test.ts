@@ -149,6 +149,98 @@ describe("workload hashing is deterministic", () => {
       /^anybench\.yaml:15:5: workloads\[0\]: workloads\/small\/input\/hosts is a symlink/,
     );
   });
+
+  it("canonicalizes paths: ./workloads//small/input hashes like workloads/small/input", async () => {
+    const d = await validMinimalKit();
+    const a = await hashKitPaths(d, ["workloads/small/input"]);
+    const b = await hashKitPaths(d, ["./workloads//small/input/", "workloads/small/input"]);
+    expect(b.problems).toEqual([]);
+    expect(b.hash.manifest).toBe(a.hash.manifest);
+    expect(b.hash.sha256).toBe(a.hash.sha256);
+    expect((await hashKitPaths(d, ["../x", "/etc"])).problems.map((p) => p.kind)).toEqual([
+      "outside",
+      "outside",
+    ]);
+  });
+});
+
+describe("symlinks that escape the kit", () => {
+  async function outsideDir(): Promise<string> {
+    const o = await mkdtemp(path.join(tmpdir(), "anybench-kit-tdm33-outside-"));
+    tmpDirs.push(o);
+    await mkdir(path.join(o, "small", "input"), { recursive: true });
+    await writeFile(path.join(o, "small", "input", "secret.txt"), "outside bytes\n");
+    return o;
+  }
+
+  it("refuses a symlinked workloads/ folder, in hashKitPaths and in validateKitDir", async () => {
+    const d = await validMinimalKit();
+    const o = await outsideDir();
+    await rm(path.join(d, "workloads"), { recursive: true });
+    await symlink(o, path.join(d, "workloads"));
+    const h = await hashKitPaths(d, ["workloads/small"]);
+    expect(h.problems).toEqual([{ kind: "outside", path: "workloads/small" }]);
+    expect(h.hash.files).toEqual([]);
+    const r = await validateKitDir(d);
+    expect(r.ok).toBe(false);
+    expect(r.errors.map((e) => [e.code, e.path])).toEqual([["outside_kit", "workloads[0]"]]);
+  });
+
+  it("refuses a symlinked workloads/<id> parent of an explicit input", async () => {
+    const d = await validMinimalKit();
+    const o = await outsideDir();
+    await rm(path.join(d, "workloads", "small"), { recursive: true });
+    await symlink(path.join(o, "small"), path.join(d, "workloads", "small"));
+    const y = path.join(d, "anybench.yaml");
+    await writeFile(
+      y,
+      (await readFile(y, "utf8")).replace(
+        "  - id: small\n",
+        "  - id: small\n    input: workloads/small/input/\n",
+      ),
+    );
+    const r = await validateKitDir(d);
+    expect(r.errors.map((e) => [e.code, e.path])).toEqual([["outside_kit", "workloads[0].input"]]);
+  });
+
+  it("refuses escaping symlinks inside reference/, gates/<id>/reference and proof dirs; allows internal ones", async () => {
+    const d = await validMinimalKit();
+    const o = await outsideDir();
+    const y = path.join(d, "anybench.yaml");
+    await writeFile(
+      y,
+      (await readFile(y, "utf8")).replace(
+        "    kind: output-diff\n",
+        "    kind: output-diff\n  - id: other\n    kind: custom\n    reference: reference/\n",
+      ),
+    );
+    await mkdir(path.join(d, "gates", "other"));
+    await writeFile(path.join(d, "gates", "other", "check.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    await mkdir(path.join(d, "reference", "deep"), { recursive: true });
+    await writeFile(path.join(d, "reference", "a.txt"), "a\n");
+    await symlink("../a.txt", path.join(d, "reference", "deep", "internal.txt")); // allowed
+    await symlink(path.join(o, "small"), path.join(d, "reference", "deep", "leak"));
+    await symlink(o, path.join(d, "gates", "same-output", "reference")); // default reference
+    await symlink("/etc/hosts", path.join(d, "proof", "oracle", "hosts"));
+    const r = await validateKitDir(d);
+    expect(r.errors.map((e) => `${e.code} ${e.path}: ${e.message}`)).toEqual([
+      expect.stringMatching(
+        /^outside_kit gates\[0\]\.reference: gates\/same-output\/reference resolves outside the kit/,
+      ),
+      "outside_kit gates[1].reference: reference/deep/leak is a symlink that resolves outside the kit (or dangles)",
+      "outside_kit proof.oracle.dir: proof/oracle/hosts is a symlink that resolves outside the kit (or dangles)",
+    ]);
+  });
+
+  it("refuses a symlinked anybench.yaml", async () => {
+    const d = await validMinimalKit();
+    const o = await outsideDir();
+    await cp(path.join(d, "anybench.yaml"), path.join(o, "anybench.yaml"));
+    await rm(path.join(d, "anybench.yaml"));
+    await symlink(path.join(o, "anybench.yaml"), path.join(d, "anybench.yaml"));
+    const r = await validateKitDir(d);
+    expect(r.errors.map((e) => e.code)).toEqual(["manifest_symlink"]);
+  });
 });
 
 describe("file checks", () => {
