@@ -1,0 +1,237 @@
+// Contract test (TDM-10): every route has an auth scope and a response schema, ids and paths are
+// unique, path params line up, and the rules from plan.md sections 6 and 8 hold.
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import {
+  ALL_ROUTES,
+  AnybenchEventSchema,
+  ContenderResultSchema,
+  PaymentRequiredSchema,
+  ReportSchema,
+  apiRoutes,
+  buildPath,
+  encodeQuery,
+  isAuthMode,
+  newId,
+  parseRouteRequest,
+  pathParamNames,
+  routeById,
+  RunIdSchema,
+  stringifyJson,
+  UserIdSchema,
+  type RouteSpec,
+} from "../src/index.js";
+
+function objectKeys(schema: z.ZodType | undefined): string[] {
+  if (!schema) return [];
+  if (schema instanceof z.ZodObject) return Object.keys(schema.shape);
+  throw new Error("params must be a z.object");
+}
+
+describe("api contract: every route", () => {
+  it("has a unique id that starts with its group", () => {
+    const ids = new Set<string>();
+    for (const [group, routes] of Object.entries(apiRoutes)) {
+      for (const route of Object.values(routes as Record<string, RouteSpec>)) {
+        expect(route.id.startsWith(`${group}.`), route.id).toBe(true);
+        expect(ids.has(route.id), route.id).toBe(false);
+        ids.add(route.id);
+      }
+    }
+    expect(ids.size).toBe(ALL_ROUTES.length);
+    expect(ALL_ROUTES.length).toBeGreaterThan(60);
+  });
+
+  it("has a unique method + path", () => {
+    const seen = new Set<string>();
+    for (const r of ALL_ROUTES) {
+      const key = `${r.method} ${r.path.replace(/:[A-Za-z_]\w*/g, ":")}`;
+      expect(seen.has(key), key).toBe(false);
+      seen.add(key);
+    }
+  });
+
+  it("has at least one valid auth scope, and `public` is never combined", () => {
+    for (const r of ALL_ROUTES) {
+      expect(r.auth.length, r.id).toBeGreaterThan(0);
+      for (const mode of r.auth) expect(isAuthMode(mode), `${r.id}: ${mode}`).toBe(true);
+      if (r.auth.includes("public")) expect(r.auth, r.id).toEqual(["public"]);
+      if (r.auth.includes("runner")) expect(r.auth, r.id).toEqual(["runner"]);
+      if (r.auth.includes("webhook")) expect(r.auth, r.id).toEqual(["webhook"]);
+    }
+  });
+
+  it("has a response schema and a summary", () => {
+    for (const r of ALL_ROUTES) {
+      expect(r.response, r.id).toBeInstanceOf(z.ZodType);
+      expect(r.summary.length, r.id).toBeGreaterThan(5);
+    }
+  });
+
+  it("declares exactly the :params in its path", () => {
+    for (const r of ALL_ROUTES) {
+      expect(objectKeys(r.params).sort(), r.id).toEqual(pathParamNames(r.path).sort());
+    }
+  });
+
+  it("sends no body on GET, and webhooks take a raw body", () => {
+    for (const r of ALL_ROUTES) {
+      if (r.method === "GET") expect(r.body, r.id).toBeUndefined();
+      if (r.auth[0] === "webhook") {
+        expect(r.rawBody, r.id).toBe(true);
+        expect(r.path.startsWith("/webhooks/"), r.id).toBe(true);
+      }
+      if (r.kind === "sse") expect(r.stream, r.id).toBeDefined();
+    }
+  });
+
+  it("keeps /admin routes admin-only", () => {
+    for (const r of ALL_ROUTES) {
+      if (r.path.startsWith("/admin/")) expect(r.auth, r.id).toEqual(["admin"]);
+      if (r.auth.includes("admin")) expect(r.path.startsWith("/admin/"), r.id).toBe(true);
+    }
+  });
+});
+
+describe("api contract: required routes", () => {
+  it("has the SSE stream with Last-Event-ID", () => {
+    const r = apiRoutes.events.stream;
+    expect(r.method).toBe("GET");
+    expect(r.path).toBe("/runs/:id/stream");
+    expect(r.kind).toBe("sse");
+    expect(r.stream.event).toBe(AnybenchEventSchema);
+    const ok = parseRouteRequest(r, {
+      params: { id: newId(RunIdSchema) },
+      headers: { "last-event-id": "41" },
+    });
+    expect(ok.ok && ok.request.headers["last-event-id"]).toBe(41);
+  });
+
+  it("has the runner ingest route", () => {
+    const r = apiRoutes.events.ingest;
+    expect([r.method, r.path, r.auth]).toEqual(["POST", "/v1/trials/:id/events", ["runner"]]);
+  });
+
+  it("has the billing routes of plan.md section 8 and the 402 shape", () => {
+    expect(apiRoutes.billing.linkCard.path).toBe("/billing/link-card");
+    expect(apiRoutes.billing.portal.path).toBe("/billing/portal");
+    expect(apiRoutes.billing.summary.path).toBe("/billing/summary");
+    expect(apiRoutes.billing.stripeWebhook.path).toBe("/webhooks/stripe");
+    expect(apiRoutes.runs.go.errors[402]).toBe(PaymentRequiredSchema);
+    expect(Object.keys(PaymentRequiredSchema.shape).sort()).toEqual(["link_card_url", "reason"]);
+  });
+
+  it("requires a reason on admin grant and comp", () => {
+    const grant = apiRoutes.admin.grant;
+    const comp = apiRoutes.admin.comp;
+    expect(grant.path).toBe("/admin/users/:id/grant");
+    expect(comp.path).toBe("/admin/runs/:id/comp");
+    const user = { id: newId(UserIdSchema) };
+    const run = { id: newId(RunIdSchema) };
+    const noReason = parseRouteRequest(grant, {
+      params: user,
+      body: { amount_micro_usd: "5000000" },
+    });
+    expect(noReason.ok).toBe(false);
+    if (!noReason.ok) expect(noReason.error.error.issues?.join("\n")).toContain("body.reason");
+    expect(parseRouteRequest(comp, { params: run, body: {} }).ok).toBe(false);
+    expect(parseRouteRequest(comp, { params: run, body: { reason: "  " } }).ok).toBe(false);
+    const ok = parseRouteRequest(grant, {
+      params: user,
+      body: { amount_micro_usd: "5000000", reason: "YC demo" },
+    });
+    expect(ok.ok && ok.request.body.amount_micro_usd).toBe(5_000_000n);
+  });
+
+  it("rejects float money and zero grants", () => {
+    const params = { id: newId(UserIdSchema) };
+    for (const amount of [5.5, 5_000_000, "1.5", "0"]) {
+      const r = parseRouteRequest(apiRoutes.admin.grant, {
+        params,
+        body: { amount_micro_usd: amount, reason: "demo grant" },
+      });
+      expect(r.ok, String(amount)).toBe(false);
+    }
+  });
+
+  it("looks routes up by id", () => {
+    expect(routeById("runs.get")).toBe(apiRoutes.runs.get);
+    expect(routeById("nope")).toBeUndefined();
+  });
+});
+
+describe("api contract: paths, query and JSON", () => {
+  it("builds paths with encoded params and refuses missing ones", () => {
+    expect(buildPath("/runs/:id/contenders/:contenderId", { id: "a b", contenderId: "c" })).toBe(
+      "/runs/a%20b/contenders/c",
+    );
+    expect(() => buildPath("/runs/:id", {})).toThrow(/missing path param 'id'/);
+  });
+
+  it("encodes query arrays as csv and drops undefined", () => {
+    expect(encodeQuery({ state: ["running", "failed"], cursor: undefined, limit: 10 })).toBe(
+      "?state=running%2Cfailed&limit=10",
+    );
+    expect(encodeQuery({})).toBe("");
+  });
+
+  it("parses csv query lists and coerces numbers", () => {
+    const r = parseRouteRequest(apiRoutes.runs.list, {
+      query: { state: "running,failed", limit: "5" },
+    });
+    expect(r.ok && r.request.query).toEqual({ state: ["running", "failed"], limit: 5 });
+    const bad = parseRouteRequest(apiRoutes.runs.list, { query: { state: "flying" } });
+    expect(bad.ok).toBe(false);
+  });
+
+  it("writes bigint money as decimal strings", () => {
+    expect(stringifyJson({ a: 12_500_000n, b: [-1n] })).toBe('{"a":"12500000","b":["-1"]}');
+  });
+});
+
+describe("api contract: correctness gate in the report", () => {
+  const measured = {
+    requirement_id: "wall",
+    type: "measured" as const,
+    title: "Wall time",
+    value: 1.2,
+    unit: "s",
+    ci95: null,
+    gate_id: "output-matches",
+    gate_pass_rate: 1,
+    score: 80,
+  };
+
+  it("accepts a gated measured value", () => {
+    const r = ReportSchema.shape.contenders.element.safeParse({
+      contender_id: newId(RunIdSchema),
+      name: "a",
+      role: "subject",
+      score: 80,
+      ci95: null,
+      delta_vs_baseline: null,
+      requirements: [measured],
+      wins: [],
+      losses: [],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a measured value whose gate never passed, and a score with nothing gated", () => {
+    const ungated = { ...measured, gate_pass_rate: 0 };
+    const r = ContenderResultSchema.safeParse({
+      contender_id: newId(RunIdSchema),
+      name: "a",
+      role: "subject",
+      score: 80,
+      ci95: null,
+      delta_vs_baseline: null,
+      requirements: [ungated],
+      wins: [],
+      losses: [],
+    });
+    expect(r.success).toBe(false);
+    const msgs = r.error?.issues.map((i) => i.message).join("\n") ?? "";
+    expect(msgs).toContain("no speed or quality number without a correctness gate");
+  });
+});
