@@ -87,6 +87,19 @@ export const EnvSchema = z.object({
   ADMIN_GITHUB_LOGINS: optionalString,
   /** Where sign-in lands afterwards; defaults to the first ALLOWED_ORIGINS entry. */
   PUBLIC_WEB_URL: optionalUrl,
+  /**
+   * Price of one eval-computer billing block (Naïve: 10 min, paid in advance), integer micro-USD,
+   * for computer cost and leak alerts (TDM-31). Default: Naïve's default 2 vCPU / 4 GiB size at
+   * $0.0084 per vCPU-block + $0.0027 per GiB-block (docs/findings/naive-platform-hosting.md).
+   */
+  COMPUTER_BLOCK_PRICE_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("27600")
+      .transform((v) => BigInt(v)),
+  ),
 });
 export type Env = z.infer<typeof EnvSchema>;
 
