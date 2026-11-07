@@ -1,0 +1,552 @@
+{
+  "digest": {
+    "source": {
+      "kind": "github",
+      "url": "https://github.com/sharkdp/hyperfine",
+      "ref": "master",
+      "commit": "c5161524980522320c7d3425e714cc0965a869a5"
+    },
+    "name": "hyperfine",
+    "kind": "software",
+    "summary": "A command-line benchmarking tool",
+    "languages": [
+      {
+        "name": "Rust",
+        "bytes": 290074
+      },
+      {
+        "name": "Python",
+        "bytes": 20916
+      }
+    ],
+    "entrypoints": [
+      {
+        "kind": "bin",
+        "name": "hyperfine",
+        "command": "hyperfine",
+        "path": "src/main.rs"
+      },
+      {
+        "kind": "bin",
+        "name": "advanced_statistics",
+        "command": "advanced_statistics"
+      },
+      {
+        "kind": "bin",
+        "name": "plot_benchmark_comparison",
+        "command": "plot_benchmark_comparison"
+      },
+      {
+        "kind": "bin",
+        "name": "plot_histogram",
+        "command": "plot_histogram"
+      },
+      {
+        "kind": "bin",
+        "name": "plot_parametrized",
+        "command": "plot_parametrized"
+      },
+      {
+        "kind": "bin",
+        "name": "plot_progression",
+        "command": "plot_progression"
+      },
+      {
+        "kind": "bin",
+        "name": "plot_whisker",
+        "command": "plot_whisker"
+      },
+      {
+        "kind": "bin",
+        "name": "welch_ttest",
+        "command": "welch_ttest"
+      }
+    ],
+    "build_commands": ["cargo build --release", "pip install -e ."],
+    "test_commands": ["cargo test"],
+    "docs": ["README.md", "CHANGELOG.md", "doc/hyperfine.1"],
+    "releases": {
+      "latest": "v2.0.0",
+      "tags": [
+        "v2.0.0",
+        "v2.0.0-alpha.1",
+        "v2.0.0-alpha.2",
+        "v1.21.0",
+        "v1.20.0",
+        "v1.19.0",
+        "v1.18.0",
+        "v1.17.0",
+        "v1.16.1",
+        "v1.16.0",
+        "v1.15.0",
+        "v1.14.0",
+        "v1.13.0",
+        "v1.12.0",
+        "v1.11.0",
+        "v1.10.0",
+        "v1.9.0",
+        "v1.8.0",
+        "v1.7.0",
+        "v1.6.0",
+        "v1.5.0",
+        "v1.4.0",
+        "v1.3.0",
+        "v1.2.0",
+        "v1.1.0",
+        "v1.0.0",
+        "v0.5.0",
+        "v0.4.0",
+        "v0.3.0",
+        "v0.2.0"
+      ]
+    },
+    "files": {
+      "count": 75,
+      "total_bytes": 593962
+    },
+    "suggested_driver_types": ["cli"],
+    "ingested_at": "2026-11-07T21:50:11.888Z",
+    "hash": "4fdae81bb65ec5715647d5df587397f1a4672ee34ccac455e361962d8dbc678e"
+  },
+  "context": {
+    "tree": {
+      "paths": [
+        ".github/dependabot.yml",
+        ".github/workflows/CICD.yml",
+        ".gitignore",
+        "CHANGELOG.md",
+        "CITATION.cff",
+        "Cargo.toml",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "README.md",
+        "build.rs",
+        "doc/execution-order.png",
+        "doc/execution-order.svg",
+        "doc/histogram.png",
+        "doc/hyperfine.1",
+        "doc/whisker.png",
+        "pyproject.toml",
+        "scripts/README.md",
+        "scripts/advanced_statistics.py",
+        "scripts/plot_benchmark_comparison.py",
+        "scripts/plot_histogram.py",
+        "scripts/plot_parametrized.py",
+        "scripts/plot_progression.py",
+        "scripts/plot_utils.py",
+        "scripts/plot_whisker.py",
+        "scripts/ruff.toml",
+        "scripts/welch_ttest.py",
+        "src/benchmark/benchmark_result.rs",
+        "src/benchmark/executor.rs",
+        "src/benchmark/measurement.rs",
+        "src/benchmark/mod.rs",
+        "src/benchmark/scheduler.rs",
+        "src/cli.rs",
+        "src/command.rs",
+        "src/error.rs",
+        "src/export/asciidoc.rs",
+        "src/export/csv.rs",
+        "src/export/json.rs",
+        "src/export/json/metadata.rs",
+        "src/export/markdown.rs",
+        "src/export/markup.rs",
+        "src/export/mod.rs",
+        "src/export/orgmode.rs",
+        "src/export/tests.rs",
+        "src/main.rs",
+        "src/metric.rs",
+        "src/options.rs",
+        "src/outlier_detection.rs",
+        "src/output/mod.rs",
+        "src/output/progress_bar.rs",
+        "src/output/report.rs",
+        "src/output/warnings.rs",
+        "src/parameter/mod.rs",
+        "src/parameter/range_step.rs",
+        "src/parameter/tokenize.rs",
+        "src/quantity/mod.rs",
+        "src/quantity/statistics.rs",
+        "src/shell_syntax.rs",
+        "src/timer/linux_counters.rs",
+        "src/timer/macos_counters.rs",
+        "src/timer/mod.rs",
+        "src/timer/unix_timer.rs",
+        "src/timer/wall_clock_timer.rs",
+        "src/timer/windows_timer.rs",
+        "src/util/exit_code.rs",
+        "src/util/mod.rs",
+        "src/util/number.rs",
+        "src/util/randomized_environment_offset.rs",
+        "tests/common.rs",
+        "tests/example_input_file.txt",
+        "tests/execution_order_tests.rs",
+        "tests/integration_tests.rs",
+        "tests/snapshots/integration_tests__json_export_basic.snap",
+        "tests/snapshots/integration_tests__json_export_parameterized_with_reference.snap",
+        "tests/snapshots/integration_tests__json_export_single_run.snap",
+        "Cargo.lock"
+      ],
+      "dirs": [
+        {
+          "path": "src",
+          "files": 41,
+          "bytes": 233042
+        },
+        {
+          "path": "doc",
+          "files": 5,
+          "bytes": 166619
+        },
+        {
+          "path": "tests",
+          "files": 7,
+          "bytes": 68874
+        },
+        {
+          "path": "src/export",
+          "files": 9,
+          "bytes": 45513
+        },
+        {
+          "path": "src/benchmark",
+          "files": 5,
+          "bytes": 40462
+        },
+        {
+          "path": "scripts",
+          "files": 10,
+          "bytes": 22254
+        },
+        {
+          "path": "src/timer",
+          "files": 6,
+          "bytes": 17492
+        },
+        {
+          "path": ".github",
+          "files": 2,
+          "bytes": 15619
+        },
+        {
+          "path": ".github/workflows",
+          "files": 1,
+          "bytes": 15334
+        },
+        {
+          "path": "src/output",
+          "files": 4,
+          "bytes": 13848
+        },
+        {
+          "path": "tests/snapshots",
+          "files": 3,
+          "bytes": 12398
+        },
+        {
+          "path": "src/quantity",
+          "files": 2,
+          "bytes": 8786
+        },
+        {
+          "path": "src/parameter",
+          "files": 3,
+          "bytes": 6982
+        },
+        {
+          "path": "src/util",
+          "files": 4,
+          "bytes": 2310
+        },
+        {
+          "path": "src/export/json",
+          "files": 1,
+          "bytes": 1396
+        }
+      ],
+      "truncated": false
+    },
+    "readme": {
+      "path": "README.md",
+      "text": "# hyperfine\n\nA command-line benchmarking tool.\n\n<img width=\"800\" height=\"195\" alt=\"hyperfine-demo-800\" src=\"https://github.com/user-attachments/assets/9a5a45d3-df3f-4e0e-8cc9-5d8153f39e48\" />\n\n\n*(hyperfine in action, benchmarking [`mypy`](https://mypy-lang.org/) and [`ty`](https://ty.dev/))*\n\n\n## Features\n\n* Statistical analysis across multiple runs.\n* Support for various performance metrics and hardware counters.\n* Support for arbitrary shell commands.\n* Constant feedback about the benchmark progress and current estimates.\n* Warmup runs can be executed before the actual benchmark.\n* Cache-clearing commands can be set up before each benchmark run.\n* Statistical outlier detection to detect interference from other programs and caching effects.\n* Export results to various formats: CSV, JSON, Markdown, AsciiDoc.\n* Parameterized benchmarks (e.g. vary the number of threads).\n* Cross-platform\n\n## Usage\n\n### Basic benchmarks\n\nTo run a benchmark, you can simply call `hyperfine <command>...`. Each argument is an executable\nand its arguments. Commands run directly by default; use `-S` for shell syntax such as\npipes, redirections, and wildcards. For example:\n```sh\nhyperfine 'sleep 0.3'\n```\n\nHyperfine will automatically determine the number of runs to perform for each command. By default,\nit will perform *at least* 10 benchmarking runs and estimate a run count targeting roughly\n3 seconds, including shell overhead and preparation and conclusion commands. To set an exact\nnumber of runs, you can use the `-r`/`--runs` option:\n```sh\nhyperfine --runs 5 'sleep 0.3'\n```\n\nIf you want to compare different programs, you can pass multiple commands:\n```sh\nhyperfine 'hexdump file' 'xxd file'\n```\n\nCommands run and appear in input order. The first command is the reference for all comparisons;\neach subsequent result shows its change from that reference.\n\n### Warmup runs and preparation commands\n\nFor programs that perform a lot of disk I/O, the benchmarking results can be heavily influenced\nby disk caches and whether they are cold or warm.\n\nIf you want to run the benchmark on a warm cache, you can use the `-w`/`--warmup` option to\nperform a certain number of program executions before the actual benchmark:\n```sh\nhyperfine -S --warmup 3 'grep -R TODO *'\n```\n\nConversely, if you want to run the benchmark for a cold cache, you can use the `-p`/`--prepare`\noption to run a special command before *each* benchmark run. For example, to clear Linux filesystem caches,\nyou can run\n```sh\nsync; echo 3 | sudo tee /proc/sys/vm/drop_caches\n```\nTo use this specific command with hyperfine, call `sudo -v` to temporarily gain sudo permissions\nand then call:\n```sh\nhyperfine -S --prepare 'sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' 'grep -R TODO *'\n```\n\n### Parameterized benchmarks\n\nIf you want to run a series of benchmarks where a single parameter is varied (say, the number of\nthreads), you can use the `-P`/`--parameter-scan` option and call:\n```sh\nhyperfine --prepare 'make clean' --parameter-scan num_threads 1 12 'make -j {num_threads}'\n```\nThis also works with decimal numbers. The `-D`/`--parameter-step-size` option can be used\nto control the step size:\n```sh\nhyperfine --parameter-scan delay 0.3 0.7 -D 0.2 'sleep {delay}'\n```\nThis runs `sleep 0.3`, `sleep 0.5` and `sleep 0.7`.\n\nFor non-numeric parameters, you can also supply a list of values with the `-L`/`--parameter-list`\noption:\n```\nhyperfine -L compiler g++,clang++ '{compiler} -O2 main.cpp'\n```\n\nA common use case is comparing the same command across multiple Git branches. Use `--setup`\nto switch branches once before each set of benchmark runs, so the branch switch is not part of\nthe measured command:\n```sh\nhyperfine \\\n    --parameter-list branch main,performance-improvements \\\n    --setup 'git switch {branch}' \\\n    'python main.py'\n```\n\nIf you need a unique value for each individual run of a benchmark command, hyperfine also exposes\nthe zero-based `$HYPERFINE_ITERATION` environment variable inside the benchmarked command itself:\n```sh\nhyperfine -S 'my-command > output-${HYPERFINE_ITERATION}.log'\n```\n\n### Intermediate shell\n\nBy default, benchmarked commands, including warmup runs, are executed directly, without an intermediate shell (`--shell=none`).\nArguments are split using shell-like quoting, so quoted arguments containing spaces are supported.\nShell syntax such as pipes, redirections, environment-variable expansion, `*`, and `~` is not interpreted.\nThis avoids shell startup overhead and the noise from correcting for it, especially for fast commands\n(< 5 ms).\n\nCommands containing unquoted, standalone shell operators such as `&&` or `>` require an explicit\nchoice: use `-S` / `--shell=default` to interpret shell syntax, or `-N` / `--shell=none` to pass\nthe operators as literal arguments.\n\nTo enable shell syntax, use `-S` (an alias for `--shell=default`). This selects `sh`\non Unix (resolved through `PATH`) or `cmd.exe` on Windows:\n```sh\nhyperfine -S 'sleep 0.1 && echo done'\n```\n\nYou can also select a specific shell with `--shell <SHELL>`:\n```sh\nhyperfine --shell zsh 'for i in {1..10000}; do echo test; done'\n```\n\nThe `--setup`, `--prepare`, `--conclude`, and `--cleanup` commands always run through a shell.\nThey use the shell selected by `--shell`, or the platform shell (`sh` on Unix, `cmd.exe` on Windows)\nwhen `--shell` is omitted or set to `none`.\n\nWhen benchmarked commands use a shell, hyperfine *corrects for the shell spawning time*. It runs the shell with an\nempty command multiple times to measure its startup time, then subtracts this time from each\ntime measurement.\n\n\n### Shell functions\n\nIf you are using bash, you can export shell functions to directly benchmark them with hyperfine:\n\n```bash\nmy_function() { sleep 1; }\nexport -f my_function\nhyperfine --shell=bash my_function\n```\n\nOtherwise, inline the function into the benchmarked command:\n\n```sh\nhyperfine -S 'my_function() { sleep 1; }; my_function'\n```\n\n### Environment variables\n\nUse `--env` to set environment variables for benchmark commands and their respective setup, prepare, conclude,\nand cleanup commands. Assignments are space-separated and support shell-style quoting,\nbut no shell expansion:\n\n```sh\nhyperfine --env 'OMP_NUM_THREADS=8 CFLAGS=\"-O3 -march=native\"' 'my_command'\n```\n\nSpecify once for all commands or once per benchmark command:\n\n```sh\nhyperfine \\\n  --env 'OMP_NUM_THREADS=8' './benchmark-cpp' \\\n  --env 'RAYON_NUM_THREADS=8' './benchmark-rust'\n```\n\nUse an empty `--env=''` for no overrides. Values can contain parameter placeholders.\nFor example, the following benchmarks `my_command` with `OMP_NUM_THREADS` ranging from 1 to 8:\n\n```sh\nhyperfine -P threads 1 8 --env 'OMP_NUM_THREADS={threads}' 'my_command'\n```\n\n### Choosing metrics and units\n\nBy default, hyperfine displays wall-clock time and memory usage\n(`time_wall_clock,memory_peak_resident`). Use `--metrics` with a\ncomma-separated list to select a different set of metrics. Each\nmetric can have an optional unit after it:\n\n```sh\nhyperfine \\\n    --metrics memory_peak_resident:MiB,time_wall_clock:ms,instructions \\\n    './baseline' './candidate'\n```\n\nThe following metrics are available:\n\n- **`time_wall_clock`**: Time from start to finish, including time spent waiting, in seconds.\n\n- **`time_user`**: CPU time spent executing application and library code in user mode,\n  summed across threads, in seconds.\n\n  - Linux/macOS: Includes child-process time when parents wait for their children to finish.\n  - Windows: Includes the command and its child processes.\n\n- **`time_system`**: CPU time spent executing kernel code on the program's behalf, for example\n  to read files, summed across threads, in seconds.\n\n  - Linux/macOS: Includes child-process time when parents wait for their children to finish.\n  - Windows: Includes the command and its child processes.\n\n- **`time_cpu`**: Total CPU time, calculated as `time_user + time_system` for each run, in seconds.\n  It excludes time spent sleeping or waiting without executing. CPU time is summed across\n  threads, so it can exceed wall-clock time: four threads running on four cores for one second\n  can consume roughly four CPU-seconds.\n\n- **`memory_peak_resident`**: Peak memory held in physical RAM, in bytes.\n\n  - Linux/macOS: Peak resident set size (RSS). This is the largest per-process peak among the\n    command and child processes (whose usage is collected when their parents wait for them),\n    *not the simultaneous total memory of the full process tree*. On Linux, measuring commands\n    with a very small peak RSS (below the peak inherited from hyperfine at startup, which can\n    be a few MiB) will currently result in that inherited value being reported instead.\n  - Windows: Currently not supported.\n\n- **`cpu_cycles`**: CPU cycles consumed.\n\n  - Linux: Includes threads and child processes, but excludes kernel and hypervisor execution.\n  - macOS: Includes the process's threads and kernel execution, but excludes child processes.\n  - Windows: Currently not supported.\n\n- **`instructions`**: Completed CPU instructions.\n\n  - Linux/macOS: Same scope as `cpu_cycles`.\n  - Windows: Currently not supported.\n\n- **`cache_references`**: Cache accesses counted by the CPU's generic cache event.\n\n  - Linux: Same scope as `cpu_cycles`. Cache-event definitions depend on the CPU.\n  - macOS/Windows: Currently not supported.\n\n- **`cache_misses`**: Cache misses.\n\n  - Linux: Same scope as `cpu_cycles`. Cache-event definitions depend on the CPU.\n  - macOS/Windows: Currently not supported.\n\n- **`branch_misses`**: Mispredicted branches.\n\n  - Linux: Same scope as `cpu_cycles`.\n  - macOS/Windows: Currently not supported.\n\nNote that hardware counters are not available when a shell is enabled (`--shell=..`).\n\nTime measurements support units `ns`, `us`, `ms`, `s`, `min`, and `h`. Memory measurements\nsupport `B`, `kB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, and `TiB`. Hardware counters\nsupport `count` (1), `k` (thousand), `M` (million), and `B` (billion).\n\nYou can also use a preset to select a group of metrics:\n\n| Preset | Metrics |\n|:---|:---|\n| `--metrics=default` | `time_wall_clock,memory_peak_resident` |\n| `--metrics=time` | `time_wall_clock,time_cpu,time_user,time_system` |\n| `--metrics=all` | All available metrics |\n\n### Exporting results\n\nHyperfine can export results to CSV, JSON, Markdown, AsciiDoc, and org-mode. CSV exports all\nselected metrics, while Markdown, AsciiDoc, and org-mode contain only the primary metric,\nwhich is the first metric selected by `--metrics`.\n\n#### Markdown\n\nYou can use the `--export-markdown <file>` option to create tables like the following:\n\n| Command | Mean Wall Time [s] | Change | Factor |\n|:---|---:|---:|:---|\n| `find . -iregex '.*[0-9]\\.jpg$'` | 2.275 ± 0.046 |  |  |\n| `find . -iname '*[0-9].jpg'` | 1.427 ± 0.026 | -37.3% | (1.6x faster) |\n| `fd -HI '.*[0-9]\\.jpg$'` | 0.232 ± 0.002 | -89.8% | (9.8x faster) |\n\n#### JSON\n\nThe JSON export includes all available metrics listed in [Choosing metrics and units](#choosing-metrics-and-units)\nfor each measured run (excluding warmup runs).\n\nThe JSON output is useful if you want to analyze the benchmark results in more detail. The\n[`scripts/`](https://github.com/sharkdp/hyperfine/tree/master/scripts) folder includes a lot\nof helpful Python programs to further analyze benchmark results and create helpful\nvisualizations, like a histogram of runtimes or a whisker plot to compare\nmultiple benchmarks.\n\nFor example, these two commands create the following plots:\n\n```bash\nuvx --from 'git+https://github.com/sharkdp/hyperfine' \\\n  plot_histogram results.json\nuvx --from 'git+https://github.com/sharkdp/hyperfine' \\\n  plot_whisker results.json\n```\n\n| ![](doc/histogram.png) | ![](doc/whisker.png) |\n|---:|---:|\n\n\n#### CSV\n\nUse `--export-csv <file>` to export one row per command. Each metric selected by `--metrics`\ncontributes a group of columns, in selection order: `<metric>_unit`, `<metric>_mean`,\n`<metric>_stddev`, `<metric>_median`, `<metric>_min`, and `<metric>_max`.\n\nCSV uses explicitly selected units, or base units (seconds, bytes, or counts) when omitted.\n\n### Detailed benchmark flowchart\n\nThe following chart explains the execution order of various benchmark runs when using options\nlike `--warmup`, `--prepare <cmd>`, `--setup <cmd>` or `--cleanup <cmd>`:\n\n![](doc/execution-order.png)\n\n## Installation\n\n[![Packaging status](https://repology.org/badge/vertical-allrepos/hyperfine.svg?columns=3&exclude_unsupported=1)](https://repology.org/project/hyperfine/versions)\n\n### On Ubuntu\n\nOn Ubuntu, hyperfine can be installed [from the official repositories](https://launchpad.net/ubuntu/+source/rust-hyperfine):\n```\napt install hyperfine\n```\n\nAlternatively, for the latest version, you can download the appropriate `.deb` package from the [Release page](https://github.com/sharkdp/hyperfine/releases) and install it via `dpkg`:\n```\nwget https://github.com/sharkdp/hyperfine/releases/download/v2.0.0/hyperfine_2.0.0_amd64.deb\nsudo dpkg -i hyperfine_2.0.0_amd64.deb\n```\n\n### On Fedora\n\nOn Fedora, hyperfine can be installed from the official repositories:\n\n```sh\ndnf install hyperfine\n```\n\n### On Alpine Linux\n\nOn Alpine Linux, hyperfine can be installed [from the official repositories](https://pkgs.alpinelinux.org/packages?name=hyperfine):\n```\napk add hyperfine\n```\n\n### On Arch Linux\n\nOn Arch Linux, hyperfine can be installed [from the official repositories](https://archlinux.org/packages/extra/x86_64/hyperfine/):\n```\npacman -S hyperfine\n```\n\n### On Debian Linux\n\nOn Debian Linux, hyperfine can be installed [from the official repositories](https://packages.debian.org/hyperfine):\n```\napt install hyperfine\n```\n\n### On Exherbo Linux\n\nOn Exherbo Linux, hyperfine can be installed [from the rust repositories](https://gitlab.exherbo.org/exherbo/rust/-/tree/master/packages/sys-apps/hyperfine):\n```\ncave resolve -x repository/rust\ncave resolve -x hyperfine\n```\n\n### On NixOS\n\nOn NixOS, hyperfine can be installed [from the official repositories](https://nixos.org/nixos/packages.html?query=hyperfine):\n```\nnix-env -i hyperfine\n```\n\n### On Flox\n\nOn Flox, hyperfine can be installed as follows.\n```\nflox install hyperfine\n```\nHyperfine's version in Flox follows that of Nix.\n\n### On openSUSE\n\nOn openSUSE, hyperfine can be installed [from the official repositories](https://software.opensuse.org/package/hyperfine):\n```\nzypper install hyperfine\n```\n\n### On Void Linux\n\nHyperfine can be installed via xbps\n\n```\nxbps-install -S hyperfine\n```\n\n### On macOS\n\nHyperfine can be installed via [Homebrew](https://brew.sh):\n```\nbrew install hyperfine\n```\n\nOr you can install using [MacPorts](https://www.macports.org):\n```\nsudo port selfupdate\nsudo port install hyperfine\n```\n\n### On FreeBSD\n\nHyperfine can be installed via pkg:\n```\npkg install hyperfine\n```\n\n### On OpenBSD\n\n```\ndoas pkg_add hyperfine\n```\n\n### On Windows\n\nHyperfine can be installed via [Chocolatey](https://community.chocolatey.org/packages/hyperfine), [Scoop](https://scoop.sh/#/apps?q=hyperfine&s=0&d=1&o=true&id=8f7c10f75ecf5f9e42a862c615257328e2f70f61), or [Winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/s/sharkdp/hyperfine):\n```\nchoco install hyperfine\n```\n```\nscoop install hyperfine\n```\n```\nwinget install hyperfine\n```\n\n### With conda\n\nHyperfine can be installed via [`conda`](https://conda.io/en/latest/) from the [`conda-forge`](https://anaconda.org/conda-forge/hyperfine) channel:\n```\nconda install -c conda-forge hyperfine\n```\n\n### With cargo (Linux, macOS, Windows)\n\nHyperfine can be installed from source via [cargo](https://doc.rust-lang.org/cargo/):\n```\ncargo install --locked hyperfine\n```\n\nMake sure that you use Rust 1.97 or newer.\n\n### From binaries (Linux, macOS, Windows)\n\nDownload the corresponding archive from the [Release page](https://github.com/sharkdp/hyperfine/releases).\n\n## Alternative tools\n\nHyperfine is inspired by [bench](https://github.com/Gabriella439/bench).\n\n## Integration with other tools\n\n[Chronologer](https://github.com/dandavison/chronologer) is a tool that uses `hyperfine` to\nvisualize changes in benchmark timings across your Git history.\n\n[Bencher](https://github.com/bencherdev/bencher) is a continuous benchmarking tool that supports `hyperfine` to\ntrack benchmarks and catch performance regressions in CI.\n\nDrop hyperfine JSON outputs onto the [Venz](https://try.venz.dev) chart to visualize the results,\nand manage hyperfine configurations.\n\nMake sure to check out the [`scripts` folder](https://github.com/sharkdp/hyperfine/tree/master/scripts)\nin this repository for a set of tools to work with `hyperfine` benchmark results.\n\n## Origin of the name\n\nThe name *hyperfine* was chosen in reference to the hyperfine levels of caesium 133 which play a crucial role in the\n[definition of our base unit of time](https://en.wikipedia.org/wiki/Second#History_of_definition)\n— the second.\n\n## Citing hyperfine\n\nThank you for considering citing hyperfine in your research work. Please see the information\nin the sidebar on how to properly cite hyperfine.\n\n## License\n\n`hyperfine` is dual-licensed under the terms of the MIT License and the Apache License 2.0.\n\nSee the [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) files for details.\n",
+      "truncated": false
+    },
+    "manifests": [
+      {
+        "path": "Cargo.toml",
+        "kind": "Cargo.toml",
+        "text": "[package]\nauthors = [\"David Peter <mail@david-peter.de>\"]\ncategories = [\"command-line-utilities\"]\ndescription = \"A command-line benchmarking tool\"\nhomepage = \"https://github.com/sharkdp/hyperfine\"\nlicense = \"MIT OR Apache-2.0\"\nname = \"hyperfine\"\nreadme = \"README.md\"\nrepository = \"https://github.com/sharkdp/hyperfine\"\nversion = \"2.0.0\"\nedition = \"2018\"\nbuild = \"build.rs\"\nrust-version = \"1.97.0\"\n\n[features]\n# Use the nightly feature windows_process_extensions_main_thread_handle\nwindows_process_extensions_main_thread_handle = []\n\n[dependencies]\ncolored = \"3.1\"\n# Newer versions regress ETA estimates: https://github.com/console-rs/indicatif/issues/580\nindicatif = \"=0.17.4\"\ncsv = \"1.4\"\nserde = { version = \"1.0\", features = [\"derive\"] }\nserde_json = \"1.0\"\nrust_decimal = \"1.43\"\nrand = \"0.10\"\nshell-words = \"1.1\"\nterminal_size = \"0.4\"\nthiserror = \"2.0\"\nanyhow = \"1.0\"\nuom = { version = \"0.36.0\", default-features = false, features = [\"std\", \"si\", \"f64\"] }\nhumantime = \"2\"\nplatform-info = \"2.2\"\n\n[target.'cfg(not(windows))'.dependencies]\nlibc = \"0.2\"\n\n[target.'cfg(windows)'.dependencies]\nwindows-sys = { version = \"0.61\", features = [\n    \"Win32_Foundation\",\n    \"Win32_Security\",\n    \"Win32_System_JobObjects\",\n    \"Win32_System_LibraryLoader\",\n    \"Win32_System_Threading\",\n] }\n\n[target.'cfg(all(windows, not(windows_process_extensions_main_thread_handle)))'.dependencies]\nonce_cell = \"1.21\"\n\n[target.'cfg(target_os=\"linux\")'.dependencies]\nnix = { version = \"0.31\", features = [\"zerocopy\"] }\n\n[target.'cfg(all(target_os = \"linux\", target_pointer_width = \"64\", any(target_arch = \"aarch64\", target_arch = \"x86_64\", target_arch = \"riscv64\", target_arch = \"powerpc64\", target_arch = \"loongarch64\")))'.dependencies]\nperf-event-open-sys = \"6\"\n\n[dependencies.clap]\nversion = \"4\"\ndefault-features = false\nfeatures = [\n    \"suggestions\",\n    \"color\",\n    \"wrap_help\",\n    \"cargo\",\n    \"help\",\n    \"usage\",\n    \"error-context\",\n]\n\n[dev-dependencies]\napprox = \"0.5\"\nassert_cmd = \"2.2\"\ninsta = { version = \"1.48\", features = [\"yaml\", \"filters\"] }\ninsta-cmd = \"0.7\"\npredicates = \"3.1\"\ntempfile = \"3.27\"\n\n[profile.dev.package]\ninsta.opt-level = 3\nsimilar.opt-level = 3\n\n[build-dependencies]\nclap = \"4.6\"\nclap_complete = \"4.6\"\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n",
+        "truncated": false
+      },
+      {
+        "path": "pyproject.toml",
+        "kind": "pyproject.toml",
+        "text": "[project]\nname = \"hyperfine-scripts\"\nversion = \"2.0.0\"\ndescription = \"Plot and analyze hyperfine JSON benchmark results\"\nrequires-python = \">=3.10\"\nlicense-files = [\"LICENSE-APACHE\", \"LICENSE-MIT\"]\ndependencies = [\n    \"matplotlib\",\n    \"numpy\",\n    \"pyqt6\",\n    \"scipy\",\n]\n\n[project.scripts]\nadvanced_statistics = \"advanced_statistics:main\"\nplot_benchmark_comparison = \"plot_benchmark_comparison:main\"\nplot_histogram = \"plot_histogram:main\"\nplot_parametrized = \"plot_parametrized:main\"\nplot_progression = \"plot_progression:main\"\nplot_whisker = \"plot_whisker:main\"\nwelch_ttest = \"welch_ttest:main\"\n\n[tool.uv.build-backend]\nmodule-root = \"scripts\"\nmodule-name = \"\"\nnamespace = true\nsource-exclude = [\n    \"/scripts/README.md\",\n    \"/scripts/ruff.toml\",\n    \"/scripts/.*\",\n    \"*.egg-info\",\n]\n\n[build-system]\nrequires = [\"uv_build>=0.12.23,<0.13\"]\nbuild-backend = \"uv_build\"\n",
+        "truncated": false
+      }
+    ],
+    "tests": {
+      "files": 7,
+      "dirs": ["tests", "tests/snapshots"],
+      "sample": [
+        "tests/common.rs",
+        "tests/example_input_file.txt",
+        "tests/execution_order_tests.rs",
+        "tests/integration_tests.rs",
+        "tests/snapshots/integration_tests__json_export_basic.snap",
+        "tests/snapshots/integration_tests__json_export_parameterized_with_reference.snap",
+        "tests/snapshots/integration_tests__json_export_single_run.snap"
+      ]
+    },
+    "benchmarks": {
+      "files": 5,
+      "dirs": ["src/benchmark"],
+      "sample": [
+        "src/benchmark/benchmark_result.rs",
+        "src/benchmark/executor.rs",
+        "src/benchmark/measurement.rs",
+        "src/benchmark/mod.rs",
+        "src/benchmark/scheduler.rs"
+      ]
+    },
+    "commits_scanned": 200,
+    "recent_test_commits": [
+      {
+        "sha": "c5161524980522320c7d3425e714cc0965a869a5",
+        "date": "2026-10-12T10:33:47+02:00",
+        "subject": "test(integration): ignore ambient forced color",
+        "files_changed": 1,
+        "test_files": ["tests/common.rs"]
+      },
+      {
+        "sha": "26760e8365f5a7122fa9533d5120d8953dd68c1b",
+        "date": "2026-10-07T22:49:56+02:00",
+        "subject": "Add migration guidance for removed --reference option",
+        "files_changed": 2,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "6dddb02d73de28517cc2a228f5053271be7416ca",
+        "date": "2026-10-07T22:32:37+02:00",
+        "subject": "Add --env for benchmark environment overrides",
+        "files_changed": 12,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "6cb7bb01d141678e79c0169557dba06875399995",
+        "date": "2026-10-07T12:16:54+02:00",
+        "subject": "Require an explicit shell choice for shell operators",
+        "files_changed": 4,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "4a9e066b418b30def9db3e9ff4343d750d6ae8ca",
+        "date": "2026-10-07T08:53:52Z",
+        "subject": "Run setup/cleanup commands in a shell (#990)",
+        "files_changed": 6,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "bdbfae9907cafea6788282cd1cf973b794989f8e",
+        "date": "2026-10-06T15:50:19+02:00",
+        "subject": "Alternative performance metrics in the terminal (#986)",
+        "files_changed": 43,
+        "test_files": [
+          "tests/execution_order_tests.rs",
+          "tests/integration_tests.rs",
+          "tests/snapshots/integration_tests__json_export_basic.snap",
+          "tests/snapshots/integration_tests__json_export_parameterized_with_reference.snap",
+          "tests/snapshots/integration_tests__json_export_single_run.snap"
+        ]
+      },
+      {
+        "sha": "ab86cb99cc595f3827c74bb7ae790dfced323540",
+        "date": "2026-10-06T08:41:59+02:00",
+        "subject": "Make --shell=none the default (#982)",
+        "files_changed": 7,
+        "test_files": ["tests/execution_order_tests.rs", "tests/integration_tests.rs"]
+      },
+      {
+        "sha": "eedec078127a2dcbe725077132e3d21090b35fc9",
+        "date": "2026-10-05T20:42:13+02:00",
+        "subject": "Cover JSON exports with integration snapshots",
+        "files_changed": 6,
+        "test_files": [
+          "tests/integration_tests.rs",
+          "tests/snapshots/integration_tests__json_export_basic.snap",
+          "tests/snapshots/integration_tests__json_export_parameterized_with_reference.snap",
+          "tests/snapshots/integration_tests__json_export_single_run.snap"
+        ]
+      },
+      {
+        "sha": "95118147af07f0e5f2605c3168264ef5fcf4e9e3",
+        "date": "2026-10-05T20:23:55+02:00",
+        "subject": "Rename peak memory metric to memory_peak_resident",
+        "files_changed": 10,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "0d86e78edeeec6817cb2a06e2626ab7cea2ff046",
+        "date": "2026-10-05T18:11:10+02:00",
+        "subject": "Refine JSON schema and command metadata",
+        "files_changed": 15,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "c5d3a81fc571172d20896daff9e953054e9e1168",
+        "date": "2026-10-05T17:02:34+02:00",
+        "subject": "Include raw commands in JSON exports when names differ",
+        "files_changed": 7,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "02b0db5c9635546ae739171a92fc58753cfbcf51",
+        "date": "2026-10-05T16:03:23+02:00",
+        "subject": "Adapt tests to rebased reference handling",
+        "files_changed": 3,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "4cd0e245865f998ffb66b77ad91926b9ec2e003b",
+        "date": "2026-10-05T16:01:30+02:00",
+        "subject": "Document JSON measurements and omit unavailable memory metrics",
+        "files_changed": 9,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "2e6abb70d14a9054cc4812dc2d631a5c8d40d21f",
+        "date": "2026-10-05T15:38:46+02:00",
+        "subject": "Snapshot reference Markdown output",
+        "files_changed": 1,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "92330ce75d001ec0fdfe28482b2384649b6d4a3b",
+        "date": "2026-10-05T15:33:13+02:00",
+        "subject": "Snapshot reference comparison output",
+        "files_changed": 1,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "463a8896383d34c997df767554ca5e11a6c17f5f",
+        "date": "2026-10-05T15:07:46+02:00",
+        "subject": "Simplify parameterized reference handling",
+        "files_changed": 8,
+        "test_files": ["tests/execution_order_tests.rs", "tests/integration_tests.rs"]
+      },
+      {
+        "sha": "f7429e2fb25b8cddcdc1742231a8bff37bb85639",
+        "date": "2026-10-05T14:59:18+02:00",
+        "subject": "Use parameterized benchmarks as references",
+        "files_changed": 13,
+        "test_files": ["tests/execution_order_tests.rs", "tests/integration_tests.rs"]
+      },
+      {
+        "sha": "1eafcf4739892746d0221ac87df044a4d349fda4",
+        "date": "2026-10-05T12:38:53+02:00",
+        "subject": "Combine iteration environment variable integration tests",
+        "files_changed": 1,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "44c0cc231b66e329a62e301d1e6f3c90701c23b9",
+        "date": "2026-10-05T12:24:43+02:00",
+        "subject": "expose HYPERFINE_ITERATION to intermediate commands",
+        "files_changed": 3,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "9bf42b337d69b022ad99e2b13f9b64c74cf3a137",
+        "date": "2026-10-05T12:04:09+02:00",
+        "subject": "Snapshot test",
+        "files_changed": 1,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "a760e75f2f1a73cde4f39bae6930c7595e1c6df1",
+        "date": "2026-10-05T12:01:42+02:00",
+        "subject": "Preserve backticks in Markdown command names",
+        "files_changed": 2,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "a24f76c0cee2bc39cd1802f5d89e842bcd8fab93",
+        "date": "2026-10-05T10:11:53+02:00",
+        "subject": "Use insta-cmd for benchmark report snapshots",
+        "files_changed": 3,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "c8f8c4ea5b642a2d7c2cc2c37acc9450f4b9f7c7",
+        "date": "2026-10-05T10:00:29+02:00",
+        "subject": "Keep snapshot conversions limited to integration tests",
+        "files_changed": 1,
+        "test_files": ["tests/execution_order_tests.rs"]
+      },
+      {
+        "sha": "1e2e0be25c341f0f56621bc0fd7fa26c7699c6a4",
+        "date": "2026-10-05T09:54:04+02:00",
+        "subject": "Use inline snapshots for execution logs and benchmark reports",
+        "files_changed": 2,
+        "test_files": ["tests/execution_order_tests.rs", "tests/integration_tests.rs"]
+      },
+      {
+        "sha": "31ae72b2b73c7f65a9281f77f4bb2e3379773b69",
+        "date": "2026-10-03T16:23:02Z",
+        "subject": "Reject negative parameter steps before expanding ranges",
+        "files_changed": 5,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "e2717c064e6dd9ca1a42bb7df6765911288e1ccc",
+        "date": "2026-10-03T15:09:02Z",
+        "subject": "Preserve export files when command options are invalid",
+        "files_changed": 2,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "907de26344b896dc674a19995daf33cfb738aad8",
+        "date": "2026-10-02T09:56:27Z",
+        "subject": "Fix panic on --runs 0 (#923)",
+        "files_changed": 3,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "c0b383427740195fcebf717be49be0da34f7b8b9",
+        "date": "2026-10-02T11:18:56+02:00",
+        "subject": "Handle broken pipe errors on stdout gracefully (#932)",
+        "files_changed": 7,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "4b561defef4db39b08cdfc265444ce6fe3fbdd97",
+        "date": "2026-10-02T10:54:51+02:00",
+        "subject": "Use cargo_bin! to locate the integration test binary (#933)",
+        "files_changed": 1,
+        "test_files": ["tests/common.rs"]
+      },
+      {
+        "sha": "b5a6860d964e6b394ddfd8cdb0a2f14fbb22ab21",
+        "date": "2025-11-18T09:19:27+01:00",
+        "subject": "Support list of exit codes in --ignore-failure",
+        "files_changed": 4,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "2166c9f02e43c5bb74171abf441dce0aae4b0912",
+        "date": "2025-09-03T20:45:39+02:00",
+        "subject": "Add option to name reference command",
+        "files_changed": 4,
+        "test_files": ["tests/integration_tests.rs"]
+      },
+      {
+        "sha": "3bd38f275e4d3cb35794e3869e35d6947cbbf182",
+        "date": "2025-01-04T22:27:16+01:00",
+        "subject": "fix(tests): restrict 'cat' tests to unix environments. Fixes #776 (#777)",
+        "files_changed": 1,
+        "test_files": ["tests/integration_tests.rs"]
+      }
+    ],
+    "large_files": []
+  }
+}
