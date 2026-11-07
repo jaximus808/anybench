@@ -5,7 +5,15 @@ import { FakeProvider, ProviderUnavailableError, trialTag } from "@anybench/prov
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "../src/db/client.js";
-import { computers, contenders, kits, runs, trials, users } from "../src/db/schema/index.js";
+import {
+  computers,
+  contenders,
+  events as eventsTable,
+  kits,
+  runs,
+  trials,
+  users,
+} from "../src/db/schema/index.js";
 import { newId, RunIdSchema, TRIAL_MAX_INFRA_RETRIES, TrialIdSchema } from "@anybench/core";
 import {
   COMPUTER_REAP_INTERVAL_MS,
@@ -19,6 +27,7 @@ import {
 import { JOBS } from "../src/jobs/index.js";
 import type { JobContext } from "../src/jobs/types.js";
 import { drizzleComputerStore } from "../src/lib/computer-store.js";
+import { readEvents } from "../src/lib/events.js";
 import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./helpers/pg-tdm11.js";
 import { configTdm14, recordingSentryTdm14, silentLoggerTdm14 } from "./helpers/server-tdm14.js";
 
@@ -417,6 +426,30 @@ describe.skipIf(!available)("computer.reap (TDM-31, FakeProvider + local Postgre
       true,
     );
     expect(trialHoldsComputer({ state: "running", attempt: 1, runState: "delivered" })).toBe(false);
+  });
+
+  it("by default writes computer.leaked through appendEvents into the trial's run", async () => {
+    const { clock, registry } = setupTdm31(h);
+    const own = await seedRunTdm31(h.db, "events-run", 3121);
+    const trialId = await trialTdm31(h.db, own, "done");
+    const { computerId } = await registry.create({ runId: own.runId, trialId });
+    clock.advance(16 * MIN);
+
+    const report = await reapComputers({ db: h.db, registries: [registry], now: clock.now });
+    expect(report.reaped).toHaveLength(1);
+
+    const list = await readEvents(h.db, RunIdSchema.parse(own.runId));
+    expect(list).toEqual([
+      expect.objectContaining({
+        type: "computer.leaked",
+        run_id: own.runId,
+        seq: 1,
+        source_id: computerId,
+        payload: expect.objectContaining({ action: "destroyed", last_trial_id: trialId }),
+      }),
+    ]);
+    const [row] = await h.db.select().from(eventsTable).where(eq(eventsTable.runId, own.runId));
+    expect(row!.ownerId).toBe(own.ownerId);
   });
 
   it("a provider whose list fails is skipped; the sweep still completes", async () => {

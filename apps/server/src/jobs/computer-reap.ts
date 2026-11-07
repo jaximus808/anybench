@@ -20,6 +20,7 @@ import {
   AnybenchEventSchema,
   isTerminalRunState,
   isTerminalTrialState,
+  RunIdSchema,
   TRIAL_MAX_INFRA_RETRIES,
   type AnybenchEvent,
   type RunState,
@@ -44,6 +45,7 @@ import type { Database } from "../db/client.js";
 import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
 import { drizzleComputerStore } from "../lib/computer-store.js";
+import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
 import { defineJob, type JobContext } from "./types.js";
 
@@ -56,10 +58,20 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 /** An event before the appender assigns `run_id` and the run-wide `seq`. */
 export type EventDraft = DistributiveOmit<AnybenchEvent, "seq" | "run_id">;
 
-/** The events port; TDM-72's `appendEvents(db, runId, events)` in src/lib/events.ts fits it. */
+/** The events port. Default: appendEventsPort (TDM-72's appendEvents in src/lib/events.ts). */
 export interface EventsPort {
   append(db: Database, runId: string | null, events: EventDraft[]): Promise<unknown>;
 }
+
+/** The real writer: assigns run_id + seq from runs.next_seq, redacts, NOTIFYs on commit. */
+export const appendEventsPort: EventsPort = {
+  append(db, runId, drafts) {
+    const run = runId === null ? null : RunIdSchema.parse(runId);
+    // seq is a placeholder: appendEvents is authoritative for run_id and seq.
+    const evs = drafts.map((d) => AnybenchEventSchema.parse({ ...d, run_id: run, seq: 0 }));
+    return appendEvents(db, run, evs);
+  },
+};
 
 export interface LeakedComputer {
   computerId: string;
@@ -118,7 +130,8 @@ export interface ReapDeps {
   db: Database;
   /** One registry per provider to sweep. */
   registries: readonly ComputerRegistry[];
-  events: EventsPort;
+  /** Default appendEventsPort. */
+  events?: EventsPort;
   now?: () => Date;
   idleMs?: number;
   logger?: Logger;
@@ -392,7 +405,7 @@ export async function reapComputers(deps: ReapDeps): Promise<ReapReport> {
 
   for (const [runId, events] of eventsByRun) {
     try {
-      await deps.events.append(deps.db, runId, events);
+      await (deps.events ?? appendEventsPort).append(deps.db, runId, events);
     } catch (err) {
       deps.logger?.error({ err, runId }, "computer.reap: could not append computer.leaked events");
     }
@@ -409,16 +422,6 @@ export interface ComputerReapJobOptions {
   now?: () => Date;
 }
 
-/** Until the real appender lands, leaks still reach the logs (and the returned alert payload). */
-const loggingEventsPort = (logger: Logger): EventsPort => ({
-  async append(_db, runId, events) {
-    logger.warn(
-      { runId, events: events.map((e) => e.type) },
-      "computer.reap: events not persisted",
-    );
-  },
-});
-
 export function createComputerReapJob(options: ComputerReapJobOptions = {}) {
   return defineJob({
     name: "computer.reap",
@@ -434,8 +437,7 @@ export function createComputerReapJob(options: ComputerReapJobOptions = {}) {
       }
       const store = drizzleComputerStore(ctx.db);
       const pricing = { pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD };
-      // TODO(TDM-72): default `events` to { append: appendEvents } from ../lib/events.js once it is on main.
-      const events = options.events ?? loggingEventsPort(ctx.logger);
+      const events = options.events ?? appendEventsPort;
       const report = await reapComputers({
         db: ctx.db,
         registries: providers.map((provider) =>
