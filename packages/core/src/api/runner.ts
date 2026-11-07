@@ -3,8 +3,9 @@
 // binary is baked into VM snapshots and outlives a deploy.
 //
 // These are the wire schemas. They mirror, field for field, the runner's own schemas merged in
-// TDM-46: `RunnerEventBatchSchema` and `RunnerStatusSchema` (packages/runner/src/events.ts,
-// status.ts), and `UploadPlanRequestSchema` / `UploadCompleteRequestSchema` (upload.ts). Core
+// TDM-46 and extended in TDM-160: `RunnerEventBatchSchema` and `RunnerStatusSchema`
+// (packages/runner/src/events.ts, status.ts), and `UploadPlanRequestSchema`,
+// `UploadCompleteRequestSchema` and `UploadCompleteResponseSchema` (upload.ts). Core
 // cannot import the runner, so the contract owns them here; TODO(runner): re-export these from
 // `@anybench/core` instead of defining them a second time.
 //
@@ -15,11 +16,14 @@
 // - Any other 4xx except 408 and 429 is fatal: the runner stops pushing and goes file-only (the
 //   worker then polls events.jsonl and status.json by byte offset). 5xx, 408, 429 and network
 //   errors are retried with backoff, up to `max_failures` in a row.
-// - The runner ignores the response body of every route here.
+// - Responses: the runner ignores the body of `/events`. `/uploads` must return `{plan}`.
+//   `/uploads/complete` may return a top-level `url` for the object; without one the runner
+//   refers to it as `artifact:<key>`.
 // - `seq` on each event is the runner's own per-attempt counter; the ingest assigns the run-wide
 //   `events.seq` when it writes rows.
 import { z } from "zod";
 import { TrialIdSchema } from "../ids.js";
+import { NonNegativeMicroUsdSchema } from "../money.js";
 import { AnybenchEventSchema } from "../schemas/event.js";
 import { defineRoute, defineRoutes } from "./route.js";
 
@@ -49,6 +53,7 @@ export const RunnerUploadedArtifactSchema = z.object({
   key: z.string(),
   sha256: z.string(),
   size_bytes: z.int().nonnegative(),
+  url: z.string().optional(),
 });
 
 /** `~/eval/out/status.json`, as the runner writes it and sends it with every batch. */
@@ -100,6 +105,27 @@ export const RunnerStatusWireSchema = z.object({
       failure_class: z.string().nullable(),
     })
     .nullable(),
+  /** Live log chunks per stream (present only when trial.json turns them on). */
+  log_chunks: z
+    .record(
+      z.string(),
+      z.object({
+        segments: z.int().nonnegative(),
+        bytes: z.int().nonnegative(),
+        state: z.enum(["live", "off"]),
+        error: z.string().nullable(),
+      }),
+    )
+    .optional(),
+  /** BYOK token cap (present only when trial.json sets one). Decimal micro-USD strings on the wire. */
+  token_cap: z
+    .object({
+      cap_micro_usd: NonNegativeMicroUsdSchema,
+      spent_micro_usd: NonNegativeMicroUsdSchema,
+      source: z.string(),
+      exceeded: z.boolean(),
+    })
+    .optional(),
 });
 export type RunnerStatusWire = z.infer<typeof RunnerStatusWireSchema>;
 
@@ -240,6 +266,10 @@ export const runnerRoutes = defineRoutes({
     summary: "Finish an upload with the part ETags (ArtifactStore.completeUpload).",
     params: trialParams,
     body: TrialUploadCompleteRequestSchema,
-    response: z.object({ artifact: RunnerUploadedArtifactSchema }),
+    response: z.looseObject({
+      /** The runner reads this; without it, it uses `artifact:<key>`. */
+      url: z.url().optional(),
+      artifact: RunnerUploadedArtifactSchema.optional(),
+    }),
   }),
 });

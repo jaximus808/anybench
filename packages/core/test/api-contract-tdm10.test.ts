@@ -18,7 +18,9 @@ import {
   pathParamNames,
   routeById,
   RunIdSchema,
+  RunnerStatusWireSchema,
   stringifyJson,
+  toJsonValue,
   TrialIdSchema,
   UserIdSchema,
   type RouteSpec,
@@ -152,6 +154,23 @@ describe("api contract: required routes", () => {
       body: fixture.body,
     });
     expect(noKey.ok).toBe(false);
+  });
+
+  it("parses a real runner status.json (log_chunks, token_cap) without dropping any field", () => {
+    // Validated by the TDM-160 runner's RunnerStatusSchema when it was written.
+    const fixture = JSON.parse(
+      readFileSync(new URL("./fixtures/runner-status-tdm10.json", import.meta.url), "utf8"),
+    ) as Record<string, unknown>;
+    // Top level strict: a new runner field fails here instead of being stripped silently.
+    const parsed = RunnerStatusWireSchema.strict().parse(fixture);
+    expect(parsed.token_cap?.spent_micro_usd).toBe(1_234_567n);
+    expect(parsed.log_chunks?.stdout?.state).toBe("live");
+    // Every level: parsing and re-encoding gives back exactly the runner's document.
+    expect(toJsonValue(parsed)).toEqual(fixture);
+    const complete = apiRoutes.runner.uploadComplete.response.parse({
+      url: "https://r2.example/o",
+    });
+    expect(complete.url).toBe("https://r2.example/o");
   });
 
   it("parses the runner's upload plan and completion bodies", () => {

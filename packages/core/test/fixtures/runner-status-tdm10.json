@@ -1,0 +1,79 @@
+{
+  "trial_id": "0197a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+  "run_id": "0197a1b2-c3d4-7e5f-8a9b-1c1d2e3f4a5c",
+  "attempt": 1,
+  "runner_version": "0.0.0",
+  "pid": 4242,
+  "hostname": "naive-vm",
+  "phase": "upload",
+  "trial_state": "collecting",
+  "started_at": "2026-11-07T21:00:00.000Z",
+  "updated_at": "2026-11-07T21:00:00.000Z",
+  "heartbeat_at": "2026-11-07T21:00:00.000Z",
+  "phases": [
+    {
+      "phase": "run",
+      "started_at": "2026-11-07T21:00:00.000Z",
+      "ended_at": "2026-11-07T21:00:00.000Z"
+    },
+    {
+      "phase": "upload",
+      "started_at": "2026-11-07T21:00:00.000Z",
+      "ended_at": null
+    }
+  ],
+  "push": {
+    "mode": "push",
+    "sent_batches": 3,
+    "failed_posts": 1,
+    "last_error": "POST events: HTTP 503"
+  },
+  "events": {
+    "count": 12,
+    "bytes": 4096
+  },
+  "run": {
+    "exit_code": 0,
+    "signal": null,
+    "duration_ms": 61234,
+    "timed_out": false
+  },
+  "upload": {
+    "state": "uploaded",
+    "artifacts": [
+      {
+        "name": "bundle.tar.gz",
+        "key": "runs/r/trials/t/bundle.tar.gz",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 2048,
+        "url": "artifact:runs/r/trials/t/bundle.tar.gz"
+      }
+    ],
+    "error": null
+  },
+  "result": {
+    "outcome": "ok",
+    "reason": null,
+    "failure_class": null
+  },
+  "log_chunks": {
+    "stdout": {
+      "segments": 4,
+      "bytes": 262144,
+      "state": "live",
+      "error": null
+    },
+    "stderr": {
+      "segments": 0,
+      "bytes": 0,
+      "state": "off",
+      "error": "presign failed"
+    }
+  },
+  "token_cap": {
+    "cap_micro_usd": "5000000",
+    "spent_micro_usd": "1234567",
+    "source": "stream-json",
+    "exceeded": false
+  }
+}
