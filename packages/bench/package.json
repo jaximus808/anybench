@@ -25,6 +25,7 @@
     "@anybench/kit": "workspace:*",
     "@anybench/naive": "workspace:*",
     "@anybench/providers": "workspace:*",
-    "@anybench/envs": "workspace:*"
+    "@anybench/envs": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
