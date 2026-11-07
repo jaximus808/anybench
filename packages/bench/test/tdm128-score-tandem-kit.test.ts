@@ -6,9 +6,17 @@ import { fileURLToPath } from "node:url";
 import { safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { NO_SCORE_REASONS, scoreKit, type ScoredContender, type TrialResult } from "../src/index.js";
+import {
+  NO_SCORE_REASONS,
+  scoreKit,
+  type ScoredContender,
+  type TrialResult,
+} from "../src/index.js";
 
-const KIT_YAML_TDM128 = join(dirname(fileURLToPath(import.meta.url)), "../../../kits/tandem-vs-claude-code/anybench.yaml");
+const KIT_YAML_TDM128 = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../kits/tandem-vs-claude-code/anybench.yaml",
+);
 
 function kitTdm128(): KitSpec {
   const r = safeParseKitSpec(parse(readFileSync(KIT_YAML_TDM128, "utf8")));
@@ -48,10 +56,19 @@ function trialsTdm128(s: SetupTdm128): TrialResult[] {
         repeat,
         metrics,
         gates: {
-          "hidden-tests": { pass, reason: pass ? "all hidden tests passed" : "some hidden tests failed", evidence: ["hidden-tests.json"] },
+          "hidden-tests": {
+            pass,
+            reason: pass ? "all hidden tests passed" : "some hidden tests failed",
+            evidence: ["hidden-tests.json"],
+          },
           "api-load": {
             pass: api,
-            reason: w !== "todo-api" ? "not applicable" : api ? "p95 measured" : "no latency without correctness",
+            reason:
+              w !== "todo-api"
+                ? "not applicable"
+                : api
+                  ? "p95 measured"
+                  : "no latency without correctness",
             evidence: [],
           },
         },
@@ -62,10 +79,38 @@ function trialsTdm128(s: SetupTdm128): TrialResult[] {
   return out;
 }
 
-const A: SetupTdm128 = { id: "claude-code-solo", passes: { "todo-api": 3, "auth-refactor": 3, "bug-hunt": 4 }, wall_s: 1500, cost_micro_usd: 3_900_000, api_p95_ms: 140, quality: 3 };
-const B: SetupTdm128 = { id: "claude-code-subagents", passes: { "todo-api": 3, "auth-refactor": 3, "bug-hunt": 4 }, wall_s: 1320, cost_micro_usd: 5_200_000, api_p95_ms: 130, quality: 3 };
-const C: SetupTdm128 = { id: "tandem@TANDEM_WORKERS=3", passes: { "todo-api": 5, "auth-refactor": 2, "bug-hunt": 4 }, wall_s: 780, cost_micro_usd: 4_900_000, api_p95_ms: 96, quality: 3 };
-const D: SetupTdm128 = { id: "tandem@TANDEM_WORKERS=5", passes: { "todo-api": 4, "auth-refactor": 1, "bug-hunt": 3 }, wall_s: 720, cost_micro_usd: 7_100_000, api_p95_ms: 101, quality: 2 };
+const A: SetupTdm128 = {
+  id: "claude-code-solo",
+  passes: { "todo-api": 3, "auth-refactor": 3, "bug-hunt": 4 },
+  wall_s: 1500,
+  cost_micro_usd: 3_900_000,
+  api_p95_ms: 140,
+  quality: 3,
+};
+const B: SetupTdm128 = {
+  id: "claude-code-subagents",
+  passes: { "todo-api": 3, "auth-refactor": 3, "bug-hunt": 4 },
+  wall_s: 1320,
+  cost_micro_usd: 5_200_000,
+  api_p95_ms: 130,
+  quality: 3,
+};
+const C: SetupTdm128 = {
+  id: "tandem@TANDEM_WORKERS=3",
+  passes: { "todo-api": 5, "auth-refactor": 2, "bug-hunt": 4 },
+  wall_s: 780,
+  cost_micro_usd: 4_900_000,
+  api_p95_ms: 96,
+  quality: 3,
+};
+const D: SetupTdm128 = {
+  id: "tandem@TANDEM_WORKERS=5",
+  passes: { "todo-api": 4, "auth-refactor": 1, "bug-hunt": 3 },
+  wall_s: 720,
+  cost_micro_usd: 7_100_000,
+  api_p95_ms: 101,
+  quality: 2,
+};
 
 describe("scoreKit on the tandem-vs-claude-code kit", () => {
   const kit = kitTdm128();
@@ -92,7 +137,12 @@ describe("scoreKit on the tandem-vs-claude-code kit", () => {
       ["bug-hunt", 0.8],
     ]);
     expect(req.points).toBeCloseTo(50 * ((1 + 0.4 + 0.8) / 3), 6);
-    expect(byId(C.id).gates["hidden-tests"]).toEqual({ passed: 11, failed: 4, missing: 0, total: 15 });
+    expect(byId(C.id).gates["hidden-tests"]).toEqual({
+      passed: 11,
+      failed: 4,
+      missing: 0,
+      total: 15,
+    });
   });
 
   it("api-p95 is scored on todo-api only, against the 'under 120 ms' target", () => {
@@ -109,7 +159,14 @@ describe("scoreKit on the tandem-vs-claude-code kit", () => {
   });
 
   it("a do-nothing setup gets no score at all", () => {
-    const noop: SetupTdm128 = { id: "do-nothing", passes: { "todo-api": 0, "auth-refactor": 0, "bug-hunt": 0 }, wall_s: 1, cost_micro_usd: 0, api_p95_ms: 1, quality: 1 };
+    const noop: SetupTdm128 = {
+      id: "do-nothing",
+      passes: { "todo-api": 0, "auth-refactor": 0, "bug-hunt": 0 },
+      wall_s: 1,
+      cost_micro_usd: 0,
+      api_p95_ms: 1,
+      quality: 1,
+    };
     const r = scoreKit(kit, [A, noop].flatMap(trialsTdm128));
     const c = r.contenders.find((x) => x.contenderId === "do-nothing")!;
     expect(c.scored).toBe(false);

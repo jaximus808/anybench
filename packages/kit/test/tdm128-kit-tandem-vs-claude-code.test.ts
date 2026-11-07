@@ -8,7 +8,10 @@ import { safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-const KIT_DIR_TDM128 = join(dirname(fileURLToPath(import.meta.url)), "../../../kits/tandem-vs-claude-code");
+const KIT_DIR_TDM128 = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../kits/tandem-vs-claude-code",
+);
 const WORKLOADS_TDM128 = ["todo-api", "auth-refactor", "bug-hunt"] as const;
 
 function loadKitTdm128(): KitSpec {
@@ -50,7 +53,10 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
     // A has subagents disabled; B ships its subagent definitions.
     expect(kit.contenders[0]!.driver.env).toMatchObject({ CC_DISALLOWED_TOOLS: "Task" });
     expect(kit.contenders[1]!.source).toEqual({
-      upload: ["adapters/claude-code-subagents/CLAUDE.md", "adapters/claude-code-subagents/.claude/"],
+      upload: [
+        "adapters/claude-code-subagents/CLAUDE.md",
+        "adapters/claude-code-subagents/.claude/",
+      ],
     });
     expect(kit.human_in_loop).toEqual({ kind: "tandem", policy: "llm-reviewer" });
   });
@@ -59,12 +65,40 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
     const kit = loadKitTdm128();
     expect(kit.workloads.map((w) => w.id)).toEqual([...WORKLOADS_TDM128]);
     const byId = Object.fromEntries(kit.requirements.map((r) => [r.id, r]));
-    expect(byId["tests-pass"]).toMatchObject({ type: "measured", metric: "gate_pass_rate", gate_id: "hidden-tests" });
-    expect(byId["api-p95"]).toMatchObject({ type: "measured", metric: "api_p95_ms", target: "under 120 ms", gate_id: "api-load" });
-    expect(byId["wall"]).toMatchObject({ type: "measured", metric: "wall_s", gate_id: "hidden-tests" });
-    expect(byId["cost"]).toMatchObject({ type: "measured", metric: "cost_micro_usd", gate_id: "hidden-tests" });
-    expect(byId["quality"]).toMatchObject({ type: "reviewed", rubric: "rubric.md", gate_id: "hidden-tests", scale: { min: 1, max: 4 } });
-    expect(kit.scoring.weights).toEqual({ "tests-pass": 50, "api-p95": 10, wall: 10, cost: 10, quality: 20 });
+    expect(byId["tests-pass"]).toMatchObject({
+      type: "measured",
+      metric: "gate_pass_rate",
+      gate_id: "hidden-tests",
+    });
+    expect(byId["api-p95"]).toMatchObject({
+      type: "measured",
+      metric: "api_p95_ms",
+      target: "under 120 ms",
+      gate_id: "api-load",
+    });
+    expect(byId["wall"]).toMatchObject({
+      type: "measured",
+      metric: "wall_s",
+      gate_id: "hidden-tests",
+    });
+    expect(byId["cost"]).toMatchObject({
+      type: "measured",
+      metric: "cost_micro_usd",
+      gate_id: "hidden-tests",
+    });
+    expect(byId["quality"]).toMatchObject({
+      type: "reviewed",
+      rubric: "rubric.md",
+      gate_id: "hidden-tests",
+      scale: { min: 1, max: 4 },
+    });
+    expect(kit.scoring.weights).toEqual({
+      "tests-pass": 50,
+      "api-p95": 10,
+      wall: 10,
+      cost: 10,
+      quality: 20,
+    });
     expect(Object.values(kit.scoring.weights).reduce((a, b) => a + b, 0)).toBe(100);
     expect(kit.proof.oracle?.gates).toEqual(["hidden-tests", "api-load"]);
     expect(kit.proof.do_less.map((d) => d.id)).toEqual(["do-nothing"]);
@@ -73,7 +107,12 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
 
   it("every path the kit names exists, and every script is executable", () => {
     const kit = loadKitTdm128();
-    const paths: string[] = ["rubric.md", "scripts/verify-proof.sh", "scripts/proof-in-container.sh", "PROOF.md"];
+    const paths: string[] = [
+      "rubric.md",
+      "scripts/verify-proof.sh",
+      "scripts/proof-in-container.sh",
+      "PROOF.md",
+    ];
     for (const c of kit.contenders) {
       if ("upload" in c.source) paths.push(...c.source.upload);
       if (c.install.script) paths.push(c.install.script);
@@ -93,7 +132,8 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
 
     const scripts = walkTdm128(KIT_DIR_TDM128).filter((f) => f.endsWith(".sh"));
     expect(scripts.length).toBeGreaterThanOrEqual(15);
-    for (const s of scripts) expect(() => accessSync(s, constants.X_OK), relative(KIT_DIR_TDM128, s)).not.toThrow();
+    for (const s of scripts)
+      expect(() => accessSync(s, constants.X_OK), relative(KIT_DIR_TDM128, s)).not.toThrow();
   });
 });
 
@@ -104,32 +144,50 @@ describe("kits/tandem-vs-claude-code hidden tests and oracles", () => {
     expect(counts.reduce((a, b) => a + b, 0)).toBe(42);
   });
 
-  it.each(WORKLOADS_TDM128)("%s: tests.json lists exactly the test() calls in the hidden test files", (w) => {
-    const dir = join(KIT_DIR_TDM128, "gates/hidden-tests", w);
-    const found: { file: string; name: string }[] = [];
-    for (const f of readdirSync(dir).filter((f) => f.endsWith(".test.ts")).sort()) {
-      for (const m of readFileSync(join(dir, f), "utf8").matchAll(/^test\("((?:[^"\\]|\\.)*)"/gm)) {
-        found.push({ file: f, name: JSON.parse(`"${m[1]!}"`) as string });
+  it.each(WORKLOADS_TDM128)(
+    "%s: tests.json lists exactly the test() calls in the hidden test files",
+    (w) => {
+      const dir = join(KIT_DIR_TDM128, "gates/hidden-tests", w);
+      const found: { file: string; name: string }[] = [];
+      for (const f of readdirSync(dir)
+        .filter((f) => f.endsWith(".test.ts"))
+        .sort()) {
+        for (const m of readFileSync(join(dir, f), "utf8").matchAll(
+          /^test\("((?:[^"\\]|\\.)*)"/gm,
+        )) {
+          found.push({ file: f, name: JSON.parse(`"${m[1]!}"`) as string });
+        }
       }
-    }
-    const manifest = manifestTdm128(w);
-    expect(manifest.workload).toBe(w);
-    expect(manifest.tests).toEqual(found);
-    expect(new Set(found.map((t) => `${t.file}::${t.name}`)).size).toBe(found.length);
-  });
+      const manifest = manifestTdm128(w);
+      expect(manifest.workload).toBe(w);
+      expect(manifest.tests).toEqual(found);
+      expect(new Set(found.map((t) => `${t.file}::${t.name}`)).size).toBe(found.length);
+    },
+  );
 
-  it.each(WORKLOADS_TDM128)("%s: hidden tests and the oracle stay outside the starting repo", (w) => {
-    const input = join(KIT_DIR_TDM128, "workloads", w, "input");
-    const inputFiles = walkTdm128(input).map((f) => relative(input, f));
-    expect(inputFiles).toContain("package.json");
-    expect(inputFiles.some((f) => f.startsWith(".hidden-tests"))).toBe(false);
-    const hiddenNames = readdirSync(join(KIT_DIR_TDM128, "gates/hidden-tests", w)).filter((f) => f.endsWith(".test.ts"));
-    for (const name of hiddenNames) expect(inputFiles).not.toContain(join("test", name));
-    // Nothing the agent sees points at the grader or the solution.
-    const visible = [join(KIT_DIR_TDM128, "workloads", w, "instruction.md"), ...walkTdm128(input)];
-    for (const f of visible) expect(readFileSync(f, "utf8"), relative(KIT_DIR_TDM128, f)).not.toMatch(/hidden-tests|proof\/oracle|gates\//);
-    expect(existsSync(join(KIT_DIR_TDM128, "proof/oracle", w))).toBe(true);
-  });
+  it.each(WORKLOADS_TDM128)(
+    "%s: hidden tests and the oracle stay outside the starting repo",
+    (w) => {
+      const input = join(KIT_DIR_TDM128, "workloads", w, "input");
+      const inputFiles = walkTdm128(input).map((f) => relative(input, f));
+      expect(inputFiles).toContain("package.json");
+      expect(inputFiles.some((f) => f.startsWith(".hidden-tests"))).toBe(false);
+      const hiddenNames = readdirSync(join(KIT_DIR_TDM128, "gates/hidden-tests", w)).filter((f) =>
+        f.endsWith(".test.ts"),
+      );
+      for (const name of hiddenNames) expect(inputFiles).not.toContain(join("test", name));
+      // Nothing the agent sees points at the grader or the solution.
+      const visible = [
+        join(KIT_DIR_TDM128, "workloads", w, "instruction.md"),
+        ...walkTdm128(input),
+      ];
+      for (const f of visible)
+        expect(readFileSync(f, "utf8"), relative(KIT_DIR_TDM128, f)).not.toMatch(
+          /hidden-tests|proof\/oracle|gates\//,
+        );
+      expect(existsSync(join(KIT_DIR_TDM128, "proof/oracle", w))).toBe(true);
+    },
+  );
 
   it("bug-hunt documents where its grader came from", () => {
     const prov = readFileSync(join(KIT_DIR_TDM128, "workloads/bug-hunt/PROVENANCE.md"), "utf8");
@@ -138,7 +196,8 @@ describe("kits/tandem-vs-claude-code hidden tests and oracles", () => {
   });
 
   it("carries no secret values", () => {
-    const secretish = /(sk-ant-[A-Za-z0-9_-]{10,}|sk-[A-Za-z0-9]{32,}|ANTHROPIC_API_KEY\s*=\s*\S+|ghp_[A-Za-z0-9]{20,})/;
+    const secretish =
+      /(sk-ant-[A-Za-z0-9_-]{10,}|sk-[A-Za-z0-9]{32,}|ANTHROPIC_API_KEY\s*=\s*\S+|ghp_[A-Za-z0-9]{20,})/;
     for (const f of walkTdm128(KIT_DIR_TDM128)) {
       expect(secretish.test(readFileSync(f, "utf8")), relative(KIT_DIR_TDM128, f)).toBe(false);
     }

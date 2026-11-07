@@ -57,7 +57,7 @@ git ls-tree -r FETCH_HEAD | awk '{print $3}' \
 ## Fixture runs
 
 ```sh
-pnpm --filter @anybench/kit exec tsx scripts/gen-digest-fixtures.ts /Users/jaxon/coding-project/agentcanvas
+pnpm --filter @anybench/kit exec tsx scripts/gen-digest-fixtures.ts ~/code/agentcanvas
 # agentcanvas: 92196 bytes, 628 files, 5915 ms
 # hyperfine: 39199 bytes, 75 files, 4478 ms   (two-step fetch; commits_scanned 200)
 ```

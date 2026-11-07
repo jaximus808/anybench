@@ -10,7 +10,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint .",
+    "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev:web": "pnpm --filter web dev",

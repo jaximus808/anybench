@@ -12,3 +12,5 @@ kits/
 apps/server/drizzle/meta/
 # Kit fixtures with intentional errors, byte-exact for expected.txt (TDM-33)
 packages/kit/test/fixtures/kits-tdm33/
+# Recorded collector output (hyperfine, k6, naive proxy), kept as the tools emitted it (TDM-169)
+packages/bench/fixtures/

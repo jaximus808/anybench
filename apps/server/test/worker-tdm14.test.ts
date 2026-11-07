@@ -56,6 +56,10 @@ describe.skipIf(!hasDb)("worker runner (TDM-14)", () => {
   });
   afterAll(async () => {
     await worker?.stop();
+    // graphile-worker's runner.stop() calls pgPool.end() without awaiting it, so its connections
+    // can still be open here; `drop database ... with (force)` would then terminate them and pg
+    // raises unhandled 57P01 errors. Wait until only our own pool is connected before dropping.
+    if (fresh) await waitForOnlyOwnBackendsTdm169(fresh);
     await fresh?.drop();
   });
 
@@ -92,3 +96,15 @@ describe.skipIf(!hasDb)("worker runner (TDM-14)", () => {
     worker = undefined;
   });
 });
+
+/** Poll pg_stat_activity until the fresh DB has no client backends beyond `fresh`'s own pool. */
+async function waitForOnlyOwnBackendsTdm169(fresh: FreshDbTdm11, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await fresh.pool.query<{ n: number }>(
+      "select count(*)::int as n from pg_stat_activity where datname = current_database() and backend_type = 'client backend'",
+    );
+    if ((rows[0]?.n ?? 0) <= fresh.pool.totalCount || Date.now() > deadline) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
