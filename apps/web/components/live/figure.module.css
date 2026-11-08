@@ -296,13 +296,13 @@
   }
   to {
     opacity: 0;
-    transform: scale(2.4);
+    transform: scale(1.35);
   }
 }
 
 /* One flash per real event (a heartbeat, a new agent line). */
 .beat {
-  fill: var(--fg);
+  fill: var(--accent);
   pointer-events: none;
   animation: beat 0.9s ease-out forwards;
 }
@@ -327,7 +327,7 @@
 }
 @keyframes beat {
   from {
-    opacity: 0.85;
+    opacity: 0.35;
   }
   to {
     opacity: 0;
@@ -384,6 +384,21 @@
   transform: translate(-100%, -0.8em);
   align-items: flex-end;
   text-align: right;
+}
+.callout[data-anchor="above"] {
+  transform: translate(-50%, -100%);
+  align-items: center;
+  text-align: center;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+.callout[data-anchor="above"][data-tone="live"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.callout[data-anchor="above"][data-tone="pass"] {
+  border-color: color-mix(in srgb, var(--pass) 55%, var(--line));
 }
 .callout[data-anchor="middle"] {
   transform: translate(-50%, -0.8em);

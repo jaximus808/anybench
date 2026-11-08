@@ -7,7 +7,7 @@
 // the server reported; a live trial's screen flashes on each real heartbeat. Nothing here moves
 // without an event or a clock, and nothing shows progress the run didn't report.
 import type { RunState } from "@anybench/core";
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   cylinder,
   extrude,
@@ -21,7 +21,13 @@ import {
   type SolidPaths,
 } from "../../lib/iso/kit";
 import { tileTone, type LiveRun } from "../../lib/live/model";
-import { envBuildSteps, phaseLog, runningView, type PhaseView } from "../../lib/live/phase";
+import {
+  envBuildSteps,
+  PHASE_ROLES,
+  phaseLog,
+  runningView,
+  type PhaseView,
+} from "../../lib/live/phase";
 import styles from "./figure.module.css";
 import { PipelineFigure } from "./PipelineFigure";
 
@@ -56,6 +62,8 @@ export interface Part {
   beat?: string | null;
   /** The trial this tile stands for. */
   trial?: string;
+  /** Paint layer: lower layers paint first. Long parts (a wall) can't be depth-sorted by centre. */
+  layer?: number;
   /** A free-form footprint (world x,y ring) instead of an axis-aligned slab. */
   ring?: [number, number][];
 }
@@ -64,6 +72,41 @@ interface Scene {
   parts: Part[];
   /** Ground-plane routes, drawn dashed and flowing while the phase is live. */
   flows: Point3[][];
+  /** Names that sit right above what they name. */
+  tags?: Tag[];
+}
+
+export interface Tag {
+  id: string;
+  at: Point3;
+  title: string;
+  sub?: string;
+  tone?: "live" | "pass" | "fail" | "muted";
+}
+
+/** Where a viewBox drawing lands inside its box (preserveAspectRatio "meet"), for HTML labels. */
+export function useFigureBox(w: number, h: number) {
+  const wrap = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ s: number; ox: number; oy: number } | null>(null);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const measure = () => {
+      const { width, height } = el.getBoundingClientRect();
+      if (!width || !height) {
+        setBox({ s: 1, ox: 0, oy: 0 });
+        return;
+      }
+      const s = Math.min(width / w, height / h);
+      setBox({ s, ox: (width - w * s) / 2, oy: (height - h * s) / 2 });
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [w, h]);
+  return { wrap, box };
 }
 
 const W = 520;
@@ -162,7 +205,7 @@ function gate(id: string, x: number, y: number, span: number): Part[] {
 
 // ---- scenes ---------------------------------------------------------------------------------
 
-function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
+function sceneParts(live: LiveRun, view: PhaseView, nowMs: number): Scene {
   const state: RunState = view.current.state;
   const lines = phaseLog(live, state);
   const lastLine = lines.length ? String(lines[lines.length - 1]!.seq) : null;
@@ -193,12 +236,16 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
           i === n - 1 ? "lit" : "body",
           {
             r: 1,
-            beat: i === n - 1 ? lastLine : null,
+            beat: lastLine,
           },
         ),
       );
       return {
-        parts: [box("desk", -26, -30, 46, 56, -3, 3, "base", { r: 2 }), ...sheets, ...agent()],
+        parts: [
+          box("desk", -26, -30, 46, 56, -3, 3, "base", { r: 2, layer: -1 }),
+          ...sheets,
+          ...agent(),
+        ],
         flows: [
           [
             [4, 0, 0],
@@ -212,8 +259,8 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
       const parts: Part[] = [];
       const flows: Point3[][] = [];
       for (let i = 0; i < n; i++) {
-        const y = (i - (n - 1) / 2) * 34;
-        parts.push(box(`ped.${i}`, -12, y - 12, 24, 24, 0, 12, "body", { r: 1.5 }));
+        const y = (i - (n - 1) / 2) * 46;
+        parts.push(box(`ped.${i}.base`, -12, y - 12, 24, 24, 0, 12, "body", { r: 1.5 }));
         parts.push(
           box(`ped.${i}.top`, -8, y - 8, 16, 16, 12, 10, lines.length ? "lit" : "queued", { r: 1 }),
         );
@@ -242,13 +289,13 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
           lines.length ? "lit" : "queued",
           {
             r: 0.8,
-            beat: i === n - 1 ? lastLine : null,
+            beat: lastLine,
           },
         ),
       );
       return {
         parts: [
-          box("tray", -48, -n * 8 - 6, 34, n * 16 + 12, 0, 2, "base", { r: 1.5 }),
+          box("tray", -48, -n * 8 - 6, 34, n * 16 + 12, 0, 2, "base", { r: 1.5, layer: -1 }),
           ...cards,
           ...gate("gate", 4, 0, 40),
           ...agent(),
@@ -266,9 +313,24 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
       const imgs = envBuildSteps(live);
       const parts: Part[] = [];
       const flows: Point3[][] = [];
+      const tags: Tag[] = [];
       (["trial", "scoring"] as const).forEach((name, i) => {
         const img = imgs.find((m) => m.image === name);
         const y = i === 0 ? -32 : 32;
+        const last = img?.steps[img.steps.length - 1];
+        tags.push({
+          id: name,
+          at: [0, y - 13, 36],
+          title: name === "trial" ? "TRIAL IMAGE" : "SCORING IMAGE",
+          sub: !img
+            ? "not started"
+            : img.done
+              ? `ready · ${img.steps.length} steps · snapshot saved`
+              : `${img.steps.length} of ${img.steps.length + img.pending.length} steps · ${
+                  img.retrying ? "waiting on Naïve" : (last?.label ?? "booting")
+                }`,
+          tone: !img ? "muted" : img.done ? "pass" : "live",
+        });
         const screen: Tone = !img
           ? "dim"
           : img.done
@@ -279,37 +341,14 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
                 ? "live"
                 : "warm";
         parts.push(...machine(name, 0, y, screen, img?.lastAt));
-        const steps = img?.steps.length ?? 0;
-        const expected = steps + (img?.pending.length ?? 0) || 6;
-        for (let s = 0; s < expected; s++)
-          parts.push(
-            box(
-              `${name}.layer.${s}`,
-              34,
-              y - 10,
-              22,
-              20,
-              s * 3,
-              2.2,
-              s < steps ? (img?.done ? "pass" : "lit") : "queued",
-              {
-                r: 1,
-              },
-            ),
-          );
-        if (!img?.done && img)
-          flows.push([
-            [26, y, 0],
-            [32, y, 0],
-          ]);
       });
-      return { parts, flows };
+      return { parts, flows, tags };
     }
     case "proof": {
       const said = lines.length > 0;
       return {
         parts: [
-          box("track", -52, -6, 104, 12, -1, 1, "base"),
+          box("track", -52, -6, 104, 12, -1, 1, "base", { layer: -1 }),
           ...gate("gate", 0, 0, 30),
           box("right", 22, -6, 16, 12, 0, 6, said ? "pass" : "queued", { r: 1 }),
           box("wrong", -38, -6, 16, 12, 0, 6, said ? "fail" : "queued", { r: 1 }),
@@ -376,6 +415,79 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
   }
 }
 
+const ROLE_WORD: Record<string, string> = {
+  understander: "UNDERSTANDER",
+  researcher: "RESEARCHER",
+  kit_designer: "KIT DESIGNER",
+  "kit designer": "KIT DESIGNER",
+  intake: "INTAKE",
+  proof: "PROOF",
+  verifier: "PROOF",
+  analyst: "ANALYST",
+  investigator: "INVESTIGATOR",
+};
+
+/** The scene plus a name above every thing in it, so each block says what it is. */
+function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
+  const scene = sceneParts(live, view, nowMs);
+  const state = view.current.state;
+  const tags: Tag[] = [...(scene.tags ?? [])];
+  const has = (id: string) => scene.parts.some((p) => p.id === id);
+  const lines = phaseLog(live, state);
+  if (has("agent.screen")) {
+    const role = lines[lines.length - 1]?.role ?? PHASE_ROLES[state]?.[0] ?? "agent";
+    tags.push({
+      id: "agent",
+      at: [70, -13, 38],
+      title: ROLE_WORD[role] ?? role.toUpperCase(),
+      sub: lines.length ? "an agent on Naïve" : "starting",
+      tone: lines.length ? "live" : "muted",
+    });
+  }
+  if (has("sheet.4")) tags.push({ id: "repo", at: [-3, -2, 16], title: "THE REPO", tone: "muted" });
+  const setups = live.contenders.filter((c) => c.id !== "unplaced");
+  scene.parts
+    .filter((p) => /^ped\.\d+\.top$/.test(p.id))
+    .forEach((p, i) =>
+      tags.push({
+        id: p.id,
+        at: [p.x + p.w / 2, p.y + p.d / 2, 26],
+        title: setups[i]?.name.toUpperCase() ?? `SETUP ${i + 1}`,
+        sub: i === 0 ? "baseline" : "contender",
+        tone: lines.length ? "live" : "muted",
+      }),
+    );
+  if (has("tray") && state === "kit_draft") {
+    const n = live.workloads.filter((w) => w !== "unplaced").length;
+    tags.push({ id: "tasks", at: [-31, 0, 8], title: "TASKS", sub: n ? `${n} tasks` : undefined });
+  }
+  if (has("gate.top"))
+    tags.push({
+      id: "gate",
+      at: [0, 0, 34],
+      title: "THE GATE",
+      sub: state === "proof" ? "hidden tests decide pass or fail" : "how every answer is checked",
+    });
+  if (state === "proof") {
+    const said = lines.length > 0;
+    tags.push({
+      id: "right",
+      at: [30, 0, 10],
+      title: "RIGHT ANSWER",
+      sub: "must pass",
+      tone: said ? "pass" : "muted",
+    });
+    tags.push({
+      id: "wrong",
+      at: [-30, 0, 10],
+      title: "WRONG ANSWER",
+      sub: "must fail",
+      tone: said ? "fail" : "muted",
+    });
+  }
+  return { ...scene, tags };
+}
+
 // ---- render ---------------------------------------------------------------------------------
 
 export function cornersOf(p: Part): Point3[] {
@@ -423,8 +535,8 @@ export function paintOrder(parts: Part[], proj: Projection): Part[] {
     return s.d / s.n;
   };
   return parts
-    .map((p, i) => ({ p, i, d: depth(p) }))
-    .sort((a, b) => a.d - b.d || a.i - b.i)
+    .map((p, i) => ({ p, i, d: depth(p), l: p.layer ?? 0 }))
+    .sort((a, b) => a.l - b.l || a.d - b.d || a.i - b.i)
     .map((x) => x.p);
 }
 
@@ -449,8 +561,8 @@ export function SolidG({
       <path className={styles.top} d={s.top} />
       {s.crease ? <path className={styles.crease} d={s.crease} /> : null}
       <path className={styles.edge} d={s.outline} />
-      {beat ? <path key={beat} className={styles.beat} d={s.top} /> : null}
-      {beat ? <path key={`ping:${beat}`} className={styles.ping} d={s.top} /> : null}
+      {beat ? <path key={beat} className={styles.beat} d={s.fill} /> : null}
+      {beat ? <path key={`ping:${beat}`} className={styles.ping} d={s.fill} /> : null}
     </g>
   );
 }
@@ -486,7 +598,7 @@ function SceneFigure({ live, view, nowMs, active }: FigureProps) {
     const solids = new Map(scene.parts.map((p) => [p.id, solidOf(p, proj)]));
     const order = paintOrder(scene.parts, proj).map((p) => p.id);
     const flows = scene.flows.map((f) => pathOf(f.map((pt) => iso(pt, proj))));
-    return { solids, order, flows };
+    return { solids, order, flows, proj };
     // Geometry is keyed by layout only; `scene` is rebuilt every render.
   }, [key]);
   const byId = new Map(scene.parts.map((p) => [p.id, p]));
@@ -498,30 +610,54 @@ function SceneFigure({ live, view, nowMs, active }: FigureProps) {
     return () => window.clearTimeout(id);
   }, []);
 
+  const { wrap, box: fit } = useFigureBox(W, H);
+
   return (
-    <svg
-      className={styles.fig}
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="xMidYMid meet"
+    <div
+      className={styles.figWrap}
+      ref={wrap}
       data-testid="phase-figure"
       data-phase={view.current.state}
-      data-active={active || undefined}
     >
-      {geo.flows.map((d, i) => (
-        <path key={i} className={styles.flow} d={d} />
-      ))}
-      {parts.map((p, i) => {
-        const s = geo.solids.get(p.id)!;
-        return (
-          <SolidG
-            key={`${p.id}:${p.tone}`}
-            s={s}
-            tone={p.tone}
-            beat={p.beat}
-            style={{ "--i": fresh.current ? Math.min(i, 40) : 0 } as React.CSSProperties}
-          />
-        );
-      })}
-    </svg>
+      <svg
+        className={styles.fig}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        data-active={active || undefined}
+      >
+        {geo.flows.map((d, i) => (
+          <path key={i} className={styles.flow} d={d} />
+        ))}
+        {parts.map((p, i) => {
+          const s = geo.solids.get(p.id)!;
+          return (
+            <SolidG
+              key={`${p.id}:${p.tone}`}
+              s={s}
+              tone={p.tone}
+              beat={p.beat}
+              style={{ "--i": fresh.current ? Math.min(i, 40) : 0 } as React.CSSProperties}
+            />
+          );
+        })}
+      </svg>
+      {fit
+        ? (scene.tags ?? []).map((t) => {
+            const [x, y] = iso(t.at, geo.proj);
+            return (
+              <div
+                key={t.id}
+                className={styles.callout}
+                data-anchor="above"
+                data-tone={t.tone}
+                style={{ left: fit.ox + x * fit.s, top: fit.oy + y * fit.s }}
+              >
+                <span className={styles.calloutTitle}>{t.title}</span>
+                {t.sub ? <span className={styles.calloutSub}>{t.sub}</span> : null}
+              </div>
+            );
+          })
+        : null}
+    </div>
   );
 }

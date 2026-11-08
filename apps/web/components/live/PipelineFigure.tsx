@@ -38,7 +38,7 @@ const QV = -178;
 const BAY_U = -125;
 const BAY_VS = [-104, -52, 0, 52, 104];
 const BAY_K = 0.62;
-const WALL_U = -76;
+const WALL_U = -66;
 const GU = -24;
 const PAD_U = 24;
 const BU = 86;
@@ -130,7 +130,7 @@ function stationParts(): Part[] {
   });
   // The wall runs down the screen between the agents' computers and the grader.
   parts.push({
-    ...box("wall", 0, 0, 0, 0, 0, 30, "glass"),
+    ...box("wall", 0, 0, 0, 0, 0, 20, "glass", { layer: 1 }),
     ring: [
       [WALL_U - 1.5, -118],
       [WALL_U + 1.5, -118],
@@ -142,14 +142,14 @@ function stationParts(): Part[] {
     }),
   });
   const [gx, gy] = at(GU, 0);
-  parts.push(...machine("grader", gx, gy, "dim", null, 1.15));
+  parts.push(...machine("grader", gx, gy, "dim", null, 1.15).map((p) => ({ ...p, layer: 2 })));
   for (let i = 0; i < 5; i++) {
     const [x, y] = at(PAD_U, -44 + i * 22);
-    parts.push(box(`grader.pad.${i}`, x - 9, y - 9, 18, 18, 0, 2, "base", { r: 1.5 }));
+    parts.push(box(`grader.pad.${i}`, x - 9, y - 9, 18, 18, 0, 2, "base", { r: 1.5, layer: 2 }));
   }
   for (const [bin, v] of Object.entries(BINS)) {
     const [x, y] = at(BU, v);
-    parts.push(box(`bin.${bin}`, x - 25, y - 25, 50, 50, 0, 3, "base", { r: 2 }));
+    parts.push(box(`bin.${bin}`, x - 25, y - 25, 50, 50, 0, 3, "base", { r: 2, layer: 2 }));
   }
   return parts;
 }
