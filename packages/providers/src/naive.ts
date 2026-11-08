@@ -586,7 +586,28 @@ export class NaiveProvider implements ComputeProvider {
   async getFile(id: string, path: string): Promise<Uint8Array> {
     const home = await this.fsHome(id);
     const abs = resolveHomePath(home, path, this.name);
-    return this.call(() => this.api.readFile(id, abs), abs);
+    try {
+      return await this.call(() => this.api.readFile(id, abs), abs);
+    } catch (err) {
+      // Live Naïve answers fs/read of a path whose parent directory is missing with 403 "path is
+      // outside the sandbox working directory" (a missing file in an existing directory is 404;
+      // docs/findings/naive-fs-missing-parent.md). The path is inside the home (resolveHomePath
+      // checked it), so ask the shell: nothing there is a plain not_found, e.g.
+      // ~/eval/out/status.json on a freshly forked trial computer.
+      if (!isProviderError(err, "forbidden")) throw err;
+      const q = shellQuote(abs);
+      const r = await this.exec(id, `test -e ${q} || test -L ${q}`, {
+        timeoutMs: SETUP_TIMEOUT_MS,
+      });
+      if (r.exitCode === 1) {
+        throw new ProviderNotFoundError(`naive: no such file ${abs}`, {
+          provider: this.name,
+          resource: abs,
+          cause: err,
+        });
+      }
+      throw err;
+    }
   }
 
   // ---------- snapshots ----------

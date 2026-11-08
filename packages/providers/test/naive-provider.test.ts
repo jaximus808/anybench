@@ -131,6 +131,60 @@ describe("home: fs root and shell home agree", () => {
   });
 });
 
+describe("fork-403: getFile of a path whose directory does not exist yet", () => {
+  // Live 2026-11-08 (docs/findings/naive-fs-missing-parent.md): fs/read answers a missing file
+  // in an existing directory with 404, but a missing file whose parent directory is missing too
+  // with 403 "path is outside the sandbox working directory". The executor's first fs op on a
+  // freshly forked trial computer reads ~/eval/out/status.json before ~/eval exists, so the 403
+  // failed every trial as provider_forbidden before the runner launched.
+  it("the fake answers fs/read like live Naïve: 404 in an existing dir, 403 without the dir", async () => {
+    const { p, fake } = setup();
+    const c = await p.waitReady((await p.create({})).id);
+    await expect(fake.readFile(c.id, "/home/naive/missing.txt")).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(fake.readFile(c.id, "/home/naive/eval/out/status.json")).rejects.toMatchObject({
+      status: 403,
+      message: "path is outside the sandbox working directory",
+    });
+  });
+
+  it("is not_found on a fork of an env image (home link + root install), and putFile works", async () => {
+    const { p, fake } = setup();
+    // The env build: home link (waitReady), subject files, a root-run install that writes into
+    // $HOME, then the snapshot.
+    const b = await p.waitReady((await p.create({ tags: ["ab-infra-envbuild-x"] })).id);
+    await p.putFile(b.id, "/home/naive/kit/scripts/setup-workspace.sh", "#!/bin/sh\n", {
+      mode: 0o755,
+    });
+    expect((await p.exec(b.id, `sudo -n mkdir -p "$HOME/.anybench/tandem"`)).exitCode).toBe(0);
+    const snap = await p.snapshot(b.id);
+    await p.destroy(b.id);
+
+    // The trial: fork it and do what the executor does first.
+    const f = await p.waitReady((await p.fork(snap.snapshotId, { tags: ["ab-r-t"] })).id);
+    expect(f.home).toBe("/home/naive");
+    expect(fake.shellLink(f.id, "/home/naive")).toBe("/home/tenki");
+    await expectCode(p.getFile(f.id, "/home/naive/eval/out/status.json"), "not_found");
+    await expectCode(p.getFile(f.id, "/home/naive/.anybench/nope/trial.json"), "not_found");
+    await expectCode(p.getFile(f.id, "/home/naive/.anybench/trial.json"), "not_found");
+    await p.putFile(f.id, "/home/naive/.anybench/proxy.env", "K=v\n", { mode: 0o600 });
+    await p.putFile(f.id, "/home/naive/eval/in/x.txt", "x\n");
+    expect(decodeText(await p.getFile(f.id, "/home/naive/.anybench/proxy.env"))).toBe("K=v\n");
+    expect(decodeText(await p.getFile(f.id, "/home/naive/kit/scripts/setup-workspace.sh"))).toBe(
+      "#!/bin/sh\n",
+    );
+  });
+
+  it("a 403 for a path that does exist stays forbidden", async () => {
+    const { p, naive } = setup();
+    const c = await p.waitReady((await p.create({})).id);
+    await p.putFile(c.id, "secret.txt", "s");
+    naive.failNext("computers.fs.read", fakeNaiveError("forbidden", 403));
+    await expectCode(p.getFile(c.id, "secret.txt"), "forbidden");
+  });
+});
+
 describe("putFile", () => {
   it("never puts content on an exec command line, and a 0600 file is never 0644 with content", async () => {
     const { p, fake } = setup();

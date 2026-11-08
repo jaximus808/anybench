@@ -16,6 +16,8 @@
 // - Creating or resuming needs a balance of one 10-minute block (else 402 insufficient_credits),
 //   and create charges that block at the rate card (8 400 µ$ per vCPU + 2 700 µ$ per GiB).
 // - A snapshot copies the filesystem only (the live one also copies memory and processes).
+// - fs/read of a path whose parent directory does not exist is 403 "path is outside the sandbox
+//   working directory", not 404 (live, 2026-11-08); a missing file in an existing directory is 404.
 //
 // Commands run in a small shell: echo, cat, true, false, :, exit, sleep, test/[, mkdir, touch,
 // rm, chmod, stat -c, ln -s, readlink -f, dirname, id -un, whoami, pwd, sudo, setsid, nohup and
@@ -356,6 +358,10 @@ export class FakeNaiveComputers implements NaiveComputersApi {
     const f = rec.vm.files.get(p);
     if (!f) {
       if (rec.vm.dirs.has(p)) throw invalid(`${path} is a directory`, "path");
+      // Live (docs/findings/naive-fs-missing-parent.md): a missing file in an existing directory
+      // is 404, but when the parent directory is missing too Naïve answers 403 with this message.
+      if (!rec.vm.dirs.has(posix.dirname(p)))
+        throw forbidden("path is outside the sandbox working directory");
       throw notFound(`no such file ${path}`);
     }
     return f.data.slice();
