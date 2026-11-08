@@ -3,6 +3,7 @@
 
 import { createClient, type Session, type VettaClient } from "@usenaive-sdk/managed-agents";
 import { z } from "zod";
+import { liveComputers } from "./computers.js";
 import { mapNaiveError, NaiveConflictError } from "./errors.js";
 import { fromWireMicroUsd, toWireMicroUsd } from "./money.js";
 import {
@@ -165,7 +166,10 @@ function sessionToSdk(body: SessionCreateInput): Parameters<VettaClient["session
 
 class LiveNaiveClient implements NaiveClient {
   readonly kind = "live" as const;
-  constructor(private readonly sdk: VettaClient) {}
+  readonly computers: NaiveClient["computers"];
+  constructor(private readonly sdk: VettaClient) {
+    this.computers = liveComputers(sdk);
+  }
 
   readonly agents: NaiveClient["agents"] = {
     findByName: async (name) => {

@@ -11,6 +11,7 @@
 // session with no script throws, so a test never passes on output it did not choose.
 
 import { AGENT_ROLE_KEY } from "./agents.js";
+import { FakeNaiveComputers, type FakeNaiveComputersOptions } from "./fake-computers.js";
 import {
   NaiveError,
   naiveErrorFor,
@@ -114,6 +115,8 @@ export interface FakeNaiveOptions {
   mode?: "live" | "test";
   /** Clock for event timestamps. */
   now?: () => Date;
+  /** How the fake computers behave (provisioning delay, fs/exec lag, homes, time scale). */
+  computers?: FakeNaiveComputersOptions;
 }
 
 const DEFAULT_COST = 1_000n;
@@ -136,12 +139,26 @@ export class FakeNaive implements NaiveClient {
   private readonly defaults = new Map<string, FakeScriptInput>();
   private readonly failures = new Map<string, NaiveError[]>();
   private counter = 0;
+  /** In-memory micro-VMs (see fake-computers.ts); its test controls hang off it too. */
+  readonly computers: FakeNaiveComputers;
 
   constructor(options: FakeNaiveOptions = {}) {
     this.balance = options.balanceMicroUsd ?? 250_000_000n;
     this.subscriptionStatus = options.subscription ?? "active";
     this.mode = options.mode ?? "test";
     this.now = options.now ?? (() => new Date("2026-11-07T00:00:00.000Z"));
+    this.computers = new FakeNaiveComputers(
+      {
+        enter: (method, args) => this.enter(method, args),
+        balance: () => this.balance,
+        charge: (amount) => {
+          this.balance -= amount;
+        },
+        id: (prefix) => this.id(prefix),
+        now: () => this.now(),
+      },
+      options.computers,
+    );
   }
 
   // ── test controls ──────────────────────────────────────────────────────────

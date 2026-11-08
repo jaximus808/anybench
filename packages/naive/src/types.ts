@@ -2,6 +2,7 @@
 // Money is bigint micro-USD; shapes are ours, not the SDK's, so an SDK bump changes one file.
 
 import { z } from "zod";
+import type { NaiveComputersApi } from "./computers.js";
 import type { MicroUsd } from "./money.js";
 
 export const SESSION_STATUSES = [
@@ -166,4 +167,6 @@ export interface NaiveClient {
     spend(query?: { sessionId?: string; agentId?: string }): Promise<NaiveSpend>;
     subscription(): Promise<NaiveSubscription>;
   };
+  /** Micro-VMs (`/v1/computers`, `/v1/snapshots`). `@anybench/providers` wraps it as a ComputeProvider. */
+  computers: NaiveComputersApi;
 }
