@@ -155,6 +155,22 @@ describe("env build (demo-env-trials)", () => {
     expect((await p.list()).length).toBe(0);
   });
 
+  it("retries a destroy the provider refused for capacity (Naïve 429), so nothing leaks", async () => {
+    const p = demoProvider();
+    p.failNext("destroy", new ProviderCapacityError("at capacity", { provider: "fake" }));
+    p.failNext("destroy", new ProviderCapacityError("at capacity", { provider: "fake" }));
+    const snap = await buildEnvSnapshot({
+      provider: p,
+      spec: {},
+      label: "dcap",
+      recipes: ["tool"],
+      catalog,
+      destroyBackoffMs: 1,
+    });
+    expect(snap.snapshotId).toMatch(/.+/);
+    expect((await p.list()).length).toBe(0);
+  });
+
   it("a failing recipe is an EnvBuildError at recipes", async () => {
     const p = new FakeProvider();
     p.onExec("uname -m", () => "x86_64\n");

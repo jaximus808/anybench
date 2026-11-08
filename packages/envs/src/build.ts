@@ -140,6 +140,10 @@ export interface BuildEnvSnapshotOptions {
   createTries?: number;
   /** First create backoff, doubled each try (max 60 s). Default 5 000 ms. */
   createBackoffMs?: number;
+  /** Tries of a retryable destroy (capacity, timeout). Default 6. */
+  destroyTries?: number;
+  /** First destroy backoff, doubled each try (max 60 s). Default 5 000 ms. */
+  destroyBackoffMs?: number;
 }
 
 export interface EnvSnapshot {
@@ -315,9 +319,37 @@ export async function buildEnvSnapshot(opts: BuildEnvSnapshotOptions): Promise<E
       durationMs: Date.now() - started,
     };
   } finally {
-    await provider.destroy(computer.id).catch((err: unknown) => {
-      log("env build computer destroy FAILED", { id: computer.id, err: String(err) });
-    });
+    await destroyBuildComputer(provider, computer.id, opts, log);
+  }
+}
+
+/**
+ * Destroy the build computer, retrying a retryable refusal (Naïve 429 "at capacity", a timeout)
+ * with backoff: a build computer is infra, outside the trial reaper's reach, so one 429 on the
+ * destroy used to leak it (docs/findings/proof-suite.md). A non-retryable error, or the last try,
+ * is logged and swallowed so the build's own result or error stands.
+ */
+async function destroyBuildComputer(
+  provider: BuildEnvSnapshotOptions["provider"],
+  id: string,
+  opts: Pick<BuildEnvSnapshotOptions, "destroyTries" | "destroyBackoffMs">,
+  log: (msg: string, data?: Record<string, unknown>) => void,
+): Promise<void> {
+  const tries = opts.destroyTries ?? 6;
+  for (let i = 0; ; i++) {
+    try {
+      await provider.destroy(id);
+      return;
+    } catch (err) {
+      const retry = isProviderError(err) && err.retryable && i < tries - 1;
+      if (!retry) {
+        log("env build computer destroy FAILED", { id, err: String(err) });
+        return;
+      }
+      const ms = Math.min(60_000, (opts.destroyBackoffMs ?? 5_000) * 2 ** i);
+      log("env build destroy retry", { id, attempt: i + 1, ms, err: String(err) });
+      await new Promise((r) => setTimeout(r, ms));
+    }
   }
 }
 
