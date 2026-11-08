@@ -75,13 +75,15 @@ export type PublishedBenchmark = z.infer<typeof PublishedBenchmarkSchema>;
 export const BADGE_VARIANTS = ["score", "verdict", "rank"] as const;
 export const EMBED_THEMES = ["light", "dark", "auto"] as const;
 
+/** One key in /.well-known/anybench-keys.json (built by @anybench/publish `wellKnownKeys`). */
 export const SigningKeySchema = z.object({
   key_id: z.string().min(1),
   alg: z.literal("Ed25519"),
-  /** base64url raw 32-byte public key. */
-  public_key: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-  created_at: IsoDateTimeSchema,
-  retired_at: IsoDateTimeSchema.nullable(),
+  status: z.enum(["current", "previous"]),
+  /** spki DER, standard base64. */
+  public_key_spki_der_b64: z.string().min(1),
+  /** The same key as an RFC 8037 OKP JWK. */
+  jwk: z.object({ kty: z.literal("OKP"), crv: z.literal("Ed25519"), x: z.string().min(1) }),
 });
 
 const benchmarkParams = z.object({ id: PublishedBenchmarkIdSchema });
@@ -241,7 +243,7 @@ export const publishRoutes = defineRoutes({
     path: "/.well-known/anybench-keys.json",
     auth: ["public"],
     summary: "Ed25519 public keys that verify attestations.",
-    response: z.object({ keys: z.array(SigningKeySchema) }),
+    response: z.object({ issuer: z.literal("anybench"), keys: z.array(SigningKeySchema).min(1) }),
   }),
   oembed: defineRoute({
     id: "publish.oembed",

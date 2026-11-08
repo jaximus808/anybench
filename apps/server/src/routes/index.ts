@@ -28,6 +28,7 @@ import { billingRoutes, stripeWebhookRoutes } from "./billing.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 import { kitsRoutes } from "./kits.js";
+import { publicationsRoutes } from "./publications.js";
 import { reportsRoutes } from "./reports.js";
 import { runnerRoutes } from "./runner.js";
 import { runsRoutes } from "./runs.js";
@@ -96,6 +97,8 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   app.route("/runs", runTrialsRoutes(deps));
   // Demo: reports.get / reports.markdown (runs:read; a run-scoped key only reaches its own run).
   app.route("/runs", reportsRoutes(deps));
+  // Publish: POST/GET /runs/:id/publication(/unpublish), public /public/r/:slug and the keyset.
+  app.route("/", publicationsRoutes(deps));
   app.route("/scans", scanRoutes(deps));
   // TDM-74: trial logs need `logs:read`; the handler checks a run-scoped key against the trial's run.
   app.use("/trials/:id/log", requireScope(deps, "logs:read"));

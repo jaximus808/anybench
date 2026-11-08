@@ -3,3 +3,4 @@ export * from "./canonical.js";
 export * from "./keys.js";
 export * from "./attest.js";
 export * from "./verify.js";
+export * from "./document.js";

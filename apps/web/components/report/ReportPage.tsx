@@ -1,12 +1,13 @@
 "use client";
 // /runs/[id]/report (TDM-103 [11.6]): the Results section on its own, for sharing a finished run.
 // Reads the run (state, hold reason) and the report through the web API client (lib/api.ts).
+// The share panel (publish, link, badge, embed, X) sits under the results.
 import { apiRoutes, type ApiClient, type Run, type RunId } from "@anybench/core";
 import { useEffect, useState } from "react";
 import { LiveApiContext, useLiveApi } from "../../lib/live/client";
 import { describeApiError } from "../../lib/live/useLiveRun";
-import { PublishButton } from "../bench/PublishDialog";
 import styles from "../live/live.module.css";
+import { SharePanel } from "../publish/SharePanel";
 import { ResultsPanel, ResultsView } from "./ResultsPanel";
 
 export function ReportPage({ runId, client }: { runId: string; client?: ApiClient }) {
@@ -36,18 +37,18 @@ function ReportLoader({ runId }: { runId: string }) {
     <div className={styles.page}>
       <div className={styles.shell}>
         {run ? <h1 className={styles.question}>{run.question}</h1> : null}
-        {run?.state === "delivered" ? (
-          <PublishButton runId={runId} runState={run.state} question={run.question} />
-        ) : null}
         {error ? (
           <ResultsView runId={runId} state={{ kind: "error", message: error }} runState={null} />
         ) : run ? (
-          <ResultsPanel
-            runId={runId}
-            runState={run.state}
-            holdReason={run.paused_reason}
-            standalone
-          />
+          <>
+            <ResultsPanel
+              runId={runId}
+              runState={run.state}
+              holdReason={run.paused_reason}
+              standalone
+            />
+            <SharePanel runId={runId} runState={run.state} client={client} />
+          </>
         ) : (
           <ResultsView runId={runId} state={{ kind: "loading" }} runState={null} standalone />
         )}

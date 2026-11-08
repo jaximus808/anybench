@@ -16,6 +16,7 @@ export * from "./reports.js";
 export * from "./billing.js";
 export * from "./admin.js";
 export * from "./publish.js";
+export * from "./publications.js";
 export * from "./scan.js";
 export * from "./outreach.js";
 export * from "./invites.js";

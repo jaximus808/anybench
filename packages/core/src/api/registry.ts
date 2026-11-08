@@ -10,6 +10,7 @@ import { inviteRoutes } from "./invites.js";
 import { kitRoutes } from "./kits.js";
 import { notificationRoutes } from "./notifications.js";
 import { outreachRoutes } from "./outreach.js";
+import { publicationRoutes } from "./publications.js";
 import { publishRoutes } from "./publish.js";
 import { reportRoutes } from "./reports.js";
 import type { RouteSpec } from "./route.js";
@@ -31,6 +32,7 @@ export const apiRoutes = {
   billing: billingRoutes,
   admin: adminRoutes,
   publish: publishRoutes,
+  publications: publicationRoutes,
   scan: scanRoutes,
   apiKeys: apiKeyRoutes,
   secrets: secretRoutes,

@@ -161,6 +161,12 @@ export const EnvSchema = z.object({
    * trial.json. Unset = runners are file-only (the worker follows status.json).
    */
   PUBLIC_API_URL: optionalUrl,
+  // ── Publish (E12, @anybench/publish keys.ts). Optional at boot: POST /runs/:id/publication
+  // answers 503 until the key is set. Public keys are served at /.well-known/anybench-keys.json.
+  PUBLISH_SIGNING_KEY_ID: optionalString,
+  PUBLISH_SIGNING_PRIVATE_KEY_DER_B64: optionalString,
+  PUBLISH_SIGNING_PUBLIC_KEY_DER_B64: optionalString,
+  PUBLISH_SIGNING_PREVIOUS_PUBLIC_KEYS: optionalString,
   /**
    * Price of one eval-computer billing block (Naïve: 10 min, paid in advance), integer micro-USD,
    * for computer cost and leak alerts (TDM-31). Default: Naïve's default 2 vCPU / 4 GiB size at
@@ -435,5 +441,6 @@ export function configSecrets(config: Config): Record<string, string | undefined
     SESSION_SECRET: config.SESSION_SECRET,
     RUNNER_TOKEN_SECRET: config.RUNNER_TOKEN_SECRET,
     MONID_API_KEY: config.MONID_API_KEY,
+    PUBLISH_SIGNING_PRIVATE_KEY_DER_B64: config.PUBLISH_SIGNING_PRIVATE_KEY_DER_B64,
   };
 }
