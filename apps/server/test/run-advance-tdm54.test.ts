@@ -28,7 +28,14 @@ import {
   type RunAdvanceJobOptions,
 } from "../src/jobs/run-advance.js";
 import type { RunChargesHook } from "../src/orchestrator/advance.js";
+import {
+  CURATED_KIT_UNAVAILABLE,
+  CURATED_TANDEM_KIT,
+  curatedKitStages,
+  isTandemRepo,
+} from "../src/orchestrator/curated.js";
 import { naiveSessionCanceller } from "../src/orchestrator/defaults.js";
+import { stageHold } from "../src/orchestrator/ports.js";
 import {
   FakeAgentStages,
   FakePipeline,
@@ -210,6 +217,36 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     });
   }
 
+  /** Evidence: the run's events, one line each (TDM54_EVIDENCE=1). */
+  async function printRunTdm54(id: string) {
+    const rows = await h.db
+      .select({
+        seq: events.seq,
+        type: events.type,
+        sourceId: events.sourceId,
+        payload: events.payload,
+      })
+      .from(events)
+      .where(eq(events.runId, id))
+      .orderBy(asc(events.seq));
+    const lines = rows.map((e) => {
+      const p = e.payload as Record<string, unknown>;
+      const what =
+        e.type === "run.state_changed" || e.type === "trial.phase"
+          ? `${String(p.from ?? "∅")} → ${String(p.to)}${p.command ? ` (${String(p.command)})` : ""}${p.reason ? ` "${String(p.reason)}"` : ""}`
+          : e.type === "agent.message"
+            ? `${String(p.agent_role)}: ${String(p.text)}`
+            : JSON.stringify(p).slice(0, 80);
+      const src =
+        e.type === "run.state_changed"
+          ? "run"
+          : `${e.type.split(".")[0]} ${String(e.sourceId).slice(-8)}`;
+      return `${String(e.seq).padStart(3)}  ${e.type.padEnd(18)} ${src.padEnd(16)} ${what}`;
+    });
+    const run = await runRow(id);
+    console.log(`\n[TDM-54 evidence] run ${id} → ${run.state}\n${lines.join("\n")}\n`);
+  }
+
   async function trialRows(id: string) {
     return h.db.select().from(trials).where(eq(trials.runId, id));
   }
@@ -270,6 +307,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     const id = await createRun(r.queue);
     await drainTdm54(w, r.queue);
 
+    if (process.env.TDM54_EVIDENCE === "1") await printRunTdm54(id);
     expect(await stateEdges(id)).toEqual(HAPPY_PATH);
     await expectDeliveredOnce(id, r);
     expect(stages.calls.map((c) => c.role)).toEqual([
@@ -394,7 +432,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
   it("the sweep skips runs with a pending job, a live holder, a hold, or finalized", async () => {
     const r = rig();
     const { w } = r.worker();
-    // Default agents: the understander is not built, so the run holds in needs_human.
+    // Default agents (CuratedKitStage): no kit design for this repo yet, so it holds.
     const unbuilt = createRunAdvanceJob({
       jobs: () => r.queue,
       pipeline: () => new FakePipeline({ digest: digestTdm54() }),
@@ -407,8 +445,8 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     await drainTdm54(w, r.queue);
     const held = await runRow(id);
     expect(held.state).toBe("needs_human");
-    expect(held.pausedReason).toMatch(/understander.*\[6\.2\]/);
-    expect((held.stageOutputs as { held_from?: string }).held_from).toBe("understand");
+    expect(held.pausedReason).toBe(CURATED_KIT_UNAVAILABLE);
+    expect((held.stageOutputs as { held_from?: string }).held_from).toBe("kit_draft");
     expect(await sweepRuns({ db: h.db, jobs: r.queue })).not.toContain(id);
   }, 60_000);
 
@@ -473,6 +511,62 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       reason: "kill switch run: abuse report",
     });
     expect(r.charges).toEqual([{ runId: id, state: "cancelled", cancelCause: "ours" }]);
+  }, 60_000);
+
+  it("CuratedKitStage: the Tandem repo gets the curated Tandem kit, with an event per stage", async () => {
+    for (const g of [
+      "jaximus808/tandem",
+      "https://github.com/Jaximus808/Tandem.git",
+      "github.com/JAXIMUS808/tandem",
+    ]) {
+      expect(isTandemRepo({ kind: "github", github: g })).toBe(true);
+    }
+    expect(isTandemRepo({ kind: "github", github: "jaximus808/tandem-x" })).toBe(false);
+    expect(isTandemRepo({ kind: "github", github: "someone/tandem" })).toBe(false);
+
+    const r = rig();
+    const { w } = r.worker();
+    // Stop after kit design: env build is the next stage's ticket ([3.8]).
+    const pipeline = new FakePipeline({ digest: digestTdm54() });
+    pipeline.buildEnv = async () => stageHold("env build stops this test");
+    w.handlers.set(
+      "run.advance",
+      createRunAdvanceJob({
+        jobs: () => r.queue,
+        agents: () => curatedKitStages(),
+        pipeline: () => pipeline,
+        timing: { leaseRefreshMs: 50 },
+      }) as never,
+    );
+    const id = await createRun(r.queue, {
+      question: "Does Tandem beat Claude Code?",
+      source: { kind: "github", github: "https://github.com/Jaximus808/Tandem.git", ref: "main" },
+    });
+    await drainTdm54(w, r.queue);
+    const run = await runRow(id);
+    expect(run.state).toBe("needs_human");
+    expect((run.stageOutputs as { held_from?: string }).held_from).toBe("env_build");
+    const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
+    expect(kit!.version).toBe(1);
+    expect((kit!.spec as { subject: { name: string } }).subject.name).toBe("tandem");
+    const said = await h.db
+      .select({ payload: events.payload })
+      .from(events)
+      .where(and(eq(events.runId, id), eq(events.type, "agent.message")))
+      .orderBy(asc(events.seq));
+    expect(said.map((e) => (e.payload as { text: string }).text)).toEqual([
+      "using the curated Tandem kit",
+      "using the curated Tandem kit: its contenders are the baselines",
+      `using the curated Tandem kit (${CURATED_TANDEM_KIT})`,
+    ]);
+    expect((await stateEdges(id)).map((e) => e[1])).toEqual([
+      "intake",
+      "understand",
+      "research",
+      "kit_draft",
+      "env_build",
+      "needs_human",
+    ]);
   }, 60_000);
 
   it("the default billing hook (ledger.recordRunCharges) bills a delivered run once, our cancel nothing", async () => {

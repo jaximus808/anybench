@@ -12,8 +12,9 @@
 //     that has no pending run.advance job gets one (`runs:<id>:sweep`). A worker that died mid
 //     stage leaves its lease held; it becomes takeable once that worker's heartbeat is stale.
 //
-// Ports (orchestrator/ports.ts): the E6 agent roles are not built yet, so by default each agent
-// stage holds the run in `needs_human` naming its ticket; GitHub ingest, the cost estimate,
+// Ports (orchestrator/ports.ts): the E6 agent roles are not built yet. Default agents are the
+// CuratedKitStage (orchestrator/curated.ts): the Tandem repo gets the curated Tandem kit, any other
+// repo holds in `needs_human` at kit design (TODO [6.6] TDM-60); the analyst is not built ([6.8]); GitHub ingest, the cost estimate,
 // Naïve session cancel and the billing hook (ledger.recordRunCharges) are real. Pass `createRunAdvanceJob({agents, pipeline, ...})` to plug real ones in.
 import { leaseOwnerBase } from "@anybench/bench";
 import { createNaiveClient } from "@anybench/naive";
@@ -37,9 +38,9 @@ import {
   ledgerCharges,
   naiveSessionCanceller,
 } from "../orchestrator/defaults.js";
+import { curatedKitStages } from "../orchestrator/curated.js";
 import {
   noSessionCanceller,
-  unbuiltAgentStages,
   unbuiltPipeline,
   type AgentStagePort,
   type PipelinePort,
@@ -105,7 +106,11 @@ export function orchestratorDeps(
   return {
     db: ctx.db,
     jobs: options.jobs?.(ctx, helpers) ?? graphileJobsPort(ctx.db, helpers.addJob),
-    agents: options.agents?.(ctx) ?? unbuiltAgentStages,
+    agents:
+      options.agents?.(ctx) ??
+      curatedKitStages(
+        ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {},
+      ),
     pipeline: options.pipeline?.(ctx) ?? defaultPipeline(ctx),
     sessions: options.sessions?.(ctx) ?? defaultSessions(ctx),
     billingGate: options.billingGate?.(ctx) ?? defaultBillingGate(ctx.config),

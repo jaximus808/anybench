@@ -120,6 +120,8 @@ export const EnvSchema = z.object({
    */
   NAIVE_API_KEY: optionalString,
   NAIVE_BASE_URL: optionalUrl,
+  /** The curated kits directory (TDM-54 CuratedKitStage); default: the repo's kits/. */
+  ANYBENCH_KITS_DIR: optionalString,
   /** Optional GitHub token for ingest (TDM-54 → packages/kit ingestGitHubRepo): private repos, rate limits. */
   GITHUB_TOKEN: optionalString,
   COMPUTER_BLOCK_PRICE_MICRO_USD: z.preprocess(
