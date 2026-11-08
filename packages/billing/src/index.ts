@@ -3,3 +3,6 @@ export * from "./ledger.js";
 export * from "./tables.js";
 export * from "./pricing.js";
 export * from "./estimate.js";
+export * from "./stripe.js";
+export * from "./setup.js";
+export * from "./stripe-ops.js";

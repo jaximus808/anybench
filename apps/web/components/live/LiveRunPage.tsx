@@ -26,6 +26,7 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
+import { GoBar } from "./GoBar";
 import { ms, pctOf, span, usd } from "./format";
 import styles from "./live.module.css";
 import { SearchPalette } from "./SearchPalette";
@@ -265,6 +266,10 @@ export function LiveRunView({
             </li>
           ))}
         </ol>
+
+        {live.state === "awaiting_go" && status !== "ended" ? (
+          <GoBar runId={live.runId} estimate={live.estimateMicroUsd} />
+        ) : null}
 
         <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
 

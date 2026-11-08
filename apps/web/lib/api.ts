@@ -37,6 +37,9 @@ export function api(): ApiClient {
 /** Where sign-in and sign-up land when no `redirect_to` is given (TDM-100). The run form is TDM-101. */
 export const POST_SIGN_IN_PATH = "/runs/new";
 
+/** Where sign-up lands without a `redirect_to`: the add-a-card onboarding step (stripe-onboarding). */
+export const POST_SIGN_UP_PATH = "/billing?welcome=1";
+
 /** Pages a post-sign-in redirect must not point back at (it would loop). */
 const AUTH_PAGES = new Set(["/signin", "/signup"]);
 

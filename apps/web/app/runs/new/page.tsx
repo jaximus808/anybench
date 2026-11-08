@@ -1,5 +1,6 @@
 // New run (Ask screen, TDM-101). The form is a client component; it signs the user in if needed.
 import type { Metadata } from "next";
+import { CardNotice } from "./CardNotice";
 import { NewRunForm } from "./NewRunForm";
 import styles from "./new-run.module.css";
 
@@ -16,6 +17,7 @@ export default function NewRunPage() {
         Point Anybench at what you built and ask your question. It reads your repo and suggests the
         rest; you check the test plan before Go.
       </p>
+      <CardNotice />
       <NewRunForm />
     </main>
   );

@@ -7,6 +7,7 @@
 //   3. Enqueue from the API with graphile-worker `quickAddJob`/`addJob` on DATABASE_URL_DIRECT,
 //      always with a `jobKey` (`<table>:<id>:<attempt>`), so retries and duplicates collapse.
 //   Jobs must be idempotent: graphile-worker retries on throw.
+import { billingReportJob } from "./billing-report.js";
 import { computerReapJob } from "./computer-reap.js";
 import { heartbeatJob } from "./heartbeat.js";
 import { runAdvanceJob, runSweepJob } from "./run-advance.js";
@@ -22,6 +23,7 @@ export const JOBS: readonly JobDef[] = [
   trialExecuteJob,
   trialReattachJob,
   trialGateJob,
+  billingReportJob,
 ];
 
 export { defineJob, type JobContext, type JobDef } from "./types.js";

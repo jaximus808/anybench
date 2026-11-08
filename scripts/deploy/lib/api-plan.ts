@@ -33,6 +33,9 @@ export const DeployEnvSchema = z
     ADMIN_GITHUB_LOGINS: opt,
     BILLING_MODE: z.preprocess(blank, z.string().default("test")),
     STRIPE_TEST_SECRET_KEY: opt,
+    STRIPE_TEST_WEBHOOK_SECRET: opt,
+    STRIPE_TEST_METER_ID: opt,
+    STRIPE_TEST_PRICE_USAGE: opt,
     SENTRY_DSN: opt,
     S3_ENDPOINT: opt,
     S3_REGION: opt,
@@ -150,6 +153,10 @@ export const OWNED_SECRETS = [
   "ANYBENCH_DATABASE_URL_DIRECT",
   "BILLING_MODE",
   "STRIPE_SECRET_KEY",
+  // Link a card + the Stripe webhook (stripe-onboarding): test-mode values only before 10.11.
+  "STRIPE_WEBHOOK_SECRET",
+  "STRIPE_METER_ID",
+  "STRIPE_PRICE_USAGE",
   "GITHUB_CLIENT_ID",
   "GITHUB_CLIENT_SECRET",
   "GITHUB_OAUTH_CALLBACK_URL",
@@ -238,6 +245,9 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
   };
   if (cookieDomain) s.SESSION_COOKIE_DOMAIN = cookieDomain;
   if (env.STRIPE_TEST_SECRET_KEY) s.STRIPE_SECRET_KEY = env.STRIPE_TEST_SECRET_KEY;
+  if (env.STRIPE_TEST_WEBHOOK_SECRET) s.STRIPE_WEBHOOK_SECRET = env.STRIPE_TEST_WEBHOOK_SECRET;
+  if (env.STRIPE_TEST_METER_ID) s.STRIPE_METER_ID = env.STRIPE_TEST_METER_ID;
+  if (env.STRIPE_TEST_PRICE_USAGE) s.STRIPE_PRICE_USAGE = env.STRIPE_TEST_PRICE_USAGE;
   if (env.ADMIN_GITHUB_LOGINS) s.ADMIN_GITHUB_LOGINS = env.ADMIN_GITHUB_LOGINS;
   if (env.RUNNER_TOKEN_SECRET) s.RUNNER_TOKEN_SECRET = env.RUNNER_TOKEN_SECRET;
   if (env.SENTRY_DSN) s.SENTRY_DSN = env.SENTRY_DSN;

@@ -21,8 +21,10 @@ import { graphileJobQueue } from "../lib/job-queue.js";
 import { createRunSuggester, slidingWindowLimiter } from "../lib/suggest.js";
 import { createNaiveClient } from "@anybench/naive";
 import type { AppDeps, AppEnv } from "../types.js";
+import { stripeBillingFromConfig } from "../lib/stripe-billing.js";
 import { apiKeysRoutes } from "./api-keys.js";
 import { authRoutes } from "./auth.js";
+import { billingRoutes, stripeWebhookRoutes } from "./billing.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 import { kitsRoutes } from "./kits.js";
@@ -53,6 +55,15 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   app.use(corsMiddleware(deps.config), csrfMiddleware(deps.config));
   app.route("/api-keys", apiKeysRoutes(deps));
   app.route("/auth", authRoutes(deps));
+  // stripe-onboarding: link a card (Checkout), the portal, the summary, and the Stripe webhook.
+  const billing = {
+    ...deps,
+    stripeBilling:
+      deps.stripeBilling !== undefined
+        ? deps.stripeBilling
+        : stripeBillingFromConfig(deps.config, deps.logger),
+  };
+  app.route("/billing", billingRoutes(billing));
   app.route("/health", healthRoutes(deps));
   app.route("/kits", kitsRoutes(tenant));
   // TDM-66: events need `events:read`; a run-scoped key only reaches its own runs.
@@ -94,4 +105,5 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // Run page fix: trials.get (runs:read; the handler checks a run-scoped key against the trial's run).
   app.route("/trials", trialsRoutes(deps));
   app.route("/v1/trials", runnerRoutes(deps));
+  app.route("/webhooks", stripeWebhookRoutes(billing));
 }

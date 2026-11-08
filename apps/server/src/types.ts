@@ -1,5 +1,6 @@
 // Shared server types (TDM-14). Routes and jobs receive everything through deps; no module-level
 // state, so the same app runs per-request on Vercel Functions and long-lived under node-server.
+import type { StripeBillingPort } from "@anybench/billing";
 import type { RequestIdVariables } from "hono/request-id";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
@@ -44,6 +45,12 @@ export interface AppDeps {
   trialLogs?: TrialLogReader;
   /** The run gate's billing check (TDM-67). Default: lib/billing-gate.ts defaultBillingGate. */
   billingGate?: BillingGate;
+  /**
+   * Stripe for card linking, the webhook and the meter reporter (stripe-onboarding). Default:
+   * lib/stripe-billing.ts stripeBillingFromConfig (test mode only; null when not configured, and
+   * the billing routes then answer 503). Tests pass a fake port.
+   */
+  stripeBilling?: StripeBillingPort | null;
   /** Enqueues graphile-worker jobs (TDM-67). Default: graphile_worker.add_job on `db`. */
   jobs?: JobQueue;
   /**

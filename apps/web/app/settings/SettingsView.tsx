@@ -63,6 +63,13 @@ export function SettingsView() {
           </div>
         </div>
       </section>
+      <section className={styles.card} aria-labelledby="billing-title">
+        <h2 id="billing-title">Billing</h2>
+        <p>
+          Your card, this month&rsquo;s usage and invoices.{" "}
+          <Link href="/billing">Open billing</Link>
+        </p>
+      </section>
       <ApiKeysSection />
       <ModelKeysSection />
     </div>

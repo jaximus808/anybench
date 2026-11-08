@@ -15,7 +15,8 @@
     "format:check": "prettier --check .",
     "dev:web": "pnpm --filter web dev",
     "dev:server": "pnpm --filter server dev",
-    "smoke:prod": "pnpm --filter server smoke:prod"
+    "smoke:prod": "pnpm --filter server smoke:prod",
+    "billing:setup": "pnpm --filter @anybench/billing stripe:setup"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -48,6 +48,41 @@ export const EnvSchema = z.object({
   STRIPE_SECRET_KEY: optionalString,
   STRIPE_TEST_SECRET_KEY: optionalString,
   STRIPE_LIVE_SECRET_KEY: optionalString,
+  // ── Link a card + usage billing (stripe-onboarding, plan.md section 8). Each generic name falls
+  // back to STRIPE_<MODE>_<NAME> (packages/billing resolveStripeConfig), so local dev only needs
+  // the TEST set from .env. Unset = the billing routes answer 503 and the gate refuses non-admins.
+  /** Signing secret of the /webhooks/stripe endpoint (whsec_...). */
+  STRIPE_WEBHOOK_SECRET: optionalString,
+  STRIPE_TEST_WEBHOOK_SECRET: optionalString,
+  STRIPE_LIVE_WEBHOOK_SECRET: optionalString,
+  /** The usage meter (mtr_...) and metered price (price_...); `pnpm billing:setup` prints them. */
+  STRIPE_METER_ID: optionalString,
+  STRIPE_TEST_METER_ID: optionalString,
+  STRIPE_LIVE_METER_ID: optionalString,
+  STRIPE_PRICE_USAGE: optionalString,
+  STRIPE_TEST_PRICE_USAGE: optionalString,
+  STRIPE_LIVE_PRICE_USAGE: optionalString,
+  /**
+   * Run gate: max unbilled usage (plus the run's estimate) for an account with no paid invoice
+   * yet, integer micro-USD ($100). billing_accounts.spend_limit_micro_usd overrides it per account.
+   */
+  NEW_ACCOUNT_SPEND_LIMIT_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("100000000")
+      .transform((v) => BigInt(v)),
+  ),
+  /** Shown on the billing page: Stripe invoices early at this much unbilled usage ($50). */
+  USAGE_INVOICE_THRESHOLD_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("50000000")
+      .transform((v) => BigInt(v)),
+  ),
   SENTRY_DSN: optionalUrl,
   /** HMAC key for per-trial runner tokens (lib/runner-token.ts). Unset = runner ingest answers 503. */
   RUNNER_TOKEN_SECRET: z.preprocess(
@@ -361,6 +396,9 @@ export function configSecrets(config: Config): Record<string, string | undefined
     STRIPE_SECRET_KEY: config.STRIPE_SECRET_KEY,
     STRIPE_TEST_SECRET_KEY: config.STRIPE_TEST_SECRET_KEY,
     STRIPE_LIVE_SECRET_KEY: config.STRIPE_LIVE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: config.STRIPE_WEBHOOK_SECRET,
+    STRIPE_TEST_WEBHOOK_SECRET: config.STRIPE_TEST_WEBHOOK_SECRET,
+    STRIPE_LIVE_WEBHOOK_SECRET: config.STRIPE_LIVE_WEBHOOK_SECRET,
     SENTRY_DSN: config.SENTRY_DSN,
     GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
     SESSION_SECRET: config.SESSION_SECRET,

@@ -377,7 +377,7 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     const body = PaymentRequiredSchema.parse(await res.json());
     expect(body).toEqual({
       reason: "no_payment_method",
-      link_card_url: "https://anybench.jaxonp.com/settings/billing",
+      link_card_url: `https://anybench.jaxonp.com/settings/billing?run=${run.id}`,
     });
     const e = await expectApiError(a.runs.go({ params: { id: run.id } }), 402, "payment_required");
     expect(e.paymentRequired).toEqual(body);
@@ -422,7 +422,7 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
       const e = await expectApiError(cb.runs.go({ params: { id: other.id } }), 402);
       expect(e.paymentRequired).toEqual({
         reason: "no_payment_method",
-        link_card_url: "https://anybench.jaxonp.com/settings/billing",
+        link_card_url: `https://anybench.jaxonp.com/settings/billing?run=${other.id}`,
       });
       const [otherRow] = await db.db.select().from(runs).where(eq(runs.id, other.id));
       expect(otherRow).toMatchObject({ state: "awaiting_go", compedBy: null });

@@ -18,7 +18,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "stripe:setup": "tsc -p tsconfig.build.json && node --env-file-if-exists=../../.env dist/bin/stripe-setup.js"
   },
   "dependencies": {
     "@anybench/bench": "workspace:*",
