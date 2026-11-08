@@ -72,6 +72,11 @@ export const CLI_DRAFT_LIMITS = {
   /** After replication and generation, per workload. */
   workloadFiles: 400,
   workloadBytes: 16 * 1024 * 1024,
+  /**
+   * One generated file. Naïve's sandbox fs moves at most 4 MiB per read/write (live run
+   * 01a1ba2f…: a 9.9 MB file failed env build), so keep each file well under it.
+   */
+  fileBytes: 3 * 1024 * 1024,
   commandChars: 2_000,
 } as const;
 

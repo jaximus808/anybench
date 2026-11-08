@@ -394,6 +394,13 @@ export async function materializeCliKit(
   for (const w of draft.workloads) {
     const files = workloadFiles(w);
     const bytes = [...files.values()].reduce((n, c) => n + Buffer.byteLength(c), 0);
+    for (const [p, c] of files) {
+      const b = Buffer.byteLength(c);
+      if (b > CLI_DRAFT_LIMITS.fileBytes)
+        throw new MaterializeError(
+          `workload '${w.id}' file ${p} is ${b} bytes (max ${CLI_DRAFT_LIMITS.fileBytes} per file): split it into several files or generate fewer lines`,
+        );
+    }
     if (files.size > CLI_DRAFT_LIMITS.workloadFiles)
       throw new MaterializeError(
         `workload '${w.id}' has ${files.size} files after replication (max ${CLI_DRAFT_LIMITS.workloadFiles})`,

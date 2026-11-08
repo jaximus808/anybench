@@ -56,7 +56,8 @@ found inside it.
   for bigger inputs use `generate` (code writes seeded pseudo-random words with your needle lines
   injected every N lines; up to 200,000 lines) and `replicate` (copies every file under a
   directory N times inside that directory, `tree/a.c` → `tree/copy-001/a.c`, up to 50) so timing
-  is not dominated by process start-up. Keep each workload under 400 files and 16 MiB. Make the
+  is not dominated by process start-up. Keep each workload under 400 files and 16 MiB, and every single file under 3 MiB
+  (about 40,000 generated lines of 10 words): split bigger inputs into several files. Make the
   workloads differ in the dimension the tool claims to be fast at (literal vs regex, many small
   files vs few big ones, deep trees). Never put expected outputs, answers or files named
   expected/answer/golden/reference/oracle under the inputs: the reference is captured by code.
@@ -68,14 +69,14 @@ found inside it.
 ## Contenders
 
 - Exactly one `subject`: the repo's tool, `install: {route: "github_release", repo:
-  "<owner>/<repo>", tag: null}` (null = its latest release; our code pins the tag and the asset
+"<owner>/<repo>", tag: null}` (null = its latest release; our code pins the tag and the asset
   for x86_64 and aarch64 Linux, and refuses a repo that ships no Linux binaries). Give a tag only
   when the user asked for one.
 - Baselines: the user's `intake_contenders` first, when there are any. Otherwise the one obvious
   plain default a skeptic would compare against (ripgrep → GNU grep, fd → GNU find), and at
   most one more well-known competitor that ships GitHub release binaries (e.g. ugrep). A GNU
   baseline is `install: {route: "gnu", package: "grep" | "findutils" | "sed" | "gawk" |
-  "coreutils" | "diffutils" | "gzip"}`; a GitHub one uses `github_release` like the subject.
+"coreutils" | "diffutils" | "gzip"}`; a GitHub one uses `github_release` like the subject.
 - `binary`: the executable on PATH (`rg`, `fd`, `grep`, `find`). `version_command`: the binary
   and a plain flag that prints the version (`rg --version`, `find --version`).
 - `why`: one line, why this contender (for baselines: why it is the obvious comparison).

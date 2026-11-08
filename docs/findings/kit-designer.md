@@ -297,6 +297,35 @@ case. It now does (`packages/agents/skeptic/prompt.md`): the rule flags only a c
 independent baseline, or one whose baseline is the same program. Contamination findings hold
 rather than repair, so the designer could not fix this one by itself.
 
+### Live attempt 3, 2026-11-08 07:56–08:00Z (the approved retry): held at env_build
+
+Naïve health check before the run: credits and list answered in 966 ms. There were 11
+computers, all from the founder's run.
+
+```
+run 01a1ba2f-…  (BurntSushi/ripgrep, auto_go off; events printed at 07:59:53Z after one job)
+07:56:13.902Z  null → intake (created)
+               intake → understand: software / cli / ready, 3 verified claims          1,909 µ$
+               understand → research (pass-through) → kit_draft
+               kit designer: kit v1, rg 15.2.0 vs GNU grep 3.11, 4 workloads         177,648 µ$
+               skeptic (openai/gpt-5-mini): PASS, 0 block / 1 warn (the rule 7 fix)     4,609 µ$
+               kit hash 657d1ffe85f8b07830c086e34847db9c66d706d4061eb2c0123f06f99fda77bd
+kit_draft → env_build → needs_human: "env build failed (ours, not billed): env build failed at
+  files: naive validation_failed (400): the file is 9888444 bytes; one sandbox read or write moves
+  at most 4194304 bytes (4 MiB)"
+```
+
+- No proof ran. The env build computers were destroyed by buildEnvSnapshot, and `computers.list()`
+  afterwards showed only the founder's 11. No 429 or 5xx appeared.
+- Session spend was 184,166 µ$. The balance fell by 193,558 µ$ over the window, so env build
+  cost about 9,000 µ$ (the founder's run was also running).
+- Cause: the designer generated a ~9.9 MB single input file, and Naïve's `fs` moves at most
+  4 MiB per call. Fixed in the generator: `CLI_DRAFT_LIMITS.fileBytes` = 3 MiB per workload
+  file, refused with a fixable message (so the designer is re-asked once), and the prompt now
+  says "every single file under 3 MiB". Follow-up for packages/envs: chunk subject files over
+  4 MiB in env build (or move them through S3, as the runner binary already is), since big kit
+  inputs are legitimate.
+
 ## Live spend (Naïve)
 
 | what | µ$ |
@@ -308,7 +337,8 @@ rather than repair, so the designer could not fix this one by itself.
 | e2e attempt 1 (stopped in 429 retries, nothing created) | 0 |
 | model listing (`models.list`) | 0 |
 | e2e attempt 2: understander 3,530 + designer 135,516 + skeptic 7,933 (held at kit_draft, no computers) | 146,979 |
-| **total** | **284,219** |
+| e2e attempt 3: understander 1,909 + designer 177,648 + skeptic 4,609 + env build ≈9,000 (held at env_build) | ≈193,558 |
+| **total** | **≈477,777** |
 
 Session costs are from `agent_sessions.cost_micro_usd`. No computers were created on Naïve.
 

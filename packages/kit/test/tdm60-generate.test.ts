@@ -300,3 +300,18 @@ describe("TDM-60 no-leak lint", () => {
     ]);
   });
 });
+
+describe("TDM-60 per-file size cap (Naïve's 4 MiB sandbox fs limit)", () => {
+  it("refuses a workload file over 3 MiB with a fixable message", async () => {
+    const d = structuredClone(TDM60_RG_DRAFT);
+    d.workloads[1]!.files[1] = {
+      path: "tree/big.txt",
+      generate: { lines: 120_000, seed: 1, words_per_line: 10, inject: [] },
+    };
+    const draft = CliKitDraftSchema.parse(d);
+    const pins = await resolveCliPins(draft, { fetch: tdm60FakeFetch(), cacheDir: null });
+    await expect(
+      materializeCliKit({ draft, pins, dir: path.join(await tmpTdm60("big"), "v1") }),
+    ).rejects.toThrow(/tree\/big.txt is \d+ bytes \(max 3145728 per file\): split it/);
+  });
+});
