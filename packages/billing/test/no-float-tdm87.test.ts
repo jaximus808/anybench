@@ -5,12 +5,8 @@ import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyNetDelta, balanceFromNet, createLedger, type Ledger } from "../src/index.js";
-import {
-  freshMigratedDbTdm87,
-  pgAvailableTdm87,
-  seedUserTdm87,
-  type FreshDbTdm87,
-} from "./helpers/pg-tdm87.js";
+import { freshMigratedDbTdm87, pgAvailableTdm87, type FreshDbTdm87 } from "./helpers/pg-tdm87.js";
+import { seedWithComputersTdm171 } from "./helpers/pg-tdm171.js";
 
 const available = await pgAvailableTdm87();
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
@@ -72,22 +68,31 @@ describe.skipIf(!available)("no float path through Postgres (TDM-87)", () => {
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.bigInt({ min: 2n ** 53n, max: 2n ** 59n }), { minLength: 1, maxLength: 3 }),
+        fc.bigInt({ min: 2n ** 53n, max: 2n ** 59n }),
         fc.boolean(),
-        async (amounts, asString) => {
-          const u = await seedUserTdm87(h.pool, amounts.length);
+        async (amounts, runFee, asString) => {
+          // Compute costs above 2^53 come back from Postgres exactly; the run fee goes in as a
+          // bigint or a decimal string.
+          const u = await seedWithComputersTdm171(h.pool, amounts.length, { cost: amounts });
+          await h.pool.query("update runs set state = 'delivered' where id = $1", [u.runId]);
           for (let i = 0; i < amounts.length; i++) {
-            const r = await ledger.recordTrialUsage({
-              runId: u.runId,
-              trialId: u.trialIds[i]!,
+            const r = await ledger.recordComputerUsage({
+              computerId: u.computerIds[i]!,
               userId: u.userId,
-              trialState: "done",
-              amount: asString ? amounts[i]!.toString() : amounts[i]!,
+              markupBps: 0,
             });
             if (r.status === "skipped") throw new Error("unreachable");
             expect(r.entry.amountMicroUsd).toBe(amounts[i]);
             expect(typeof r.entry.amountMicroUsd).toBe("bigint");
           }
-          const total = amounts.reduce((a, b) => a + b, 0n);
+          const fee = await ledger.recordRunFee({
+            runId: u.runId,
+            userId: u.userId,
+            amount: asString ? runFee.toString() : runFee,
+          });
+          if (fee.status === "skipped") throw new Error("unreachable");
+          expect(fee.entry.amountMicroUsd).toBe(runFee);
+          const total = amounts.reduce((a, b) => a + b, 0n) + runFee;
           const summary = await ledger.getAccountSummary(u.userId);
           expect(summary.unbilled).toBe(total);
           expect(typeof summary.unbilled).toBe("bigint");

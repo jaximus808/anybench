@@ -1,4 +1,11 @@
-// Usage ledger in integer micro-USD (TDM-87, plan.md section 8).
+// Usage ledger in integer micro-USD (TDM-87, plan.md section 8; cost-plus entries TDM-171).
+//
+// What it bills (cost-plus, pricing.ts): one `run_fee` per run that was delivered or failed because
+// of the subject (`run:<id>:fee`), and one `compute` entry per eval computer at the registry's cost
+// plus COMPUTE_MARKUP_BPS (`computer:<id>:compute`). Both decisions are made from the run, trial
+// and computer rows read in the same transaction (FOR SHARE), never from what the caller says:
+// a run that failed in our pipeline pays no fee, and a computer that only served failed_infra
+// attempts is never billed.
 //
 // The ledger owns usage_entries, credit_grants, cost_entries and the cached balances on
 // billing_accounts. Every mutation runs in ONE transaction that first locks the account row with
@@ -26,25 +33,27 @@
 // No float path: amounts are bigint end to end. Inputs go through core's MicroUsdSchema, which
 // rejects JS numbers, and Postgres sums come back as text and go straight to BigInt().
 import {
+  ComputerIdSchema,
   InterventionIdSchema,
-  isBillableTrialState,
   newId,
   NonNegativeMicroUsdSchema,
   RunIdSchema,
   TrialIdSchema,
-  TrialStateSchema,
   UsageEntryIdSchema,
   CreditGrantIdSchema,
   UserIdSchema,
   uuidv7,
   withMarkupBps,
   type MicroUsd,
+  type RunState,
 } from "@anybench/core";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { z } from "zod";
+import { BpsSchema, computeChargeMicroUsd, computeDecision, runFeeDecision } from "./pricing.js";
 import {
   billingAccounts,
+  computers,
   CREDIT_GRANT_CATEGORIES,
   CREDIT_GRANT_SOURCES,
   costEntries,
@@ -68,8 +77,8 @@ export type LedgerErrorCode =
   | "invalid_input"
   | "idempotency_conflict"
   | "trial_mismatch"
-  | "trial_state_mismatch"
   | "run_mismatch"
+  | "computer_mismatch"
   | "comp_mismatch"
   | "unknown_entry"
   | "comped_not_reportable"
@@ -108,19 +117,26 @@ interface Comp {
   interventionId: string | null;
 }
 
-export const RecordTrialUsageInputSchema = z.object({
+export const RecordRunFeeInputSchema = z.object({
   runId: RunIdSchema,
-  trialId: TrialIdSchema,
   userId: UserIdSchema,
-  trialState: TrialStateSchema,
-  /** The trial fee in micro-USD (TRIAL_FEE_MICRO_USD). A bigint or a decimal string, never a number. */
+  /** RUN_FEE_MICRO_USD. A bigint or a decimal string, never a number. */
   amount: NonNegativeMicroUsdSchema,
   comped: CompAssertionSchema,
 });
-export type RecordTrialUsageInput = z.input<typeof RecordTrialUsageInputSchema>;
+export type RecordRunFeeInput = z.input<typeof RecordRunFeeInputSchema>;
 
-/** Basis points are not money: a bigint or a safe JS integer (unsafe integers are rejected). */
-const BpsSchema = z.union([z.bigint().nonnegative(), z.number().int().safe().nonnegative()]);
+export const RecordComputerUsageInputSchema = z.object({
+  /** `computers.id` (the registry's UUIDv7). Its run, trial, status and cost are read from the row. */
+  computerId: ComputerIdSchema,
+  userId: UserIdSchema,
+  /** Optional assertion: if given, the computer's run must be this one. */
+  runId: RunIdSchema.nullish(),
+  /** COMPUTE_MARKUP_BPS. The user is billed cost + floor(cost * bps / 10_000). */
+  markupBps: BpsSchema,
+  comped: CompAssertionSchema,
+});
+export type RecordComputerUsageInput = z.input<typeof RecordComputerUsageInputSchema>;
 
 export const RecordManagedTokensInputSchema = z.object({
   userId: UserIdSchema,
@@ -169,10 +185,12 @@ const MarkReportedInputSchema = z
 export type UsageEntry = typeof usageEntries.$inferSelect;
 export type CreditGrant = typeof creditGrants.$inferSelect;
 
+export type SkipReason = "not_billable" | "computer_not_final" | "zero_cost";
+
 export type RecordUsageResult =
   | { status: "recorded"; entry: UsageEntry }
   | { status: "duplicate"; entry: UsageEntry }
-  | { status: "skipped"; reason: "not_billable" };
+  | { status: "skipped"; reason: SkipReason; detail?: string };
 
 export type ApplyGrantResult =
   { status: "applied"; grant: CreditGrant } | { status: "duplicate"; grant: CreditGrant };
@@ -223,7 +241,17 @@ export function applyNetDelta(balance: Balance, delta: MicroUsd): Balance {
 // ---- The ledger ---------------------------------------------------------------------------------
 
 export interface Ledger {
-  recordTrialUsage(input: RecordTrialUsageInput): Promise<RecordUsageResult>;
+  /**
+   * The run fee, once per run (`run:<id>:fee`), if the stored run and trial states say it is owed
+   * (pricing.ts runFeeDecision). Call it when the run reaches a terminal state; earlier it skips.
+   */
+  recordRunFee(input: RecordRunFeeInput): Promise<RecordUsageResult>;
+  /**
+   * One computer's compute charge (`computer:<id>:compute`): its registry cost plus the markup, if
+   * the stored rows say it is billable (pricing.ts computeDecision). Call it after the registry
+   * destroys the computer; before that it skips with `computer_not_final`.
+   */
+  recordComputerUsage(input: RecordComputerUsageInput): Promise<RecordUsageResult>;
   recordManagedTokens(input: RecordManagedTokensInput): Promise<RecordUsageResult>;
   applyGrant(input: ApplyGrantInput): Promise<ApplyGrantResult>;
   getAccountSummary(userId: string): Promise<AccountSummary>;
@@ -238,8 +266,12 @@ export interface Ledger {
   auditAccount(userId: string): Promise<AccountAudit>;
 }
 
-export function trialFeeIdempotencyKey(trialId: string): string {
-  return `trial:${trialId}:fee`;
+export function runFeeIdempotencyKey(runId: string): string {
+  return `run:${runId}:fee`;
+}
+
+export function computeIdempotencyKey(computerId: string): string {
+  return `computer:${computerId}:compute`;
 }
 
 export function managedTokensIdempotencyKey(key: string): string {
@@ -334,18 +366,20 @@ async function insertEntry(
 }
 
 /**
- * Read the run under FOR SHARE (a concurrent comp waits for this transaction), check it belongs to
- * the user, and return its comp status. `asserted` is the caller's optional `comped` flag.
+ * Read the run under FOR SHARE (a concurrent comp or state change waits for this transaction),
+ * check it belongs to the user, and return its comp status and state. `asserted` is the caller's
+ * optional `comped` flag. Lock order everywhere: run, then computer, then trials, then account.
  */
-async function runComp(
+async function lockRun(
   tx: Tx,
   runId: string,
   userId: string,
   asserted: boolean | null | undefined,
-): Promise<Comp | null> {
+): Promise<{ comp: Comp | null; state: RunState }> {
   const [run] = await tx
     .select({
       ownerId: runs.ownerId,
+      state: runs.state,
       compedBy: runs.compedBy,
       compInterventionId: runs.compInterventionId,
     })
@@ -363,47 +397,105 @@ async function runComp(
       `caller says comped=${String(asserted)} but run ${runId} is ${comp ? "comped" : "not comped"}`,
     );
   }
-  return comp;
+  return { comp, state: run.state };
+}
+
+/** Every trial of a run, under FOR SHARE, so their states cannot change until we commit. */
+async function lockRunTrials(tx: Tx, runId: string, userId: string) {
+  const rows = await tx
+    .select({
+      id: trials.id,
+      ownerId: trials.ownerId,
+      state: trials.state,
+      computerId: trials.computerId,
+    })
+    .from(trials)
+    .where(eq(trials.runId, runId))
+    .orderBy(asc(trials.id))
+    .for("share");
+  if (rows.some((t) => t.ownerId !== userId)) {
+    throw new LedgerError("trial_mismatch", `run ${runId} has trials not owned by ${userId}`);
+  }
+  return rows;
 }
 
 /** Build the ledger over an injected Drizzle database or transaction. */
 export function createLedger(db: LedgerDb): Ledger {
   return {
-    async recordTrialUsage(raw) {
-      const input = parse(RecordTrialUsageInputSchema, raw);
-      // failed_infra (and anything not finished from the subject's side) is never billed. Skipping
-      // is always safe; BILLING needs the database to agree (below).
-      if (!isBillableTrialState(input.trialState)) {
-        return { status: "skipped", reason: "not_billable" };
-      }
+    async recordRunFee(raw) {
+      const input = parse(RecordRunFeeInputSchema, raw);
       return db.transaction(async (tx) => {
-        // FOR SHARE: the trial's state cannot change under us until this transaction ends.
-        const [trial] = await tx
-          .select({ ownerId: trials.ownerId, runId: trials.runId, state: trials.state })
-          .from(trials)
-          .where(eq(trials.id, input.trialId))
-          .for("share");
-        if (!trial || trial.ownerId !== input.userId || trial.runId !== input.runId) {
-          throw new LedgerError(
-            "trial_mismatch",
-            `trial ${input.trialId} is not visible or does not belong to run ${input.runId} / user ${input.userId}`,
-          );
+        const run = await lockRun(tx, input.runId, input.userId, input.comped);
+        const runTrials = await lockRunTrials(tx, input.runId, input.userId);
+        const decision = runFeeDecision(
+          run.state,
+          runTrials.map((t) => t.state),
+        );
+        if (!decision.billable) {
+          return {
+            status: "skipped",
+            reason: "not_billable",
+            detail: `run ${input.runId} is ${run.state}: ${decision.reason}`,
+          };
         }
-        if (trial.state !== input.trialState || !isBillableTrialState(trial.state)) {
-          throw new LedgerError(
-            "trial_state_mismatch",
-            `trial ${input.trialId} is ${trial.state} in the database, caller said ${input.trialState}`,
-          );
-        }
-        const comp = await runComp(tx, input.runId, input.userId, input.comped);
         return insertEntry(tx, {
           userId: input.userId,
           runId: input.runId,
-          trialId: input.trialId,
-          type: "trial_fee",
+          trialId: null,
+          type: "run_fee",
           amount: input.amount,
-          idempotencyKey: trialFeeIdempotencyKey(input.trialId),
-          comped: comp,
+          idempotencyKey: runFeeIdempotencyKey(input.runId),
+          comped: run.comp,
+        });
+      });
+    },
+
+    async recordComputerUsage(raw) {
+      const input = parse(RecordComputerUsageInputSchema, raw);
+      return db.transaction(async (tx) => {
+        // Unlocked peek for the run id, so the run can be locked first (the lock order).
+        const [peek] = await tx
+          .select({ runId: computers.runId })
+          .from(computers)
+          .where(eq(computers.id, input.computerId));
+        if (!peek || peek.runId === null) {
+          throw new LedgerError(
+            "computer_mismatch",
+            `computer ${input.computerId} is not visible or belongs to no run`,
+          );
+        }
+        if (input.runId && input.runId !== peek.runId) {
+          throw new LedgerError(
+            "computer_mismatch",
+            `computer ${input.computerId} belongs to run ${peek.runId}, not ${input.runId}`,
+          );
+        }
+        const runId = peek.runId;
+        const run = await lockRun(tx, runId, input.userId, input.comped);
+        const [computer] = await tx
+          .select()
+          .from(computers)
+          .where(eq(computers.id, input.computerId))
+          .for("share");
+        if (!computer || computer.runId !== runId) {
+          throw new LedgerError(
+            "computer_mismatch",
+            `computer ${input.computerId} moved off run ${runId} while being billed`,
+          );
+        }
+        const runTrials = await lockRunTrials(tx, runId, input.userId);
+        const decision = computeDecision(computer, runTrials);
+        if (!decision.billable) {
+          return { status: "skipped", reason: decision.reason, detail: decision.detail };
+        }
+        return insertEntry(tx, {
+          userId: input.userId,
+          runId,
+          trialId: decision.entryTrialId,
+          type: "compute",
+          amount: computeChargeMicroUsd(computer.costMicroUsd, input.markupBps),
+          idempotencyKey: computeIdempotencyKey(computer.id),
+          comped: run.comp,
         });
       });
     },
@@ -415,7 +507,7 @@ export function createLedger(db: LedgerDb): Ledger {
       return db.transaction(async (tx) => {
         let comp: Comp | null = null;
         if (input.runId) {
-          comp = await runComp(tx, input.runId, input.userId, input.comped);
+          comp = (await lockRun(tx, input.runId, input.userId, input.comped)).comp;
         } else if (input.comped) {
           throw new LedgerError("comp_mismatch", "only usage tied to a comped run can be comped");
         }

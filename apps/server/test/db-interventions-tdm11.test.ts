@@ -138,9 +138,9 @@ describe.skipIf(!available)("intervention guards (TDM-11, local Postgres)", () =
       await tx.insert(usageEntries).values({
         userId,
         runId,
-        type: "trial_fee",
+        type: "run_fee",
         amountMicroUsd: 250_000n,
-        idempotencyKey: `trial_fee:${runId}:1`,
+        idempotencyKey: `run:${runId}:fee`,
         compedBy: "jaxon",
         interventionId: i!.id,
       });
@@ -151,9 +151,9 @@ describe.skipIf(!available)("intervention guards (TDM-11, local Postgres)", () =
     const comped = h.db.insert(usageEntries).values({
       userId,
       runId: otherRunId,
-      type: "trial_fee",
+      type: "run_fee",
       amountMicroUsd: 250_000n,
-      idempotencyKey: `trial_fee:${otherRunId}:1`,
+      idempotencyKey: `run:${otherRunId}:fee`,
       compedBy: "jaxon",
     });
     expect(await rejectsWithCodeTdm11(comped)).toBe(CHECK_VIOLATION);

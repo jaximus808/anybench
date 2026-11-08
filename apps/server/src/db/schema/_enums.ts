@@ -70,7 +70,17 @@ export const COMPUTER_STATUSES = [
 ] as const;
 
 export const PAYMENT_STATUSES = ["none", "ok", "past_due", "blocked"] as const;
-export const USAGE_TYPES = ["trial_fee", "managed_tokens", "adjustment", "refund"] as const;
+/**
+ * Cost-plus billing (plan.md section 8, TDM-171): `run_fee` once per billable run, `compute` once per
+ * eval computer (Naïve cost + COMPUTE_MARKUP_BPS), `managed_tokens` at cost + markup.
+ */
+export const USAGE_TYPES = [
+  "run_fee",
+  "compute",
+  "managed_tokens",
+  "adjustment",
+  "refund",
+] as const;
 export const CREDIT_GRANT_CATEGORIES = ["promotional", "paid"] as const;
 /** `signup` is the automatic once-per-user grant; `admin` needs an interventions row (DB trigger). */
 export const CREDIT_GRANT_SOURCES = ["signup", "admin"] as const;

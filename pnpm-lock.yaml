@@ -203,6 +203,9 @@ importers:
 
   packages/billing:
     dependencies:
+      '@anybench/bench':
+        specifier: workspace:*
+        version: link:../bench
       '@anybench/core':
         specifier: workspace:*
         version: link:../core

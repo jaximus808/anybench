@@ -1,4 +1,5 @@
-// TDM-87: usage ledger behavior against the migrated local Postgres.
+// TDM-87: usage ledger behavior against the migrated local Postgres. Updated for cost-plus
+// (TDM-171): usage is a per-computer `compute` entry (markup 0 here, so the charge is the cost).
 import { TRIAL_STATES, isBillableTrialState } from "@anybench/core";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -6,15 +7,15 @@ import {
   createLedger,
   LedgerError,
   LEDGER_TABLES,
-  trialFeeIdempotencyKey,
+  computeIdempotencyKey,
   type Ledger,
 } from "../src/index.js";
+import { seedWithComputersTdm171, type BilledFixtureTdm171 } from "./helpers/pg-tdm171.js";
 import {
   freshMigratedDbTdm87,
   pgAvailableTdm87,
   seedUserTdm87,
   setTrialStateTdm87,
-  type FixtureUserTdm87,
   type FreshDbTdm87,
 } from "./helpers/pg-tdm87.js";
 
@@ -86,26 +87,23 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
     });
   });
 
-  describe("recordTrialUsage", () => {
-    let u: FixtureUserTdm87;
+  describe("recordComputerUsage basics", () => {
+    let u: BilledFixtureTdm171;
     beforeAll(async () => {
-      u = await seedUserTdm87(h.pool, 4);
+      u = await seedWithComputersTdm171(h.pool, 4, { cost: FEE });
     });
 
-    it("records the fee once per trial (idempotent on trial:<id>:fee)", async () => {
-      const input = {
-        runId: u.runId,
-        trialId: u.trialIds[0]!,
-        userId: u.userId,
-        trialState: "done" as const,
-        amount: FEE,
-      };
-      const first = await ledger.recordTrialUsage(input);
+    it("records the charge once per computer (idempotent on computer:<id>:compute)", async () => {
+      const input = { computerId: u.computerIds[0]!, userId: u.userId, markupBps: 0 };
+      const first = await ledger.recordComputerUsage(input);
       expect(first.status).toBe("recorded");
       if (first.status !== "recorded") throw new Error("unreachable");
-      expect(first.entry.idempotencyKey).toBe(trialFeeIdempotencyKey(u.trialIds[0]!));
+      expect(first.entry.idempotencyKey).toBe(computeIdempotencyKey(u.computerIds[0]!));
       expect(first.entry.amountMicroUsd).toBe(FEE);
-      const again = await ledger.recordTrialUsage(input);
+      expect(first.entry.type).toBe("compute");
+      expect(first.entry.trialId).toBe(u.trialIds[0]);
+      expect(first.entry.runId).toBe(u.runId);
+      const again = await ledger.recordComputerUsage(input);
       expect(again.status).toBe("duplicate");
       expect((await ledger.getAccountSummary(u.userId)).unbilled).toBe(FEE);
       expect((await ledger.auditAccount(u.userId)).ok).toBe(true);
@@ -113,27 +111,24 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
 
     it("rejects a repeat that disagrees on the amount", async () => {
       const code = await codeOf(
-        ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: u.trialIds[0]!,
+        ledger.recordComputerUsage({
+          computerId: u.computerIds[0]!,
           userId: u.userId,
-          trialState: "done",
-          amount: FEE + 1n,
+          markupBps: 1,
         }),
       );
       expect(code).toBe("idempotency_conflict");
     });
 
-    it("never creates an entry for failed_infra or any non-billable state", async () => {
+    it("never creates an entry for failed_infra or any non-billable trial state", async () => {
       for (const state of TRIAL_STATES.filter((s) => !isBillableTrialState(s))) {
-        const r = await ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: u.trialIds[1]!,
+        await setTrialStateTdm87(h.pool, u.trialIds[1]!, state);
+        const r = await ledger.recordComputerUsage({
+          computerId: u.computerIds[1]!,
           userId: u.userId,
-          trialState: state,
-          amount: FEE,
+          markupBps: 0,
         });
-        expect(r, state).toEqual({ status: "skipped", reason: "not_billable" });
+        expect(r, state).toMatchObject({ status: "skipped", reason: "not_billable" });
       }
       expect(
         await count("select count(*)::text as n from usage_entries where trial_id = $1", [
@@ -142,90 +137,59 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       ).toBe(0n);
     });
 
-    it("rejects a trial billed to the wrong user or run", async () => {
-      const other = await seedUserTdm87(h.pool, 1);
-      const code = await codeOf(
-        ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: other.trialIds[0]!,
-          userId: u.userId,
-          trialState: "done",
-          amount: FEE,
-        }),
-      );
-      expect(code).toBe("trial_mismatch");
+    it("rejects a computer billed to the wrong user or run", async () => {
+      const other = await seedWithComputersTdm171(h.pool, 1);
+      expect(
+        await codeOf(
+          ledger.recordComputerUsage({
+            computerId: other.computerIds[0]!,
+            userId: u.userId,
+            markupBps: 0,
+          }),
+        ),
+      ).toBe("run_mismatch");
+      expect(
+        await codeOf(
+          ledger.recordComputerUsage({
+            computerId: other.computerIds[0]!,
+            userId: other.userId,
+            runId: u.runId,
+            markupBps: 0,
+          }),
+        ),
+      ).toBe("computer_mismatch");
     });
 
     it("rejects JS numbers for money (no float path)", async () => {
-      const code = await codeOf(
-        ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: u.trialIds[2]!,
-          userId: u.userId,
-          trialState: "done",
-          amount: 0.25 as unknown as bigint,
-        }),
-      );
-      expect(code).toBe("invalid_input");
-      const code2 = await codeOf(
-        ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: u.trialIds[2]!,
-          userId: u.userId,
-          trialState: "done",
-          amount: 250000 as unknown as bigint,
-        }),
-      );
-      expect(code2).toBe("invalid_input");
-    });
-
-    it("bills only what the DATABASE says is billable: stored failed_infra + caller 'done' -> no entry", async () => {
-      const v = await seedUserTdm87(h.pool, 2, { states: ["failed_infra", "running"] });
-      for (const [i, trialState] of [
-        [0, "done"],
-        [0, "failed_subject"],
-        [1, "done"],
-      ] as const) {
+      for (const amount of [0.25, 2_000_000]) {
         const code = await codeOf(
-          ledger.recordTrialUsage({
-            runId: v.runId,
-            trialId: v.trialIds[i]!,
-            userId: v.userId,
-            trialState,
-            amount: FEE,
+          ledger.recordRunFee({
+            runId: u.runId,
+            userId: u.userId,
+            amount: amount as unknown as bigint,
           }),
         );
-        expect(code, `${i} ${trialState}`).toBe("trial_state_mismatch");
+        expect(code, String(amount)).toBe("invalid_input");
       }
-      // Stored done, caller failed_subject: still a mismatch, never a guess.
-      await setTrialStateTdm87(h.pool, v.trialIds[1]!, "done");
       expect(
         await codeOf(
-          ledger.recordTrialUsage({
-            runId: v.runId,
-            trialId: v.trialIds[1]!,
-            userId: v.userId,
-            trialState: "failed_subject",
-            amount: FEE,
+          ledger.recordComputerUsage({
+            computerId: u.computerIds[2]!,
+            userId: u.userId,
+            markupBps: 0.5,
           }),
         ),
-      ).toBe("trial_state_mismatch");
-      expect(
-        await count("select count(*)::text as n from usage_entries where user_id = $1", [v.userId]),
-      ).toBe(0n);
-      expect(await ledger.getAccountSummary(v.userId)).toMatchObject({ unbilled: 0n });
+      ).toBe("invalid_input");
     });
   });
 
   describe("comp status comes from the run", () => {
     it("a comped run never creates a counted or reportable entry, even if the caller omits the flag", async () => {
-      const c = await seedUserTdm87(h.pool, 2, { comped: true });
-      const r = await ledger.recordTrialUsage({
-        runId: c.runId,
-        trialId: c.trialIds[0]!,
+      const c = await seedWithComputersTdm171(h.pool, 2, { comped: true, cost: FEE });
+      const r = await ledger.recordComputerUsage({
+        computerId: c.computerIds[0]!,
         userId: c.userId,
-        trialState: "done",
-        amount: FEE,
+        markupBps: 0,
       });
       expect(r.status).toBe("recorded");
       if (r.status !== "recorded") throw new Error("unreachable");
@@ -256,15 +220,13 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
     });
 
     it("rejects a caller comp flag that disagrees with the run", async () => {
-      const c = await seedUserTdm87(h.pool, 1, { comped: true });
-      const p = await seedUserTdm87(h.pool, 1);
-      const fee = (f: FixtureUserTdm87, comped: boolean) =>
-        ledger.recordTrialUsage({
-          runId: f.runId,
-          trialId: f.trialIds[0]!,
+      const c = await seedWithComputersTdm171(h.pool, 1, { comped: true, cost: FEE });
+      const p = await seedWithComputersTdm171(h.pool, 1, { cost: FEE });
+      const fee = (f: BilledFixtureTdm171, comped: boolean) =>
+        ledger.recordComputerUsage({
+          computerId: f.computerIds[0]!,
           userId: f.userId,
-          trialState: "done",
-          amount: FEE,
+          markupBps: 0,
           comped,
         });
       expect(await codeOf(fee(c, false))).toBe("comp_mismatch");
@@ -305,7 +267,7 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
 
   describe("grants are spent first", () => {
     it("usage after a grant draws the grant down before anything is unbilled", async () => {
-      const u = await seedUserTdm87(h.pool, 3);
+      const u = await seedWithComputersTdm171(h.pool, 3, { cost: FEE });
       const g = await ledger.applyGrant({
         userId: u.userId,
         amount: 400_000n,
@@ -315,12 +277,10 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
       });
       expect(g.status).toBe("applied");
       const fee = (i: number) =>
-        ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: u.trialIds[i]!,
+        ledger.recordComputerUsage({
+          computerId: u.computerIds[i]!,
           userId: u.userId,
-          trialState: "done",
-          amount: FEE,
+          markupBps: 0,
         });
       await fee(0);
       expect(await ledger.getAccountSummary(u.userId)).toMatchObject({
@@ -504,15 +464,13 @@ describe.skipIf(!available)("usage ledger (TDM-87, local Postgres)", () => {
 
   describe("markReported", () => {
     it("marks entries reported, accepts an identical retry, rejects a different meter id", async () => {
-      const u = await seedUserTdm87(h.pool, 2);
+      const u = await seedWithComputersTdm171(h.pool, 2, { cost: FEE });
       const ids: string[] = [];
-      for (const t of u.trialIds) {
-        const r = await ledger.recordTrialUsage({
-          runId: u.runId,
-          trialId: t,
+      for (const computerId of u.computerIds) {
+        const r = await ledger.recordComputerUsage({
+          computerId,
           userId: u.userId,
-          trialState: "done",
-          amount: FEE,
+          markupBps: 0,
         });
         if (r.status === "skipped") throw new Error("unreachable");
         ids.push(r.entry.id);

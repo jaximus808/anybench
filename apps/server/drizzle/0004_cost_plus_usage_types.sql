@@ -1,0 +1,2 @@
+ALTER TABLE "usage_entries" DROP CONSTRAINT "usage_entries_type_check";--> statement-breakpoint
+ALTER TABLE "usage_entries" ADD CONSTRAINT "usage_entries_type_check" CHECK ("type" in ('run_fee', 'compute', 'managed_tokens', 'adjustment', 'refund'));

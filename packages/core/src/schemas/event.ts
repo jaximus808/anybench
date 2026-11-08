@@ -290,7 +290,7 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
     z.object({
       user_id: id,
       trial_id: id.optional(),
-      kind: z.enum(["trial_fee", "managed_tokens", "adjustment", "refund"]),
+      kind: z.enum(["run_fee", "compute", "managed_tokens", "adjustment", "refund"]),
       amount_micro_usd: eventMicroUsd,
       comped: z.boolean().default(false),
     }),

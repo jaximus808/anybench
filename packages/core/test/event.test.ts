@@ -109,7 +109,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     {
       user_id: "u_1",
       trial_id: "trial_1",
-      kind: "trial_fee",
+      kind: "compute",
       amount_micro_usd: "250000",
       comped: false,
     },

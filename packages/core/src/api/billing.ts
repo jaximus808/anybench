@@ -9,7 +9,14 @@ import { defineRoute, defineRoutes } from "./route.js";
 
 export const PAYMENT_STATUSES = ["none", "ok", "past_due", "blocked"] as const;
 export const PaymentStatusSchema = z.enum(PAYMENT_STATUSES);
-export const USAGE_TYPES = ["trial_fee", "managed_tokens", "adjustment", "refund"] as const;
+/** Cost-plus (plan.md section 8): one `run_fee` per billable run, one `compute` per eval computer. */
+export const USAGE_TYPES = [
+  "run_fee",
+  "compute",
+  "managed_tokens",
+  "adjustment",
+  "refund",
+] as const;
 export const UsageTypeSchema = z.enum(USAGE_TYPES);
 export const CREDIT_GRANT_CATEGORIES = ["promotional", "paid"] as const;
 export const CreditGrantCategorySchema = z.enum(CREDIT_GRANT_CATEGORIES);

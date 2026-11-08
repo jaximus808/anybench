@@ -21,6 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anybench/bench": "workspace:*",
     "@anybench/core": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "stripe": "^23.1.0",

@@ -117,6 +117,27 @@ export const EnvSchema = z.object({
       .default("27600")
       .transform((v) => BigInt(v)),
   ),
+  // ── Cost-plus billing (TDM-171, plan.md section 8): the run fee plus eval computer time at
+  // Naïve cost + COMPUTE_MARKUP_BPS. Read by packages/billing (recordRunFee, recordComputerUsage,
+  // estimateRunCost); never parsed as a float.
+  /** Flat fee per delivered or subject-failed run, integer micro-USD ($2). */
+  RUN_FEE_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("2000000")
+      .transform((v) => BigInt(v)),
+  ),
+  /** Markup on eval computer cost in basis points (5000 = +50%), rounded down per computer. */
+  COMPUTE_MARKUP_BPS: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,6}$/, "must be a non-negative integer of basis points")
+      .default("5000")
+      .transform((v) => BigInt(v)),
+  ),
 });
 export type Env = z.infer<typeof EnvSchema>;
 

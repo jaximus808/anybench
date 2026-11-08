@@ -1,24 +1,20 @@
 // TDM-87 property tests: random interleavings of concurrent ledger writers against the local
 // Postgres. The cached balances always equal the sums of entries and grants, idempotency holds,
-// failed_infra never creates an entry, and comped usage is never counted or reported.
+// failed_infra never creates an entry, and comped usage is never counted or reported. Cost-plus
+// (TDM-171): the per-trial charge is each trial's computer (`compute`, markup 0 here).
 import { TRIAL_STATES, isBillableTrialState, withMarkupBps, type TrialState } from "@anybench/core";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   balanceFromNet,
+  computeIdempotencyKey,
   createLedger,
   LedgerError,
   managedTokensIdempotencyKey,
-  trialFeeIdempotencyKey,
   type Ledger,
 } from "../src/index.js";
-import {
-  freshMigratedDbTdm87,
-  pgAvailableTdm87,
-  seedUserTdm87,
-  type FixtureUserTdm87,
-  type FreshDbTdm87,
-} from "./helpers/pg-tdm87.js";
+import { freshMigratedDbTdm87, pgAvailableTdm87, type FreshDbTdm87 } from "./helpers/pg-tdm87.js";
+import { seedWithComputersTdm171, type BilledFixtureTdm171 } from "./helpers/pg-tdm171.js";
 
 const available = await pgAvailableTdm87();
 
@@ -29,14 +25,7 @@ const MARKUP_BPS = 2000;
 const SIGNUP_GRANT = 5_000_000n;
 
 type Op =
-  | {
-      kind: "fee";
-      u: number;
-      t: number;
-      state: TrialState;
-      useDbState: boolean;
-      assertComp: boolean;
-    }
+  | { kind: "compute"; u: number; t: number; assertComp: boolean }
   | { kind: "tokens"; u: number; k: number; assertComp: boolean }
   | { kind: "grant"; u: number; amount: bigint; signup: boolean }
   | { kind: "report"; u: number }
@@ -52,12 +41,9 @@ const state = fc.oneof(
 const op: fc.Arbitrary<Op> = fc.oneof(
   {
     arbitrary: fc.record({
-      kind: fc.constant("fee" as const),
+      kind: fc.constant("compute" as const),
       u: user,
       t: fc.integer({ min: 0, max: TRIALS - 1 }),
-      // The caller usually reports the trial's real state, but not always: then it must not bill.
-      state,
-      useDbState: fc.boolean(),
       // Pass the (correct) comp flag, or forget it: the run decides either way.
       assertComp: fc.boolean(),
     }),
@@ -86,8 +72,8 @@ const op: fc.Arbitrary<Op> = fc.oneof(
 );
 
 /**
- * Per-scenario constants: a trial's fee and stored state, a token key's cost and a run's comp never
- * vary between duplicate writes.
+ * Per-scenario constants: a trial's computer cost and stored state, a token key's cost and a run's
+ * comp never vary between duplicate writes.
  */
 const scenario = fc.record({
   fees: fc.array(
@@ -125,32 +111,29 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
   it("cache == sums, idempotent, only DB-billable trials billed, comped runs never counted or reported", async () => {
     await fc.assert(
       fc.asyncProperty(scenario, async (s) => {
-        const us: FixtureUserTdm87[] = [];
+        const us: BilledFixtureTdm171[] = [];
         for (let i = 0; i < USERS; i++) {
           us.push(
-            await seedUserTdm87(h.pool, TRIALS, {
+            await seedWithComputersTdm171(h.pool, TRIALS, {
               states: s.dbStates[i]!,
               comped: s.runComped[i]!,
+              cost: s.fees[i]!,
             }),
           );
         }
-        const callerState = (o: Extract<Op, { kind: "fee" }>) =>
-          o.useDbState ? s.dbStates[o.u]![o.t]! : o.state;
-        /** Billed iff the caller's state is billable AND the database agrees. */
-        const bills = (o: Extract<Op, { kind: "fee" }>) =>
-          isBillableTrialState(callerState(o)) && callerState(o) === s.dbStates[o.u]![o.t]!;
+        /** Billed iff the trial's STORED state is billable (done or failed_subject). */
+        const bills = (o: Extract<Op, { kind: "compute" }>) =>
+          isBillableTrialState(s.dbStates[o.u]![o.t]!);
         const tokenKey = (u: number, k: number) => `${us[u]!.userId}:${k}`;
 
         const run = (o: Op) => {
           const u = us[o.u]!;
           switch (o.kind) {
-            case "fee":
-              return ledger.recordTrialUsage({
-                runId: u.runId,
-                trialId: u.trialIds[o.t]!,
+            case "compute":
+              return ledger.recordComputerUsage({
+                computerId: u.computerIds[o.t]!,
                 userId: u.userId,
-                trialState: callerState(o),
-                amount: s.fees[o.u]![o.t]!,
+                markupBps: 0,
                 comped: o.assertComp ? s.runComped[o.u]! : undefined,
               });
             case "tokens":
@@ -205,12 +188,11 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
         for (let i = 0; i < s.ops.length; i++) {
           const o = s.ops[i]!;
           const r = results[i] as { status?: string; ok?: boolean; error?: string };
-          if (o.kind === "fee") {
-            if (!isBillableTrialState(callerState(o))) {
-              expect(r).toEqual({ status: "skipped", reason: "not_billable" });
-            } else if (!bills(o)) {
-              // The caller said done/failed_subject but the database disagrees: refused.
-              expect(r).toEqual({ error: "trial_state_mismatch" });
+          if (o.kind === "compute") {
+            if (!bills(o)) {
+              expect(r).toMatchObject({ status: "skipped", reason: "not_billable" });
+            } else if (s.fees[o.u]![o.t]! === 0n) {
+              expect(r).toMatchObject({ status: "skipped", reason: "zero_cost" });
             } else {
               expect(["recorded", "duplicate"]).toContain(r.status);
             }
@@ -243,7 +225,7 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
           let signup = false;
           for (const o of s.ops) {
             if (o.u !== ui) continue;
-            if (o.kind === "fee" && bills(o)) billedTrials.add(o.t);
+            if (o.kind === "compute" && bills(o) && s.fees[ui]![o.t]! > 0n) billedTrials.add(o.t);
             if (o.kind === "tokens") touchedTokens.add(o.k);
             if (o.kind === "grant") {
               if (o.signup) signup = true;
@@ -281,14 +263,16 @@ describe.skipIf(!available)("usage ledger properties under concurrent writers (T
             "select id, trial_id, type, idempotency_key, comped_by, reported_at, stripe_meter_event_id from usage_entries where user_id = $1",
             [u.userId],
           );
-          const feeRows = rows.filter((r) => r.type === "trial_fee");
-          // One fee per trial that reached a billable state, none for failed_infra-only trials.
+          const feeRows = rows.filter((r) => r.type === "compute");
+          // One charge per computer of a trial in a billable state, none for failed_infra trials.
           expect(new Set(feeRows.map((r) => r.trial_id)).size).toBe(feeRows.length);
           expect(feeRows.map((r) => r.trial_id).sort()).toEqual(
             [...billedTrials].map((t) => u.trialIds[t]!).sort(),
           );
-          for (const r of feeRows)
-            expect(r.idempotency_key).toBe(trialFeeIdempotencyKey(r.trial_id!));
+          for (const r of feeRows) {
+            const t = u.trialIds.indexOf(r.trial_id!);
+            expect(r.idempotency_key).toBe(computeIdempotencyKey(u.computerIds[t]!));
+          }
           const tokenRows = rows.filter((r) => r.type === "managed_tokens");
           expect(tokenRows.map((r) => r.idempotency_key).sort()).toEqual(
             [...touchedTokens].map((k) => managedTokensIdempotencyKey(tokenKey(ui, k))).sort(),
