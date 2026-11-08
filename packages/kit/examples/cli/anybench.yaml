@@ -1,4 +1,8 @@
-# Example kit for driver.type: cli (TDM-33 [4.1]). Validate with: anybench kit validate packages/kit/examples/cli
+# Example kit for driver.type: cli (TDM-33 [4.1], driver + gate + do-less from TDM-36 [4.4]).
+# Validate with: anybench kit validate packages/kit/examples/cli
+# adapters/*/driver.sh, gates/same-matches/check.sh and proof/do_less/truncate/driver.sh are rendered
+# by @anybench/kit (renderCliDriverScript, renderCliGateScript, renderCliDoLessDriverScript) from
+# packages/kit/test/tdm36-cli-example-config.ts; regenerate them rather than editing by hand.
 schema_version: 2
 
 subject:
@@ -47,12 +51,16 @@ gates:
   - id: same-matches
     kind: output-diff
     reference: reference/same-matches/
-    description: Sorted path:line:match output equals the reference for every workload.
+    description: >-
+      The gated run exits 0 or 1 and its path:line:match stdout, sorted, equals
+      reference/same-matches/<workload>/stdout.txt.
 
 requirements:
+  # Every number comes from the gated run's GNU time -v report (collector: time), so each one is
+  # vouched for by the same-matches verdict of that very execution. hyperfine.json is drill-down.
   - id: wall
     type: measured
-    title: Median wall time
+    title: Wall time
     metric: wall_s
     unit: s
     better: lower
@@ -60,8 +68,8 @@ requirements:
   - id: rss
     type: measured
     title: Peak RSS
-    metric: peak_rss_kb
-    unit: KiB
+    metric: peak_rss_bytes
+    unit: bytes
     better: lower
     gate_id: same-matches
 
@@ -72,6 +80,11 @@ proof:
     contender: gnu-grep
     description: GNU grep -rnoP is the known-good answer; it must pass same-matches at 100%.
   do_less:
+    - id: truncated-output
+      dir: proof/do_less/truncate/
+      contender: ripgrep
+      driver_patch: proof/do_less/truncate/driver.sh
+      description: The same driver with the subject's stdout cut to its first line; must fail same-matches.
     - id: first-match-only
       dir: proof/do_less/first-match/
       contender: ripgrep
