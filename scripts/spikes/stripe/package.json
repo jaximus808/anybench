@@ -1,0 +1,15 @@
+{
+  "name": "@anybench/spike-stripe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TDM-21 spike: Stripe usage billing (meter, metered price, Checkout, credit grants, thresholds). Test mode only.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anybench/core": "workspace:*",
+    "stripe": "^23.1.0",
+    "zod": "^4.6.7"
+  }
+}
