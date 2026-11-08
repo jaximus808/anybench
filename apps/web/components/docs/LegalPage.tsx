@@ -18,7 +18,7 @@ export interface LegalPageProps {
 export function LegalPage({ path, title, summary, children }: LegalPageProps) {
   return (
     <div className={styles.shell}>
-      <SideNav label="Legal" links={LEGAL_LINKS} current={path} />
+      <SideNav label="Legal pages" links={LEGAL_LINKS} current={path} />
       <article className={styles.prose}>
         <DraftNotice />
         <h1>{title}</h1>

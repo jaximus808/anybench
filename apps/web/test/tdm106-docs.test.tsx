@@ -123,4 +123,11 @@ describe("docs pages (TDM-106)", () => {
     expect(screen.getByText("Embed (HTML)")).toBeTruthy();
     expect(container.textContent).toContain("/.well-known/anybench-keys.json");
   });
+
+  it("the overview makes no confidence-interval claim and says unproven kits are not run", () => {
+    const { container } = render(<DocsOverviewPage />);
+    expect(container.textContent).not.toMatch(/confidence interval/);
+    expect(container.textContent).toMatch(/is\s+not run/);
+    expect(container.textContent).toMatch(/runs separately from the contender/);
+  });
 });

@@ -73,10 +73,12 @@ export default function PrivacyPage() {
       <section aria-labelledby="privacy-isolation">
         <h2 id="privacy-isolation">Where your code runs</h2>
         <p>
-          Each trial runs on its own isolated cloud computer, which is destroyed when the trial
-          ends. Correctness gates run on a separate scoring computer that never ran your code. Trial
-          outputs move between them through our private object storage with short-lived signed
-          links.
+          Your trials run on isolated computers created for your eval and destroyed when your trials
+          finish. By design, correctness gates run separately from the trial that produced the
+          output, so the code under test does not grade itself. This describes how the system is
+          built, not a guarantee for every kit; some gates, such as hidden tests for a coding agent,
+          run the code the agent wrote. Trial outputs move between computers through our private
+          object storage with short-lived signed links.
         </p>
       </section>
 

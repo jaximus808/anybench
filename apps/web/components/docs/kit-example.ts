@@ -38,7 +38,7 @@ workloads:
     title: 1 GB of quoted CSV with embedded newlines
     input: workloads/quoted-1gb/input/
 
-# L5 gate: runs on the scoring computer, never on the computer that ran the contender.
+# L5 gate: runs separately from the contender's trial, on its frozen outputs.
 gates:
   - id: same-rows
     kind: output-diff

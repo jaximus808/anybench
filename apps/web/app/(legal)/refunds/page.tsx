@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { LegalPage } from "../../../components/docs/LegalPage";
-import { Placeholder } from "../../../components/docs/Notices";
+import { Placeholder, TableWrap } from "../../../components/docs/Notices";
 
 export const metadata: Metadata = {
   title: "Refunds and billing",
@@ -14,7 +14,7 @@ export default function RefundsPage() {
     <LegalPage
       path="/refunds"
       title="Refunds and billing"
-      summary="Anybench bills by usage. You link a card once, usage adds up as your trials run, and Stripe sends a monthly invoice. Our own failures are never billed."
+      summary="Anybench bills by usage. You link a card once, usage adds up as your trials run, and Stripe sends a monthly invoice. Runs that fail because of us are never billed."
     >
       <section aria-labelledby="refunds-how">
         <h2 id="refunds-how">How billing works</h2>
@@ -46,10 +46,13 @@ export default function RefundsPage() {
         <p>Pricing is cost-plus, and the test plan shows the estimate before you press Go.</p>
         <ul>
           <li>
-            <strong>$2 per benchmark run.</strong> This covers the work of our own agents:
-            understanding your project, finding what to compare it against, writing the kit, running
-            the proof checks, reviewing and explaining the results. That work is not billed
-            separately.
+            <strong>
+              $2 per benchmark run, charged only when the run is delivered or fails because of the
+              subject.
+            </strong>{" "}
+            This covers the work of our own agents: understanding your project, finding what to
+            compare it against, writing the kit, running the proof checks, reviewing and explaining
+            the results. That work is not billed separately.
           </li>
           <li>
             <strong>Eval computer time at our cost plus 50%.</strong> We pass on what our computer
@@ -76,14 +79,69 @@ export default function RefundsPage() {
             computer time is ever billed, however many times it is retried.
           </li>
           <li>
-            <strong>Anything past your cap.</strong> When a run reaches its spend cap, no new trials
-            start; trials already running finish.
+            <strong>Runs that fail because of us.</strong> If our pipeline or infrastructure fails
+            the run, nothing is billed: no run fee and no computer time. That includes a kit whose
+            proof checks still fail after our repairs, which stops the run for a person to look at.
+          </li>
+          <li>
+            <strong>Runs we cancel.</strong> If we cancel a run (for example with our emergency
+            stop, or because of a fault on our side), nothing is billed.
           </li>
           <li>
             <strong>Comped runs.</strong> Runs we give you for free are recorded but never sent to
             Stripe, and say &ldquo;comped&rdquo; on the report.
           </li>
         </ul>
+      </section>
+
+      <section aria-labelledby="refunds-outcomes">
+        <h2 id="refunds-outcomes">How a run&rsquo;s outcome is billed</h2>
+        <TableWrap>
+          <table>
+            <caption>Billing by run outcome</caption>
+            <thead>
+              <tr>
+                <th scope="col">How the run ended</th>
+                <th scope="col">$2 run fee</th>
+                <th scope="col">Computer time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Delivered</th>
+                <td>Billed</td>
+                <td>Billed</td>
+              </tr>
+              <tr>
+                <th scope="row">Failed because of the subject (the software under test)</th>
+                <td>Billed</td>
+                <td>Billed</td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  Failed because of us (our pipeline, infrastructure, or proof checks that still
+                  fail after repairs)
+                </th>
+                <td>Not billed</td>
+                <td>Not billed</td>
+              </tr>
+              <tr>
+                <th scope="row">You cancelled it mid-run</th>
+                <td>Not billed</td>
+                <td>Billed for the time used</td>
+              </tr>
+              <tr>
+                <th scope="row">We cancelled it</th>
+                <td>Not billed</td>
+                <td>Not billed</td>
+              </tr>
+            </tbody>
+          </table>
+        </TableWrap>
+        <p>
+          <strong>Spend caps.</strong> No new trials start once a run reaches its cap; trials
+          already running finish and are billed.
+        </p>
       </section>
 
       <section aria-labelledby="refunds-credits">
@@ -138,10 +196,12 @@ export default function RefundsPage() {
       </section>
 
       <section aria-labelledby="refunds-cancel">
-        <h2 id="refunds-cancel">Cancelling</h2>
+        <h2 id="refunds-cancel">Cancelling your subscription</h2>
         <p>
-          You can remove your card and cancel your subscription at any time from the billing portal.
-          There is no minimum term. Usage before you cancelled is invoiced as normal. See also the{" "}
+          This is separate from cancelling a run (see{" "}
+          <a href="#refunds-outcomes">how a run&rsquo;s outcome is billed</a>). You can remove your
+          card and cancel your subscription at any time from the billing portal. There is no minimum
+          term. Usage before you cancelled is invoiced as normal. See also the{" "}
           <Link href="/terms">terms of service</Link>.
         </p>
       </section>

@@ -24,7 +24,7 @@ const STEPS: readonly { name: string; body: string }[] = [
   },
   {
     name: "Results",
-    body: "A score for each contender with confidence intervals, a per-requirement breakdown, where each one breaks, the bottlenecks behind the numbers, and the proof that the test was fair.",
+    body: "A score for each contender, a per-requirement breakdown, where each one breaks, the bottlenecks behind the numbers, and the proof that the test was fair.",
   },
   {
     name: "Publish",
@@ -56,9 +56,9 @@ export default function DocsOverviewPage() {
           <p>
             <strong>No speed or quality number without a correctness gate.</strong> A fast answer
             that is wrong is not a result. Every measured requirement in a kit names a gate, the
-            gate runs on a separate scoring computer that never ran the contender, and a number
-            only counts for trials whose gate passed. A kit that cannot prove its gate tells right
-            from wrong does not validate.
+            gate runs separately from the contender&rsquo;s trial, and a number only counts for
+            trials whose gate passed. A kit that cannot prove its gate tells right from wrong is
+            not run.
           </p>
         </Callout>
         <p>

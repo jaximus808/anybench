@@ -62,7 +62,7 @@ export const KIT_LAYERS: readonly KitLayer[] = [
     field: "requirements[].gate_id → gates[]",
     files: "gates/<id>/check.sh, reference/",
     contract:
-      "Runs only on the scoring computer, which never ran the contender. Writes gate.json {pass, reason, evidence[]}.",
+      "Runs separately from the contender's trial, on its frozen outputs. Writes gate.json {pass, reason, evidence[]}.",
   },
   {
     id: "L6",
@@ -134,7 +134,7 @@ export const DRIVER_DOCS: Readonly<Record<DriverType, DriverDoc>> = {
     className: "Coding agent",
     drivenBy: "claude -p --output-format stream-json on instruction.md in EVAL_WS",
     measured: "tokens, turns, cost, wall time",
-    gate: "hidden tests on the scoring computer",
+    gate: "hidden tests, run separately from the agent's trial",
   },
   "http-agent": {
     className: "API or chat agent",
@@ -146,7 +146,7 @@ export const DRIVER_DOCS: Readonly<Record<DriverType, DriverDoc>> = {
     className: "Harness with approvals",
     drivenBy: "run.sh plus an approver sidecar (human_in_loop: {kind, policy})",
     measured: "tests passed, time, tokens, claims, conflicts, approvals",
-    gate: "hidden tests on the scoring computer",
+    gate: "hidden tests, run separately from the agent's trial",
   },
 };
 

@@ -82,10 +82,12 @@ export default function TermsPage() {
       <section aria-labelledby="terms-computers">
         <h2 id="terms-computers">Eval computers</h2>
         <p>
-          Your code runs on isolated cloud computers that we create for your eval, from our computer
-          providers. Each trial gets its own computer, and that computer is destroyed when the trial
-          ends. Orphaned computers are found and removed automatically. Correctness gates run on a
-          separate scoring computer that never ran your code.
+          Your code runs on isolated computers created for your eval and destroyed when your trials
+          finish, from our computer providers. Orphaned computers are found and removed
+          automatically. By design, correctness gates run separately from the trial that produced
+          the output, so the code under test does not grade itself. This describes how the system is
+          built, not a guarantee for every kit; some gates, such as hidden tests for a coding agent,
+          run the code the agent wrote.
         </p>
         <p>
           Trials have wall-clock and spend caps. We may stop a trial or a run that goes over its
@@ -108,10 +110,9 @@ export default function TermsPage() {
       <section aria-labelledby="terms-billing">
         <h2 id="terms-billing">Billing</h2>
         <p>
-          Anybench is billed by usage through Stripe, with a card on file and monthly invoices.
-          Trials that fail because of our infrastructure are never billed. The details, including
-          credit grants, early invoices and refunds, are in the{" "}
-          <Link href="/refunds">refunds and billing policy</Link>.
+          Anybench is billed by usage through Stripe, with a card on file and monthly invoices. Runs
+          that fail because of us are never billed. The details, including credit grants, early
+          invoices and refunds, are in the <Link href="/refunds">refunds and billing policy</Link>.
         </p>
       </section>
 

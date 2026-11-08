@@ -87,7 +87,7 @@ export default function KitsDocsPage() {
         <p>
           Every <code>measured</code> requirement must name a <code>gate_id</code>, and the score
           only accepts metrics from trials whose gate passed. A kit whose measured gate has no
-          oracle in <code>proof.oracle</code> does not validate. <code>reviewed</code>{" "}
+          oracle in <code>proof.oracle</code> does not validate, and a kit whose proof checks fail is not run. <code>reviewed</code>{" "}
           requirements are scored by a reviewer agent against <code>rubric.md</code> and may also
           be gated, for example to review only code whose tests pass.
         </p>

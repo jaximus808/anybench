@@ -112,8 +112,8 @@ export default function CliDocsPage() {
           The CLI authenticates with an API key (<code>ab_live_…</code> or <code>ab_test_…</code>
           ). Keys are shown once, can be limited to scopes (<code>runs:read</code>,{" "}
           <code>events:read</code>, <code>logs:read</code>, <code>alerts:write</code>,{" "}
-          <code>runs:write</code>, <code>publish:write</code>) and to specific runs, and can be
-          revoked from Settings.
+          <code>runs:write</code>, <code>publish:write</code>) and to specific runs, and are revocable.
+          A page for managing keys in the web app is coming soon.
         </p>
       </section>
 

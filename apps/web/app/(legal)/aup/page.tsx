@@ -55,7 +55,7 @@ export default function AupPage() {
         <ul>
           <li>
             Do only what the benchmark needs. Network access should stay within the hosts the kit
-            declares in <code>network.allow</code>; the runner checks this.
+            declares in <code>network.allow</code>; the runner records what each trial could reach.
           </li>
           <li>
             Do not tamper with the measurement: no editing gates, reference outputs or collectors
@@ -72,8 +72,8 @@ export default function AupPage() {
             benchmarking.
           </li>
           <li>
-            Do not rely on anything surviving a trial. Every eval computer is destroyed when its
-            trial ends.
+            Do not rely on anything surviving a trial. Your code runs on isolated computers created
+            for your eval and destroyed when your trials finish.
           </li>
         </ul>
       </section>
