@@ -8,14 +8,7 @@
 import { apiRoutes, type AlertId, type ApiClient } from "@anybench/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LiveApiContext, useLiveApi } from "../../lib/live/client";
-import {
-  countTrials,
-  STAGES,
-  stageIndex,
-  type FeedItem,
-  type LiveRun,
-  type SearchHit,
-} from "../../lib/live/model";
+import { countTrials, type FeedItem, type LiveRun, type SearchHit } from "../../lib/live/model";
 import {
   describeApiError,
   useLiveRun,
@@ -26,10 +19,9 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
-import { CancelRun } from "./CancelRun";
-import { GoBar } from "./GoBar";
-import { ms, pctOf, span, usd } from "./format";
+import { ms, span, usd } from "./format";
 import styles from "./live.module.css";
+import { PhaseStage } from "./PhaseStage";
 import { SearchPalette } from "./SearchPalette";
 import { NowRunning, TrialMatrix, type GridFilter } from "./TrialMatrix";
 
@@ -162,7 +154,6 @@ export function LiveRunView({
   }, [palette, drawer, setDrawer]);
 
   const counts = useMemo(() => countTrials(live), [live]);
-  const stage = stageIndex(live.state, live.stateHistory);
   const elapsed = nowMs - ms(live.createdAt);
   const openTrial = useCallback((id: string) => setDrawer({ kind: "trial", id }), [setDrawer]);
   const openAgent = useCallback((id: string) => setDrawer({ kind: "agent", id }), [setDrawer]);
@@ -199,8 +190,6 @@ export function LiveRunView({
   };
 
   const ended = status === "ended" || ["delivered", "failed", "cancelled"].includes(live.state);
-  const spentPct = pctOf(live.spentMicroUsd, live.budgetMicroUsd);
-  const estPct = live.estimateMicroUsd ? pctOf(live.estimateMicroUsd, live.budgetMicroUsd) : null;
 
   const chip = (tone: GridFilter, label: string, value: number, extra?: string) => (
     <button
@@ -234,6 +223,11 @@ export function LiveRunView({
               </span>
               <span className="num">{span(elapsed)}</span>
               <span className={styles.sep}>·</span>
+              <span className="num" data-testid="run-spend">
+                {usd(live.spentMicroUsd)} spent of {usd(live.budgetMicroUsd, 0)}
+                {live.estimateMicroUsd !== null ? ` · estimate ${usd(live.estimateMicroUsd)}` : ""}
+              </span>
+              <span className={styles.sep}>·</span>
               <span className="num">seq {live.lastSeq.toLocaleString("en-US")}</span>
               {RUN_STATE_WORD[live.state] && !ended ? (
                 <span className={styles.holdPill}>{RUN_STATE_WORD[live.state]}</span>
@@ -252,35 +246,6 @@ export function LiveRunView({
           </button>
         </header>
 
-        <ol className={styles.stages} aria-label="Run stages">
-          {STAGES.map((s, i) => (
-            <li
-              key={s.state}
-              data-state={
-                i < stage || (i === stage && live.state === "delivered")
-                  ? "done"
-                  : i === stage
-                    ? "now"
-                    : "todo"
-              }
-              aria-current={i === stage ? "step" : undefined}
-            >
-              <span className={styles.stageBar} />
-              <span className={styles.stageLabel}>{s.label}</span>
-            </li>
-          ))}
-        </ol>
-
-        {live.state === "awaiting_go" && status !== "ended" ? (
-          <GoBar runId={live.runId} estimate={live.estimateMicroUsd} />
-        ) : null}
-
-        {status !== "ended" && !["delivered", "failed", "cancelled"].includes(live.state ?? "") ? (
-          <CancelRun runId={live.runId} />
-        ) : null}
-
-        <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
-
         {problem || ackProblem ? (
           <p className={styles.alert} data-sev="warn" role="status">
             <span className={styles.alertMsg}>{ackProblem ?? problem}</span>
@@ -298,27 +263,11 @@ export function LiveRunView({
           </div>
         ))}
 
-        <div className={styles.counters}>
-          {chip("all", "trials done", counts.done, `/${counts.total}`)}
-          {chip("active", "running now", counts.running)}
-          {chip("passed", "passed gate", counts.passed)}
-          {chip("failed", "failed", counts.failed)}
-          {chip("infra", "our failures, not billed", counts.infra)}
-          <div className={styles.spend}>
-            <span className={styles.counterValue}>
-              <span className="num">{usd(live.spentMicroUsd)}</span>
-              <small className="num"> / {usd(live.budgetMicroUsd, 0)}</small>
-            </span>
-            <span className={styles.spendBar} aria-hidden="true">
-              <i style={{ width: `${spentPct}%` }} data-hot={spentPct >= 70 || undefined} />
-              {estPct !== null ? <b style={{ left: `${estPct}%` }} /> : null}
-            </span>
-            <span className={styles.counterLabel}>
-              spent of cap
-              {live.estimateMicroUsd !== null ? ` · estimate ${usd(live.estimateMicroUsd)}` : ""}
-            </span>
-          </div>
-        </div>
+        <PhaseStage live={live} nowMs={nowMs} ended={ended} onOpenTrial={openTrial} />
+
+        {live.state === "failed" || live.state === "cancelled" ? (
+          <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
+        ) : null}
 
         <div className={styles.grid}>
           <div className={styles.left}>
@@ -332,6 +281,13 @@ export function LiveRunView({
                   runs, each on its own computer
                 </span>
               </header>
+              <div className={styles.counters}>
+                {chip("all", "trials done", counts.done, `/${counts.total}`)}
+                {chip("active", "running now", counts.running)}
+                {chip("passed", "passed gate", counts.passed)}
+                {chip("failed", "failed", counts.failed)}
+                {chip("infra", "our failures, not billed", counts.infra)}
+              </div>
               <TrialMatrix
                 live={live}
                 filter={filter}

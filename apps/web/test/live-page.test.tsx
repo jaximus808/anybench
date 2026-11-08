@@ -33,13 +33,13 @@ async function renderRun() {
 }
 
 describe("live run page", () => {
-  it("shows the stage rail", async () => {
+  it("shows the phase the run is in now as the hero, finished phases as ✓ lines", async () => {
     await renderRun();
-    const stages = screen.getByRole("list", { name: "Run stages" });
-    expect(within(stages).getAllByRole("listitem")).toHaveLength(11);
-    expect(within(stages).getByText("Running").closest("li")?.getAttribute("aria-current")).toBe(
-      "step",
-    );
+    const hero = screen.getByTestId("phase-hero");
+    expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Running");
+    const done = screen.getByRole("list", { name: "Finished phases" });
+    expect(within(done).getAllByRole("listitem")).toHaveLength(7);
+    expect(screen.queryByRole("list", { name: "Run stages" })).toBeNull();
   });
 
   it("renders one button per trial in the matrix (4 setups × 3 tasks × 5 runs)", async () => {

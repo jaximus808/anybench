@@ -95,10 +95,10 @@
 .question {
   font-family: var(--display);
   font-weight: 400;
-  font-size: clamp(1.75rem, 1.1rem + 2.4vw, 3rem);
-  line-height: 1.06;
-  letter-spacing: -0.025em;
-  max-width: 30ch;
+  font-size: clamp(1.25rem, 1rem + 1.1vw, 1.875rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  max-width: 48ch;
 }
 .searchBtn {
   flex: none;
@@ -1387,5 +1387,869 @@ button.feedText:hover {
   .cFailed,
   .drawer {
     animation: none;
+  }
+}
+
+/* ==== one phase at a time (TDM-200/201) =====================================================
+   The hero is the phase the run is in now. Motion comes from state changes (a phase lands, a
+   card arrives, a heartbeat flashes) or from a clock; the top pulse only says "live". */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ---- finished phases: one line each ---- */
+.doneList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.doneList li {
+  display: grid;
+  grid-template-columns: 1.25em 2.25em minmax(7em, auto) 5.5em minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 5px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.doneList li[data-landed] {
+  animation: landed 1.6s ease-out;
+}
+.doneTick {
+  color: var(--pass);
+}
+.doneN {
+  color: var(--dim);
+}
+.doneLabel {
+  color: var(--fg);
+}
+.doneTime {
+  color: var(--muted);
+  text-align: right;
+}
+.doneSummary {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes landed {
+  from {
+    background: var(--accent-soft);
+    color: var(--fg);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* ---- the hero ---- */
+.hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-height: clamp(380px, 56vh, 680px);
+  padding: clamp(20px, 3.4vw, 48px);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  animation: heroIn 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.hero[data-hold="needs_human"],
+.hero[data-hold="paused_budget"] {
+  border-color: var(--accent);
+}
+.hero[data-hold="failed"] {
+  border-color: var(--fail);
+}
+@keyframes heroIn {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+    clip-path: inset(0 0 40% 0 round var(--radius-lg));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(0 0 0 0 round var(--radius-lg));
+  }
+}
+/* "Live" pulse travelling along the hero's top rule. Not progress: it never fills. */
+.heroPulse {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  overflow: hidden;
+  background: var(--line);
+}
+.heroPulse[data-on]::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 22%;
+  background: var(--accent);
+  animation: sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(460%);
+  }
+}
+
+.heroHead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "kicker kicker"
+    "title clock"
+    "what clock";
+  column-gap: var(--space-6);
+  row-gap: var(--space-3);
+  align-items: end;
+}
+.heroKicker {
+  grid-area: kicker;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.heroOf {
+  color: var(--dim);
+}
+.heroNowTag,
+.heroDoneTag,
+.heroHoldTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.heroNowTag {
+  color: var(--accent-ink);
+}
+.heroNowTag i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.heroDoneTag {
+  color: var(--pass);
+}
+.heroHoldTag {
+  color: var(--accent-ink);
+}
+.hero[data-hold="failed"] .heroHoldTag {
+  color: var(--fail);
+}
+.hero[data-hold="cancelled"] .heroHoldTag {
+  color: var(--muted);
+}
+.heroTitle {
+  grid-area: title;
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(3.25rem, 1.4rem + 7.2vw, 8.5rem);
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
+}
+.heroWhat {
+  grid-area: what;
+  margin: 0;
+  max-width: 54ch;
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--muted);
+}
+.heroClock {
+  grid-area: clock;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(2.25rem, 1.3rem + 3.4vw, 4.25rem);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.heroClock small {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.heroBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.nextHint {
+  margin: 0;
+  padding-inline: var(--space-2);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--dim);
+}
+.nextHint span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--text-2xs);
+  margin-right: var(--space-2);
+}
+
+/* ---- hold ---- */
+.holdBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.holdReason {
+  margin: 0;
+  max-width: 40ch;
+  font-family: var(--display);
+  font-size: var(--text-xl);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.holdNote {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* ---- agent phases: streaming lines ---- */
+.stream {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.streamLines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.streamLines li {
+  display: grid;
+  grid-template-columns: 9.5em minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: baseline;
+  transition: opacity 0.6s ease;
+}
+.streamLines li[data-age="1"] {
+  opacity: 0.72;
+}
+.streamLines li[data-age="2"] {
+  opacity: 0.5;
+}
+.streamLines li[data-age="3"],
+.streamLines li[data-age="4"] {
+  opacity: 0.34;
+}
+.streamRole {
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-ink);
+  text-align: right;
+}
+.streamLines li[data-kind="tool"] .streamRole {
+  color: var(--dim);
+}
+.streamText {
+  font-size: clamp(1.05rem, 0.9rem + 0.7vw, 1.5rem);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  animation: typeIn min(1.6s, calc(var(--chars, 40) * 20ms)) steps(24, end) both;
+}
+.streamLines li[data-kind="tool"] .streamText {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+@keyframes typeIn {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.streamWait {
+  margin: 0;
+  font-family: var(--display);
+  font-size: var(--text-xl);
+  color: var(--muted);
+}
+.streamMeta {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+.caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 6px;
+  vertical-align: -0.12em;
+  background: var(--accent);
+  animation: blink 1.05s steps(2, start) infinite;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* ---- env_build: image tracks ---- */
+.envTracks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: var(--space-4);
+}
+.envTrack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  min-width: 0;
+}
+.envTrack[data-retrying] {
+  border-color: var(--accent);
+}
+.envTrack[data-done] {
+  border-color: color-mix(in srgb, var(--pass) 45%, var(--line));
+}
+.envHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.envHead h3 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: var(--text-lg);
+}
+.envState {
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-ink);
+}
+.envTrack[data-done] .envState {
+  color: var(--pass);
+}
+.envSteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(62px, 1fr));
+  gap: 6px;
+}
+.envSteps li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+  min-width: 0;
+}
+.envSteps li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.envSteps i {
+  height: 6px;
+  border-radius: 2px;
+  background: var(--queued);
+}
+.envSteps li[data-state="done"] {
+  color: var(--fg);
+}
+.envSteps li[data-state="done"] i {
+  background: var(--pass);
+  animation: stepIn 0.5s ease-out;
+}
+.envSteps li[data-state="now"] {
+  color: var(--accent-ink);
+}
+.envSteps li[data-state="now"] i {
+  background: var(--accent);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.envTrack[data-retrying] .envSteps li[data-state="now"] i {
+  animation-duration: 0.7s;
+}
+@keyframes stepIn {
+  from {
+    transform: scaleX(0);
+    transform-origin: left;
+  }
+  to {
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+}
+.envRetry {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--accent-ink);
+}
+.envLatest {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.envNext {
+  color: var(--muted);
+}
+.envAgo {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  color: var(--dim);
+}
+
+/* ---- awaiting_go: the big moment ---- */
+.goBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.goPlan {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
+  border-top: 1px solid var(--line-strong);
+}
+.goPlan div {
+  padding: var(--space-3) var(--space-4) var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.goPlan dt {
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.goPlan dd {
+  margin: var(--space-1) 0 0;
+  font-family: var(--mono);
+  font-size: clamp(2rem, 1.2rem + 3vw, 3.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  animation: stepIn 0.6s ease-out both;
+}
+.goWho {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-md);
+}
+.goWho p {
+  margin: 0;
+}
+.goWho span {
+  display: inline-block;
+  min-width: 5.5em;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.goAction {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-5);
+}
+.goButton {
+  font-family: var(--body);
+  font-weight: 500;
+  font-size: clamp(1.25rem, 1rem + 1vw, 1.75rem);
+  min-width: 200px;
+  padding: 18px 56px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  outline: 1px solid var(--accent);
+  outline-offset: 4px;
+  animation: ring 2.2s ease-in-out infinite;
+}
+.goButton:hover:not(:disabled) {
+  background: var(--accent);
+  color: #0a0c09;
+}
+.goButton:disabled {
+  opacity: 0.6;
+  cursor: progress;
+  animation: none;
+}
+@keyframes ring {
+  50% {
+    outline-offset: 10px;
+    outline-color: transparent;
+  }
+}
+.goNote {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* ---- running: tally, live cards ---- */
+.running {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.tally {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-top: 1px solid var(--line-strong);
+}
+.tally div {
+  padding: var(--space-3) var(--space-3) var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.tally dt {
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.tally dd {
+  margin: var(--space-1) 0 0;
+  font-family: var(--mono);
+  font-size: clamp(1.75rem, 1rem + 2.6vw, 3.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+.tally [data-tone="passed"] dd {
+  color: var(--pass);
+}
+.tally [data-tone="failed"] dd {
+  color: var(--fail);
+}
+.tally [data-tone="infra"] dd {
+  color: var(--muted);
+  text-decoration: underline 3px;
+  text-decoration-color: var(--infra);
+  text-underline-offset: 6px;
+}
+.tally [data-tone="active"] dd {
+  color: var(--accent-ink);
+}
+.tally [data-tone="queued"] dd,
+.tally [data-tone="total"] dd {
+  color: var(--dim);
+}
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
+  gap: var(--space-3);
+}
+.card {
+  animation: cardIn 0.55s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.card > button {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.card[data-stage="running"] > button {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+}
+.card > button:hover {
+  border-color: var(--fg);
+}
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.cardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.cardSetup {
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+.beat {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.beat[data-fresh] {
+  background: var(--accent);
+  animation: beat 0.9s ease-out;
+}
+@keyframes beat {
+  from {
+    transform: scale(2.2);
+    opacity: 0.4;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.cardTask {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.cardRetry {
+  margin-left: var(--space-2);
+  color: var(--accent-ink);
+}
+.cardClock {
+  font-family: var(--mono);
+  font-size: clamp(1.75rem, 1.1rem + 2vw, 2.5rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+.cardTrack {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+.cardTrack span {
+  padding-top: 6px;
+  border-top: 3px solid var(--queued);
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+.cardTrack span[data-on] {
+  border-top-color: var(--muted);
+  color: var(--muted);
+}
+.cardTrack span[data-now] {
+  border-top-color: var(--accent);
+  color: var(--accent-ink);
+  animation: trackNow 1.6s ease-in-out infinite;
+}
+@keyframes trackNow {
+  50% {
+    border-top-color: color-mix(in srgb, var(--accent) 45%, var(--queued));
+  }
+}
+.cardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+.moreLive {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.finished {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.finished li {
+  animation: finishedOut 4s ease-in both;
+}
+.finished button {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+.finishedMark {
+  display: inline-block;
+  width: 1.5em;
+}
+.finished [data-tone="passed"] .finishedMark {
+  color: var(--pass);
+}
+.finished [data-tone="failed"] .finishedMark {
+  color: var(--fail);
+}
+@keyframes finishedOut {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  10%,
+  70% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.runSpend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+}
+.runSpendBar {
+  position: relative;
+  width: min(220px, 100%);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--queued);
+  overflow: hidden;
+}
+.runSpendBar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  transition: width 0.6s ease;
+}
+.runSpendBar i[data-hot] {
+  background: var(--fail);
+}
+.runSpendOf {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 720px) {
+  .heroHead {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "kicker" "title" "what" "clock";
+  }
+  .heroClock {
+    align-items: flex-start;
+  }
+  .hero {
+    gap: var(--space-5);
+    min-height: 0;
+  }
+  .doneList li {
+    grid-template-columns: 1.25em 2.25em minmax(0, 1fr) auto;
+  }
+  .doneSummary {
+    grid-column: 3 / -1;
+  }
+  .streamLines li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .streamRole {
+    text-align: left;
+  }
+  .tally {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .goButton {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero,
+  .heroPulse[data-on]::after,
+  .heroNowTag i,
+  .doneList li[data-landed],
+  .streamText,
+  .caret,
+  .envSteps i,
+  .envSteps li[data-state="now"] i,
+  .goPlan dd,
+  .goButton,
+  .card,
+  .beat[data-fresh],
+  .cardTrack span[data-now],
+  .finished li {
+    animation: none;
+  }
+  .heroPulse[data-on]::after {
+    display: none;
   }
 }

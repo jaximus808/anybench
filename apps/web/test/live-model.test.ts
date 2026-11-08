@@ -84,7 +84,6 @@ describe("demo run simulator, tandem profile (TDM-198)", () => {
     expect(env).toContain("scoring image: Naïve is at capacity; retrying");
     expect(env.at(-1)).toBe("trial image: snapshot saved; every trial forks from it");
     // Never more than 5 trials live at once.
-    let liveNow = 0;
     let peak = 0;
     const active = new Set<string>();
     for (const e of events) {
@@ -92,8 +91,7 @@ describe("demo run simulator, tandem profile (TDM-198)", () => {
       if (["queued", "done", "failed_subject", "failed_infra", "cancelled"].includes(e.payload.to))
         active.delete(e.source_id);
       else active.add(e.source_id);
-      liveNow = active.size;
-      peak = Math.max(peak, liveNow);
+      peak = Math.max(peak, active.size);
     }
     expect(peak).toBeLessThanOrEqual(5);
     expect(peak).toBe(5);

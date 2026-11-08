@@ -49,18 +49,22 @@ function setup(initialSeq: number, fakeOpts: FakeApiOptions = {}) {
 
 // --- reading the design's markup -------------------------------------------------------------
 
+/** The phase the hero shows (one phase at a time, TDM-200). */
 const stageNow = () =>
-  screen
-    .getByRole("list", { name: "Run stages" })
-    .querySelector('[aria-current="step"]')
-    ?.textContent?.trim() ?? null;
+  screen.queryByTestId("phase-hero")?.querySelector("h2")?.textContent?.trim() ?? null;
+
+/** The finished phases' labels, in order. */
+const donePhases = () =>
+  [...(screen.queryByRole("list", { name: "Finished phases" })?.querySelectorAll("li") ?? [])].map(
+    (li) => li.querySelector("span:nth-child(3)")?.textContent ?? "",
+  );
 
 /** A counter chip's text ("3/60trials done"). */
 const counter = (label: string) =>
   [...document.querySelectorAll("button[data-tone]")].find((b) => b.textContent?.includes(label))
     ?.textContent ?? "";
 
-const spendText = () => screen.getByText(/spent of cap/).parentElement?.textContent ?? "";
+const spendText = () => screen.getByTestId("run-spend").textContent ?? "";
 
 function trialName(i: number) {
   const t = TRIALS[i]!;
@@ -145,10 +149,7 @@ describe("live run page against a fake API (TDM-75)", () => {
     await waitFor(() => expect(stageNow()).toBe("Research"));
     await waitFor(() => expect(agentLabel("researcher")).toBeTruthy());
     await waitFor(() => expect(agentLabel("understander")).toMatch(/^understander: done/));
-    const rail = screen.getByRole("list", { name: "Run stages" });
-    expect(within(rail).getByText("Understand").closest("li")?.getAttribute("data-state")).toBe(
-      "done",
-    );
+    expect(donePhases()).toEqual(["Intake", "Understand"]);
 
     // Kit, then running: 60 queued tiles once trials.list places them.
     fake.release(rec.marks.kit + 1);
@@ -226,16 +227,16 @@ describe("live run page against a fake API (TDM-75)", () => {
     // To the end: delivered, every stage done, the stream finished.
     fake.release(rec.events.length);
     await waitFor(() => expect(screen.getByText("ended")).toBeTruthy());
-    expect(
-      [...rail.querySelectorAll("li")].every((li) => li.getAttribute("data-state") === "done"),
-    ).toBe(true);
+    await waitFor(() => expect(stageNow()).toBe("Delivered"));
+    expect(donePhases()).toHaveLength(11);
+    expect(stageNow()).toBe("Delivered");
     await expectCountersMatch(rec, rec.events.length);
     expect(tileWord(FAILED_INFRA_FINAL)).toBe("our failure, not billed");
     expect(tileWord(CANCELLED)).toBe("cancelled");
     expect(agentLabel("reviewer")).toMatch(/^reviewer: done/);
   }, 90_000);
 
-  it("opened mid-run: history fills the feed and stage rail without moving the counters", async () => {
+  it("opened mid-run: history fills the feed and the phase without moving the counters", async () => {
     const r2 = recordRun();
     const { fake } = setup(r2.marks.wave1);
     await waitFor(() => expect(stageNow()).toBe("Running"));

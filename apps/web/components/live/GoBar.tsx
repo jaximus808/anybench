@@ -10,7 +10,7 @@ import { useLiveApi } from "../../lib/live/client";
 import { usd } from "./format";
 import styles from "./live.module.css";
 
-type GoFailure =
+export type GoFailure =
   { kind: "payment"; href: string; reason: string } | { kind: "message"; text: string };
 
 const PAYMENT_WORDS: Record<string, string> = {
@@ -32,7 +32,15 @@ export function goCardHref(linkCardUrl: string, runId: string): string {
   return `/billing?run=${runId}`;
 }
 
-export function GoBar({ runId, estimate }: { runId: string; estimate: bigint | null }) {
+export interface GoAction {
+  busy: boolean;
+  started: boolean;
+  failure: GoFailure | null;
+  go: () => Promise<void>;
+}
+
+/** Press Go: POST /runs/:id/go, with the billing gate's 402 turned into a card link. */
+export function useGoAction(runId: string): GoAction {
   const client = useLiveApi();
   const [busy, setBusy] = useState(false);
   const [started, setStarted] = useState(false);
@@ -58,20 +66,32 @@ export function GoBar({ runId, estimate }: { runId: string; estimate: bigint | n
       setBusy(false);
     }
   };
+  return { busy, started, failure, go };
+}
 
+/** What to say about a failed Go (or null when there is nothing wrong). */
+export function GoFailureText({ failure }: { failure: GoFailure | null }) {
+  if (!failure) return null;
+  if (failure.kind === "payment")
+    return (
+      <>
+        {PAYMENT_WORDS[failure.reason] ?? "Billing needs attention before this run can start."}{" "}
+        <a href={failure.href}>Add a card</a>
+      </>
+    );
+  return <>{failure.text}</>;
+}
+
+export function GoBar({ runId, estimate }: { runId: string; estimate: bigint | null }) {
+  const { busy, started, failure, go } = useGoAction(runId);
   return (
     <div className={styles.alert} data-slot="go-bar" role="region" aria-label="Start the run">
       <span className={styles.alertSev}>go</span>
       <span className={styles.alertMsg}>
         {started ? (
           "Starting the run…"
-        ) : failure?.kind === "payment" ? (
-          <>
-            {PAYMENT_WORDS[failure.reason] ?? "Billing needs attention before this run can start."}{" "}
-            <a href={failure.href}>Add a card</a>
-          </>
-        ) : failure?.kind === "message" ? (
-          failure.text
+        ) : failure ? (
+          <GoFailureText failure={failure} />
         ) : (
           `The test plan is ready.${estimate !== null ? ` Estimated cost ${usd(estimate)}.` : ""} Press Go to start.`
         )}
