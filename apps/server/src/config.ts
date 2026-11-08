@@ -86,6 +86,13 @@ export const EnvSchema = z.object({
   ),
   /** e.g. `.anybench.jaxonp.com`; unset = host-only cookie on the API host. */
   SESSION_COOKIE_DOMAIN: optionalString,
+  /**
+   * SameSite of the session cookie. `lax` (default) when the web app and the API share a site
+   * (anybench.jaxonp.com + api.anybench.jaxonp.com). `none` when they do not (anybench.vercel.app and
+   * the API's own *.vercel.app host): the browser then sends the cookie on credentialed fetches.
+   * Requires Secure (an https callback). Browsers that block third-party cookies still drop it.
+   */
+  SESSION_COOKIE_SAMESITE: z.preprocess(emptyToUndefined, z.enum(["lax", "none"]).default("lax")),
   /** Comma list of exact origins for CORS (with credentials) and the CSRF Origin check. */
   ALLOWED_ORIGINS: optionalString,
   /** Comma list of GitHub logins that are admins, checked per request (case-insensitive). */
@@ -203,6 +210,16 @@ function bootAssertions(env: Env): ConfigIssue[] {
     issues.push({
       path: "GITHUB_OAUTH_CALLBACK_URL",
       message: "must be https when NODE_ENV=production",
+    });
+  }
+  if (
+    env.SESSION_COOKIE_SAMESITE === "none" &&
+    !prod &&
+    env.GITHUB_OAUTH_CALLBACK_URL?.startsWith("http://")
+  ) {
+    issues.push({
+      path: "SESSION_COOKIE_SAMESITE",
+      message: "none needs a Secure cookie, which a plain-http GITHUB_OAUTH_CALLBACK_URL turns off",
     });
   }
   const domain = env.SESSION_COOKIE_DOMAIN;

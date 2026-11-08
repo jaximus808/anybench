@@ -8,3 +8,9 @@ export { initSentry, noopSentry, type SentryHandle } from "./lib/sentry.js";
 export { WORKER_MAX_TICK_AGE_MS, WORKER_TICK_INTERVAL_MS } from "./lib/worker-health.js";
 export { JOBS, defineJob, type JobContext, type JobDef } from "./jobs/index.js";
 export { startWorker, type StartWorkerOptions, type WorkerHandle } from "./jobs/runner.js";
+export {
+  naiveEnvSource,
+  naiveVercelJson,
+  restoreRewrittenPath,
+  REWRITE_PATH_PARAM,
+} from "./entry-naive.js";

@@ -368,6 +368,24 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
+  scripts/deploy:
+    dependencies:
+      '@anybench/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@anybench/naive':
+        specifier: workspace:*
+        version: link:../../packages/naive
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      server:
+        specifier: workspace:*
+        version: link:../../apps/server
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
   scripts/spikes/stripe:
     dependencies:
       '@anybench/core':

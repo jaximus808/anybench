@@ -2,8 +2,8 @@
 //
 // - The cookie carries an opaque 256-bit token (base64url). Only sha256(token) is stored, in
 //   sessions.token_hash, so a database leak cannot be replayed as a cookie.
-// - Cookie `anybench_session`: Domain from SESSION_COOKIE_DOMAIN, Path=/, HttpOnly, SameSite=Lax,
-//   Secure. Secure is dropped only outside production when the OAuth callback is plain http
+// - Cookie `anybench_session`: Domain from SESSION_COOKIE_DOMAIN, Path=/, HttpOnly, SameSite=Lax
+//   (None with SESSION_COOKIE_SAMESITE=none, for a web origin on another site), Secure. Secure is dropped only outside production when the OAuth callback is plain http
 //   (local dev on http://localhost). 30-day sliding expiry: a request at most every
 //   SESSION_TOUCH_INTERVAL_MS pushes expires_at out again and re-issues the cookie.
 // - The principal carries `isAdmin`, computed from ADMIN_GITHUB_LOGINS on every request. It is
@@ -48,7 +48,7 @@ export function hashSessionToken(token: string): string {
 type CookieConfig = Pick<
   Config,
   "isProduction" | "SESSION_COOKIE_DOMAIN" | "GITHUB_OAUTH_CALLBACK_URL"
->;
+> & { SESSION_COOKIE_SAMESITE?: Config["SESSION_COOKIE_SAMESITE"] };
 
 /** Secure everywhere except local dev over plain http (never in production). */
 export function cookieSecure(config: CookieConfig): boolean {
@@ -74,7 +74,9 @@ export function sessionCookieOptions(config: CookieConfig): CookieOptions {
     path: "/",
     httpOnly: true,
     secure: cookieSecure(config),
-    sameSite: "Lax",
+    // Lax unless the web app is on another site (TDM-154: anybench.vercel.app calling the API on
+    // its own *.vercel.app host; vercel.app is a public suffix). CSRF stays on the Origin check.
+    sameSite: config.SESSION_COOKIE_SAMESITE === "none" ? "None" : "Lax",
     maxAge: SESSION_TTL_SEC,
     ...(domain ? { domain } : {}),
   };

@@ -1,0 +1,18 @@
+{
+  "name": "@anybench/deploy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deploy scripts (TDM-154: the API as a Naïve fullstack app). Run from the repo root: pnpm tsx scripts/deploy/api.ts",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anybench/core": "workspace:*",
+    "@anybench/naive": "workspace:*",
+    "esbuild": "0.28.2",
+    "server": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}

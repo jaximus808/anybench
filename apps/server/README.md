@@ -1,6 +1,6 @@
 # apps/server
 
-Hono API + orchestrator worker + Drizzle/Postgres. The API runs on Vercel Functions, the worker on the Oracle VM.
+Hono API + orchestrator worker + Drizzle/Postgres. The API runs as a Naïve fullstack app (Vercel underneath; deploy with `pnpm tsx scripts/deploy/api.ts`, see docs/findings/api-deploy.md).
 
 See plan.md, sections 4, 6 and E1.4, E6.1, E8.2.
 
@@ -16,7 +16,7 @@ See plan.md, sections 4, 6 and E1.4, E6.1, E8.2.
 ## Server skeleton (TDM-14)
 
 - `pnpm --filter server dev` serves the API (`src/main.ts`, @hono/node-server, port `PORT`, default 8787). `pnpm --filter server dev:worker` runs graphile-worker (`src/worker.ts`) on `DATABASE_URL_DIRECT`. Both load `apps/server/.env` if present; real env vars win. Without DB vars they use the local Docker Postgres.
-- `src/app.ts` `createApp(deps)` is pure (no listen, no env reads, no module state). `deps` (`src/types.ts`): `config`, `logger`, `db` (pooled), `sentry`. `src/entry-vercel.ts` is the Vercel stub (TDM-154).
+- `src/app.ts` `createApp(deps)` is pure (no listen, no env reads, no module state). `deps` (`src/types.ts`): `config`, `logger`, `db` (pooled), `sentry`. `src/entry-naive.ts` is the Naïve app entry (path restore from the vercel.json rewrite, `ANYBENCH_DATABASE_URL(_DIRECT)` → `DATABASE_URL(_DIRECT)`); `src/entry-vercel.ts` is the own-Vercel-project fallback; both use `buildServerlessApp` (TDM-154).
 - `src/config.ts` `loadConfig()` validates env with zod and throws one `ConfigError` listing every bad var; entries print it and exit 1. Add new vars there and to `.env.example`.
 - Routes: `src/routes/<resource>.ts` exporting `<resource>Routes(deps)`, mounted with one line in `src/routes/index.ts`. Errors are `{ error: { code, message, requestId } }`; every response carries `X-Request-Id`.
 - Jobs: `src/jobs/<name>.ts` with `defineJob({ name, payload, run, cron?, everyMs?, jobKey? })`, one line in `src/jobs/index.ts`.

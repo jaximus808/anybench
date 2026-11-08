@@ -1,8 +1,8 @@
-// Vercel Functions entry (STUB, finished by TDM-154 / plan 13.10). TDM-14.
-// The app is built once per function instance, lazily, from the same createApp. Keep it free of
-// in-process state: the only cached thing is the pooled-URL pg pool (DATABASE_URL, PgBouncer).
-// TDM-154: confirm the export shape against Vercel's Node runtime, set pool size, max duration,
-// SSE reconnect behaviour and Sentry flush-before-freeze.
+// Vercel Functions entry (TDM-14) for our own Vercel project, the documented fallback host.
+// Production runs as a Naïve fullstack app instead (entry-naive.ts, TDM-154), which reuses
+// buildServerlessApp below. The app is built once per function instance, lazily, from the same
+// createApp. Keep it free of in-process state: the only cached thing is the pooled-URL pg pool
+// (DATABASE_URL, PgBouncer).
 import { ArtifactStore } from "@anybench/envs";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
@@ -13,13 +13,25 @@ import type { AppEnv } from "./types.js";
 
 let appPromise: Promise<Hono<AppEnv>> | undefined;
 
-async function buildApp(): Promise<Hono<AppEnv>> {
-  const config = loadConfig(); // throws ConfigError listing every bad var: the function fails loudly
+/**
+ * The API for a serverless host (Vercel Functions here, the Naïve fullstack app in entry-naive.ts).
+ * `source` is the env to validate; `poolMax` caps the pooled-URL pg pool of one instance.
+ */
+export async function buildServerlessApp(
+  source: Record<string, string | undefined> = process.env,
+  options: { poolMax?: number } = {},
+): Promise<Hono<AppEnv>> {
+  const config = loadConfig(source); // throws ConfigError listing every bad var: fails loudly
   const runtime = await bootRuntime(config, "api");
-  const dbh = createDb(config.databaseUrl, { max: 1 });
-  const artifacts = process.env.S3_BUCKET ? ArtifactStore.fromEnv() : undefined; // TDM-47 uploads
+  const dbh = createDb(config.databaseUrl, { max: options.poolMax ?? 1 });
+  // Neon and the pooler close idle connections; pg emits that on the pool, and an unhandled
+  // 'error' event would crash the instance. The pool drops the dead client by itself.
+  dbh.pool.on("error", (err) => runtime.logger.warn({ err }, "db: idle client error"));
+  const artifacts = source.S3_BUCKET ? ArtifactStore.fromEnv(source) : undefined; // TDM-47 uploads
   return createApp({ config, db: dbh.db, artifacts, ...runtime });
 }
+
+const buildApp = () => buildServerlessApp();
 
 export function getVercelApp(): Promise<Hono<AppEnv>> {
   appPromise ??= buildApp().catch((err: unknown) => {

@@ -3,6 +3,8 @@ packages:
   - "packages/*"
   # TDM-21 Stripe spike (setup script reused by 10.2); a package so it can import the stripe SDK.
   - "scripts/spikes/stripe"
+  # TDM-154 deploy scripts (pnpm tsx scripts/deploy/api.ts); a package so it can import server + naive.
+  - "scripts/deploy"
 
 # pnpm 11 blocks dependency build scripts unless listed here.
 # esbuild (tsx, vite/vitest, drizzle-kit) needs its postinstall; ssh2/cpu-features

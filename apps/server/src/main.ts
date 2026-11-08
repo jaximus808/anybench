@@ -1,5 +1,6 @@
 // API entry for Node (local dev and any long-lived host): `pnpm --filter server dev`. TDM-14.
-// Production API runs on Vercel Functions through entry-vercel.ts; both wrap the same createApp.
+// Production API runs as a Naïve fullstack app through entry-naive.ts (entry-vercel.ts is the
+// own-Vercel-project fallback); all wrap the same createApp.
 import { ArtifactStore } from "@anybench/envs";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";

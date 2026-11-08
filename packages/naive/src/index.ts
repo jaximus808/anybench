@@ -18,3 +18,4 @@ export * from "./session.js";
 export * from "./credits.js";
 export * from "./fake.js";
 export * from "./fake-computers.js";
+export * from "./apps.js";
