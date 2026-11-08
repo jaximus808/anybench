@@ -837,6 +837,30 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect(stages.visitsOf("kit_designer" satisfies FakeRole)).toBe(2);
   }, 60_000);
 
+  it("TDM-44: a kit that keeps failing proof goes to needs_human naming each failing check", async () => {
+    const r = rig();
+    const { w, stages } = r.worker();
+    const pipeline = new FakePipeline({ digest: digestTdm54(), proof: () => failingProof() });
+    w.handlers.set(
+      "run.advance",
+      createRunAdvanceJob({
+        jobs: () => r.queue,
+        agents: () => stages,
+        pipeline: () => pipeline,
+        billingGate: () => async () => ({ allowed: true }),
+        timing: { leaseRefreshMs: 50 },
+      }) as never,
+    );
+    const id = await createRun(r.queue);
+    await drainTdm54(w, r.queue);
+    const run = await runRow(id);
+    expect(run.state).toBe("needs_human");
+    expect((run.stageOutputs as { hold_reason?: string }).hold_reason).toBe(
+      "proof failed after 2 repairs: do_less_fails (the partial oracle passed)",
+    );
+    expect(stages.visitsOf("kit_designer" satisfies FakeRole)).toBe(3);
+  }, 60_000);
+
   it("auto_go off waits in awaiting_go; Go through the API resumes it", async () => {
     const r = rig();
     const { w } = r.worker();

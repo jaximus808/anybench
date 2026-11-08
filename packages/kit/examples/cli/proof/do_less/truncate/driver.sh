@@ -15,9 +15,9 @@ set -euo pipefail
 # The subject, as the kit wrote it. cwd is <in>; output files go under $CLI_FILES_OUT.
 subject_cmd() {
   args=(--no-heading --line-number --only-matching --color never)
-  # proof overlays: MAX_COUNT (do-less first-match-only), THREADS (planted regression)
+  # proof overlays: MAX_COUNT (do-less first-match-only), PLANTED_DELAY_S (planted regression)
   if [ -n "${MAX_COUNT:-}" ]; then args+=(--max-count "$MAX_COUNT"); fi
-  if [ -n "${THREADS:-}" ]; then args+=(--threads "$THREADS"); fi
+  if [ -n "${PLANTED_DELAY_S:-}" ]; then sleep "$PLANTED_DELAY_S"; fi
   rg "${args[@]}" -e "$(cat pattern.txt)" tree
 }
 # What the contender runs: the gated run and every timed run call this.

@@ -12,9 +12,9 @@ export const TDM36_RIPGREP: CliDriverTemplateInput = {
   contender_id: "ripgrep",
   command: [
     "args=(--no-heading --line-number --only-matching --color never)",
-    "# proof overlays: MAX_COUNT (do-less first-match-only), THREADS (planted regression)",
+    "# proof overlays: MAX_COUNT (do-less first-match-only), PLANTED_DELAY_S (planted regression)",
     'if [ -n "${MAX_COUNT:-}" ]; then args+=(--max-count "$MAX_COUNT"); fi',
-    'if [ -n "${THREADS:-}" ]; then args+=(--threads "$THREADS"); fi',
+    'if [ -n "${PLANTED_DELAY_S:-}" ]; then sleep "$PLANTED_DELAY_S"; fi',
     'rg "${args[@]}" -e "$(cat pattern.txt)" tree',
   ].join("\n"),
   exit_codes: [0, 1],

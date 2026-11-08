@@ -50,6 +50,13 @@ export const ProofOverlaySchema = z.strictObject({
   driver_patch: KitPathSchema.optional(),
   env: KitEnvMapSchema.optional(),
   description: z.string().min(1).optional(),
+  /**
+   * What a do-less overlay leaves out (TDM-44, the founder's methodology review). `noop`: does
+   * nothing (the weakest: a kit whose only do-less is a no-op fails proof); `partial-oracle`: the
+   * oracle with one contract clause removed; `cheat`: skips or truncates real work. Omitted: the
+   * proof suite infers `noop` from an id like `no-op` / `do-nothing`, else `cheat`.
+   */
+  kind: z.enum(["noop", "partial-oracle", "cheat"]).optional(),
 });
 export type ProofOverlay = z.infer<typeof ProofOverlaySchema>;
 
@@ -243,6 +250,28 @@ export const KitSpecSchema = z
         issue([...path, "contender"], `contender '${o.contender}' is not defined in contenders[]`);
       }
     }
+
+    // A captured reference (TDM-44) needs a reference dir to write into and an oracle to run.
+    kit.gates.forEach((g, i) => {
+      if (g.capture === undefined) return;
+      if (g.reference === undefined) {
+        issue(
+          ["gates", i, "capture"],
+          `gate '${g.id}' captures its reference but sets no reference dir`,
+        );
+      }
+      if (oracle === undefined) {
+        issue(
+          ["gates", i, "capture"],
+          `gate '${g.id}' captures its reference from proof.oracle, which is missing`,
+        );
+      } else if (oracle.gates !== undefined && !oracle.gates.includes(g.id)) {
+        issue(
+          ["gates", i, "capture"],
+          `gate '${g.id}' captures its reference from proof.oracle, which does not cover it`,
+        );
+      }
+    });
 
     // scoring.weights: one integer per requirement, summing to 100.
     let sum = 0;

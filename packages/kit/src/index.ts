@@ -12,3 +12,5 @@ export * from "./load.js";
 export * from "./drivers/index.js";
 // TDM-178 [16.7]: comparability rules.
 export * from "./comparability.js";
+// TDM-44 [4.12]: the six proof checks and their runner port.
+export * from "./proof/index.js";

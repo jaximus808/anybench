@@ -84,18 +84,22 @@ proof:
       dir: proof/do_less/truncate/
       contender: ripgrep
       driver_patch: proof/do_less/truncate/driver.sh
+      kind: cheat
       description: The same driver with the subject's stdout cut to its first line; must fail same-matches.
     - id: first-match-only
       dir: proof/do_less/first-match/
       contender: ripgrep
       env: { MAX_COUNT: "1" }
+      kind: cheat
       description: Stops after the first match per file, so it must fail same-matches.
   regression:
-    id: single-thread
+    id: planted-delay
     dir: proof/regression/
     contender: ripgrep
-    env: { THREADS: "1" }
-    description: One search thread; must score lower on wall time.
+    env: { PLANTED_DELAY_S: "0.3" }
+    description: >-
+      A deterministic planted slowdown (0.3 s before every search, output unchanged); must score
+      lower on wall time. (One search thread is no slower on inputs this small.)
 
 scoring:
   weights: { wall: 70, rss: 30 }

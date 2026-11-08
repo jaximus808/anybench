@@ -47,7 +47,7 @@ import {
   naiveSessionCanceller,
 } from "../orchestrator/defaults.js";
 import { defaultAgentStages } from "../orchestrator/kit-builder.js";
-import { curatedProof, kitScore } from "../orchestrator/proof-score.js";
+import { kitScore } from "../orchestrator/proof-score.js";
 import {
   noSessionCanceller,
   unbuiltPipeline,
@@ -57,6 +57,7 @@ import {
 } from "../orchestrator/ports.js";
 import { sweepCandidates } from "../orchestrator/store.js";
 import { writeHeartbeat } from "./heartbeat.js";
+import { configuredSecretValues, proofStage } from "./proof.js";
 import { defineJob, type JobContext } from "./types.js";
 
 export { RUN_ADVANCE_JOB } from "../orchestrator/advance.js";
@@ -93,10 +94,16 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
     ...unbuiltPipeline,
     ingest: githubIngest(ctx.config.GITHUB_TOKEN ? { githubToken: ctx.config.GITHUB_TOKEN } : {}),
     estimate: billingEstimate(ctx.config),
-    // The curated kit's signed-off offline proof; any other kit holds ([4.12] proof suite).
-    prove: curatedProof(
-      ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {},
-    ),
+    // TDM-44 [4.12]: the curated kit's signed-off offline proof; any other kit runs the six
+    // proof checks on the run's env (trials fork env_id, gates fork the scoring image).
+    prove: proofStage({
+      db: ctx.db,
+      provider,
+      ...(ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {}),
+      secretValues: () => configuredSecretValues(ctx.config as unknown as Record<string, unknown>),
+      pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+      log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),
+    }),
     score: kitScore(),
     // [3.8] env build on the trials' provider (Naïve), when there is one.
     ...(provider

@@ -20,6 +20,34 @@ export const GateKindSchema = z.enum([
 ]);
 export type GateKind = z.infer<typeof GateKindSchema>;
 
+/** One file the proof stage copies from the oracle's frozen outputs into the reference. */
+export const GateCaptureFileSchema = z.strictObject({
+  /** Path in the oracle trial's frozen outputs (EVAL_OUT), e.g. `cli/stdout.txt`. */
+  from: KitPathSchema,
+  /** Path under `<reference>/<workload>/`, e.g. `stdout.txt`. */
+  to: KitPathSchema,
+});
+export type GateCaptureFile = z.infer<typeof GateCaptureFileSchema>;
+
+/** Default capture for an output-diff gate (the cli driver's layout, TDM-36). */
+export const DEFAULT_GATE_CAPTURE_FILES: readonly GateCaptureFile[] = [
+  { from: "cli/stdout.txt", to: "stdout.txt" },
+];
+
+/**
+ * TDM-44: the gate's reference for a workload is CAPTURED by the proof stage from the oracle
+ * contender's output on the real image when `<reference>/<workload>/` is absent (v1 oracle = a
+ * known-good implementation's output). The proof then re-runs the oracle on a fresh computer
+ * (the gate must agree 3 times on that output) and a different baseline implementation must pass
+ * the same gate. Only `reference/` is ever written, never `workloads/`.
+ */
+export const GateCaptureSchema = z.strictObject({
+  from: z.literal("oracle"),
+  /** Default DEFAULT_GATE_CAPTURE_FILES. */
+  files: z.array(GateCaptureFileSchema).min(1).optional(),
+});
+export type GateCapture = z.infer<typeof GateCaptureSchema>;
+
 /** L5 gate. Runs only on the scoring computer, which never ran the subject. */
 export const GateSchema = z.strictObject({
   id: KitSlugSchema,
@@ -28,6 +56,8 @@ export const GateSchema = z.strictObject({
   check: KitPathSchema.optional(),
   /** Reference outputs, e.g. `gates/<id>/reference/`. */
   reference: KitPathSchema.optional(),
+  /** Capture the reference from the proof oracle (TDM-44). Needs `reference`. */
+  capture: GateCaptureSchema.optional(),
   description: z.string().min(1).optional(),
   timeout_s: z.int().positive().max(86_400).optional(),
 });

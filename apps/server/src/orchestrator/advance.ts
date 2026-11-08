@@ -869,10 +869,11 @@ class RunAdvance {
         this.advance(run, { set: { estimateMicroUsd: estimate } }),
       );
     }
-    const failed = proofOf(kit.row.proof)
-      .filter((p) => !p.pass)
-      .map((p: ProofCheckResult) => p.check);
-    const what = failed.length > 0 ? failed.join(", ") : "missing checks";
+    // Name each failing check with its (check-level, score-free) reason, so a human reading
+    // needs_human knows what to fix: "do_less_fails (do-less passed the gate: ...)".
+    const failed = proofOf(kit.row.proof).filter((p: ProofCheckResult) => !p.pass);
+    const named = failed.map((p) => `${p.check} (${p.reason.replace(/\s+/g, " ").slice(0, 400)})`);
+    const what = (named.length > 0 ? named.join("; ") : "missing checks").slice(0, 1700);
     const repairs = await this.store.repairs(run.id);
     if (repairs < RUN_MAX_PROOF_REPAIRS) {
       return this.commit(
