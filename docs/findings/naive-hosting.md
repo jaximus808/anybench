@@ -9,7 +9,7 @@ SDK: `@usenaive-sdk/managed-agents` 0.12.3, called directly. `packages/naive` ex
 | Question | Answer |
 |---|---|
 | Does a detached worker process survive separate `exec` calls? | **Yes.** It even survives the `exec` that started it hitting its timeout (`setsid nohup … &`, and also plain `nohup &` and bare `&`). |
-| Does it keep running with no exec traffic? | **Yes.** I watched for 33.5 min (68/68 heartbeats to Neon, no gap over 45 s), and the soak is still running for a 60-min check. The computer stayed `running` and never auto-paused. |
+| Does it keep running with no exec traffic? | **Yes.** The full 60-min soak ran to its hard stop: 120 of 120 heartbeats to Neon over 59.5 min, no gap over 45 s (see "Final soak result"). The computer stayed `running` and never auto-paused. |
 | Outbound reach from the computer | Neon direct TCP+TLS (and `LISTEN`), api.stripe.com, R2, the Naïve API, npm and GitHub: all reached, at 37–135 ms. |
 | Cost of an always-on worker (1 vCPU / 1 GiB) | **11,100 µ$ per 10-min block**, measured as a ledger debit. That is $0.0666/h, or **≈ $47.95 per 30-day month**. |
 | Snapshot then restore | **The snapshot captures memory and processes**, not only the disk. A successor booted from it resumes the running worker in place, with a new hostname. The handoff design has to account for this (see below). |
@@ -20,7 +20,7 @@ SDK: `@usenaive-sdk/managed-agents` 0.12.3, called directly. `packages/naive` ex
 | `setSecret` | It shows up as `process.env` **on the next deploy**. A running deployment keeps the old value. |
 | `mcp: "/mcp"` | **Works.** Agents get the tool as a direct tool, `tdm170-spike.spike_echo`. A Naïve agent session called it and got `TDM170-OK` back. The platform runs initialize, then notifications/initialized, then tools/list on every turn. |
 | `connectDomain` for api.anybench.jaxonp.com | The domain object and the connect call both succeed and stay `pending`. **Naïve returned only email records (Resend, SES) and no CNAME/A record for app hosting.** I deleted it again and changed no DNS. |
-| Spend for the whole spike | **58,721 µ$ (≈ $0.06)** as of 00:11Z: 53,992 for computers and 4,729 for 5 agent sessions. **The app was not billed at all.** If the planner leaves the soak computer to the 12 h auto-destroy, it adds at most ≈ $0.75. |
+| Spend for the whole spike | **80,921 µ$ (≈ $0.08)** final, after the soak computer was deleted at 00:37:56Z: 76,192 for computers and 4,729 for 5 agent sessions. **The app was not billed at all.** |
 
 ## 0. Account state
 
@@ -332,16 +332,51 @@ DNS today: `jaxonp.com` NS is `ns-cloud-a{1..4}.googledomains.com` (Google Cloud
 |---|---|
 | Before anything (23:34:28Z) | 250,999,379 |
 | 23:53:55Z (worker 2 blocks, app, 5 probe sessions) | 250,967,703 |
-| After cleanup | 250,940,658 (00:11:26Z, after deleting the app and agents, with the soak computer still running) |
+| After app/agent cleanup | 250,940,658 (00:11:26Z, with the soak computer still running) |
+| Final, after deleting the soak computer | **250,918,458** (00:37:56Z). Total spike spend 80,921 µ$. |
 
 ## Resources created and their state
 
 | Resource | Id | State at hand-off |
 |---|---|---|
-| Worker computer | `cmp_01a1b85e26a37b7286d45eb92f06253f` | **Left running for the planner's long-run check.** The heartbeat process stops itself at about 00:36:50Z. Delete it with `worker.mjs destroy`. Auto-destroyed at 12 h either way (≈ 11:35Z, at most ≈ $0.80). |
+| Worker computer | `cmp_01a1b85e26a37b7286d45eb92f06253f` | Soak finished (heartbeat hard stop 00:36:50Z). Deleted 00:37:56Z by the reviewer (`computers.delete` → deleted:true). |
 | Successor computer | `cmp_01a1b870681f77d380c50e1397d4fe60` | Deleted 23:56:11Z |
 | Snapshot | `snp_033329219dd747bd94a3c87114dc5894` | Deleted 23:56:13Z |
 | App | `app_nr5jcvxy3m4p1db6wqj4qr7e2c` (tdm170-spike) | Deleted 00:11:21Z (`apps.delete` → deleted:true). Not needed for TDM-155. After the delete, the production alias `tdm170-spike-sj1arspaf10q.vercel.app` answered 200 at +5 s and 404 at +34 s. **The per-deployment URL `…-jjo02jhh6-naive-e9517ea2.vercel.app/health` still answered 200 at +34 s, and 404 at +41 s (00:12:02Z).** Both URLs were gone within a minute. |
 | Agents | `agt_v81c4gx69g668xfsk374fb2y3b`, `agt_fhwwtscpsj8st8678r012yekgz` | Both deleted 00:11:09Z / 00:11:13Z |
 | Domain | `dom_grfap07xa0tx5r4ea9yhd2633g` | Disconnected and deleted 23:55:11Z |
-| Neon dev table | `spike_heartbeats` | **Kept for the planner's check.** Drop it with `worker.mjs droptable`. |
+| Neon dev table | `spike_heartbeats` | Dropped 00:37:57Z (`worker.mjs droptable`). |
+
+## Final soak result and cleanup (reviewer, 2026-11-08)
+
+Run from the worktree after the heartbeat's 60-min hard stop:
+
+```
+SPIKE_STATE=<state file> ./run.sh worker.mjs check   (2026-11-08T00:37:31Z)
+computers.get → {"id":"cmp_01a1b85e26a37b7286d45eb92f06253f","status":"running","vcpu":1,"memory_mb":1024,"disk_gb":5,…}
+neon heartbeats summary → [{"label":"worker-1","host":"lucky-river-96c7","pid":1748,"n":120,"min_seq":1,"max_seq":120,
+                            "first_at":"2026-11-07T23:36:50.071Z","last_at":"2026-11-08T00:36:20.805Z","span_s":3571},
+                           {"label":"worker-1","host":"lucky-valley-482c","pid":1748,"n":1,"min_seq":39,"max_seq":39}]  ← snapshot successor
+neon heartbeat gaps > 45 s → []
+
+computers.exec "pgrep -af heartbeat || echo no-heartbeat-process; tail -3 ~/spike/hb.txt"   (00:37:42Z)
+→ (only the pgrep's own bash matched: the node process is gone)
+  2026-11-08T00:35:50.661Z seq=119 ok 78ms
+  2026-11-08T00:36:20.661Z seq=120 ok 74ms
+  2026-11-08T00:36:50.085Z hard stop after 3600000 ms
+```
+
+**Soak: 60 min (23:36:50Z → 00:36:50Z hard stop), 120 of 120 heartbeats (one every 30 s; the last at 59.5 min), zero gaps over 45 s, zero failed beats.** The computer was `running` throughout. The only exec traffic during the soak was the setup at 23:39 and the snapshot test at 23:55.
+
+```
+credits.ledger {type:"debit"} → system:cron debits of −11,100 at 00:20:08Z and 00:30:19Z (after the ones listed above)
+SPIKE_STATE=<state file> ./run.sh worker.mjs destroy     (00:37:56Z)
+computers.delete → {"id":"cmp_01a1b85e26a37b7286d45eb92f06253f","object":"computer","deleted":true}
+credits.show (after destroy) → {"balance_micro_usd":250918458}
+SPIKE_STATE=<state file> ./run.sh worker.mjs droptable   (00:37:57Z) → drop table if exists spike_heartbeats → ok
+
+Verification (00:38Z): computers.list → [] · computers.listSnapshots → [] · apps.list → [] · domains.list → []
+                       deployments.list → [] · agents.list → only the pre-existing "CEO" agent (no tdm170-* agents)
+```
+
+Total spike spend: 250,999,379 − 250,918,458 = **80,921 µ$ (≈ $0.08)**, well under the $5 budget. The soak computer was billed 71,347 µ$ over its 62 min of life: the 4,747 part-block at create plus 6 cron blocks of 11,100. Deleting it at 00:37:56Z refunded nothing for the block that started at 00:30:19Z. Nothing was kept for TDM-155.
