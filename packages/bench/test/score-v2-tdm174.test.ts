@@ -259,20 +259,40 @@ describe("a weighted requirement with zero passes scores 0 for that cell", () =>
     expect(r.ranking).toEqual(["a", "b"]);
   });
 
-  it("a contender missing a workload others solved gets a no_trials 0 cell", () => {
+  // Review fix 2: no trials on a workload is our infra failing (or a run cut short), not the
+  // contender running and failing, so it must not be scored as a 0.
+  it("a contender missing a workload others ran is incomplete, not a 0", () => {
     const trials = [
       tTdm174({ c: "a", w: "w1", wall: 10 }),
       tTdm174({ c: "a", w: "w2", wall: 10 }),
       tTdm174({ c: "b", w: "w1", wall: 10 }),
     ];
-    const b = scoredTdm174(
-      scoreKit(kitTdm174([timeReqTdm174], { time: 100 }), trials).contenders[1],
-    );
-    expect(b.total).toBe(50);
-    expect(reqTdm174(b, "time").byWorkload[1]).toMatchObject({
-      workloadId: "w2",
-      status: "no_trials",
-      n: 0,
+    const r = scoreKit(kitTdm174([timeReqTdm174], { time: 100 }), trials);
+    const b = r.contenders[1]!;
+    expect(b).toMatchObject({
+      scored: false,
+      total: null,
+      reason: "no score: no trials on w2",
+      blockedBy: ["time"],
+    });
+    expect(b.requirements[0]).toMatchObject({ code: "incomplete", workloadId: "w2" });
+    expect(r.ranking).toEqual(["a"]);
+  });
+
+  it("a scoped requirement with no in-scope trials is incomplete", () => {
+    const scoped: Req = { ...timeReqTdm174, workloads: ["w2"] };
+    const r = scoreKit(kitTdm174([scoped], { time: 100 }), [
+      tTdm174({ c: "a", w: "w1", wall: 10 }),
+      tTdm174({ c: "b", w: "w1", wall: 10 }),
+      tTdm174({ c: "b", w: "w2", wall: 10, pass: false }),
+    ]);
+    expect(r.contenders[0]).toMatchObject({ scored: false, reason: "no score: no trials on w2" });
+    expect(scoredTdm174(r.contenders[1]).total).toBe(0); // ran w2 and failed: a real 0
+    // Nobody ran the scoped workload at all: nobody gets a number.
+    const none = scoreKit(kitTdm174([scoped], { time: 100 }), [tTdm174({ c: "a", w: "w1" })]);
+    expect(none.contenders[0]).toMatchObject({
+      scored: false,
+      reason: "no score: no trials on w2",
     });
   });
 
@@ -420,5 +440,139 @@ describe("parseTarget is unit-aware", () => {
     expect(() =>
       scoreKit(kitTdm174([bad], { time: 100 }), [tTdm174({ c: "a", w: "w1", wall: 1 })]),
     ).toThrow(RangeError);
+  });
+});
+
+// Review fix 1: a median over solved trials only is survivorship-biased.
+describe("survivorship", () => {
+  // A solves 1 of 5 at 10 s; B solves 5 of 5 at 12 s.
+  const trials = [
+    ...repeatsTdm174({ c: "A", w: "w1", wall: 10 }, 5, 1),
+    ...repeatsTdm174({ c: "B", w: "w1", wall: 12 }, 5, 5),
+  ];
+
+  it("without a cap, wall_s is a median over solved trials and says so", () => {
+    const r = scoreKit(kitTdm174([timeReqTdm174], { time: 100 }), trials);
+    expect(r.ranking).toEqual(["A", "B"]); // the bias the flag warns about
+    const a = reqTdm174(byIdTdm174(r, "A"), "time");
+    expect(a).toMatchObject({ aggregate: "median", survivorship: true });
+  });
+
+  it("with a cap, A's four failures count at it and B ranks first", () => {
+    const kit = kitTdm174([timeReqTdm174], { time: 100 }, {
+      workloads: [{ id: "w1", instruction: "w1.md", timeout_s: 600 }],
+    } as Partial<ScoreKitInput>);
+    const r = scoreKit(kit, trials);
+    expect(r.ranking).toEqual(["B", "A"]);
+    expect(reqTdm174(byIdTdm174(r, "A"), "time")).toMatchObject({
+      aggregate: "censored",
+      survivorship: false,
+      byWorkload: [{ value: 600, samples: [10, 600, 600, 600, 600] }],
+    });
+  });
+
+  it("only medians over solved trials carry the flag", () => {
+    const quality: Req = {
+      id: "q",
+      type: "reviewed",
+      title: "q",
+      rubric: "rubric.md",
+      scale: { min: 1, max: 4 },
+      gate_id: "g",
+    };
+    const r = scoreKit(
+      kitTdm174([passRateReqTdm174, costReqTdm174, quality], { solved: 40, cost: 40, q: 20 }),
+      [{ ...tTdm174({ c: "a", w: "w1", cost: 5 }), reviews: { q: 3 } }],
+    );
+    const a = scoredTdm174(r.contenders[0]);
+    expect(a.requirements.map((x) => [x.requirementId, x.scored && x.survivorship])).toEqual([
+      ["solved", false],
+      ["cost", false],
+      ["q", true],
+    ]);
+  });
+});
+
+// Review fix 4: applicability is a property of the gate × workload, not of the contender.
+describe("a contender cannot hide its failures behind applicable: false", () => {
+  const na = { pass: false, reason: "not applicable", evidence: [], applicable: false };
+  const pass = { pass: true, reason: "", evidence: [] };
+  const fail = { pass: false, reason: "", evidence: [] };
+  const t = (c: string, repeat: number, g: TrialResult["gates"][string]): TrialResult => ({
+    contenderId: c,
+    workloadId: "w1",
+    repeat,
+    metrics: { wall_s: 10 },
+    gates: { g },
+  });
+
+  it("N/A trials on a workload where the gate applied to someone else count as failed", () => {
+    const trials = [
+      t("hider", 0, pass),
+      ...[1, 2, 3, 4].map((r) => t("hider", r, na)),
+      ...[0, 1, 2, 3, 4].map((r) => t("honest", r, r < 3 ? pass : fail)),
+    ];
+    const r = scoreKit(kitTdm174([passRateReqTdm174], { solved: 100 }), trials);
+    const hider = scoredTdm174(byIdTdm174(r, "hider"));
+    expect(reqTdm174(hider, "solved").byWorkload[0]).toMatchObject({
+      value: 0.2,
+      trials: 5,
+      solved: 1,
+    });
+    expect(hider.gates.g).toEqual({ passed: 1, failed: 4, missing: 0, total: 5 });
+    expect(hider.gatesNotApplicable.g).toBe(0);
+    expect(r.ranking).toEqual(["honest", "hider"]);
+  });
+
+  it("even when the hider is the only contender with a real result, one applicable trial makes it apply", () => {
+    const trials = [t("hider", 0, pass), t("hider", 1, na), t("other", 0, na)];
+    const r = scoreKit(kitTdm174([passRateReqTdm174], { solved: 100 }), trials);
+    expect(reqTdm174(byIdTdm174(r, "hider"), "solved").fraction).toBe(0.5);
+    expect(scoredTdm174(byIdTdm174(r, "other")).total).toBe(0);
+  });
+
+  it("a gate N/A for everyone on a workload still leaves it out for everyone", () => {
+    const trials = [t("a", 0, na), t("b", 0, na)];
+    const r = scoreKit(kitTdm174([passRateReqTdm174], { solved: 100 }), trials);
+    for (const c of r.contenders) {
+      const s = scoredTdm174(c);
+      expect(s.gates.g!.total).toBe(0);
+      expect(s.gatesNotApplicable.g).toBe(1);
+      expect(reqTdm174(s, "solved").workloads).toEqual([]);
+    }
+  });
+});
+
+// Review fix 3: the scorer reads targets with the metric's unit and pass rates as ratios.
+describe("targets the scorer must not mis-read", () => {
+  it("'at least 90%' on gate_pass_rate is 0.9", () => {
+    const req: Req = { ...passRateReqTdm174, target: "at least 90%" };
+    const trials = repeatsTdm174({ c: "a", w: "w1" }, 10, 9);
+    const a = reqTdm174(
+      scoreKit(kitTdm174([req], { solved: 100 }), trials).contenders[0]!,
+      "solved",
+    );
+    expect(a.fraction).toBe(1); // 9/10 meets 0.9 (as 90 it would have been 0.01)
+    const raw: Req = { ...passRateReqTdm174, target: "at least 90" };
+    expect(() => scoreKit(kitTdm174([raw], { solved: 100 }), trials)).toThrow(/pass rate/);
+  });
+
+  it("'under 2 min' on wall_s without a unit is 120 s, and 'under 1,000 ms' is 1000", () => {
+    const noUnit: Req = { ...timeReqTdm174, unit: undefined, target: "under 2 min" };
+    delete (noUnit as { unit?: string }).unit;
+    const r = scoreKit(kitTdm174([noUnit], { time: 100 }), [
+      tTdm174({ c: "a", w: "w1", wall: 100 }),
+    ]);
+    expect(scoredTdm174(r.contenders[0]).total).toBe(100);
+    const ms: Req = {
+      ...timeReqTdm174,
+      metric: "api_p95_ms",
+      unit: "ms",
+      target: "under 1,000 ms",
+    };
+    const t = { ...tTdm174({ c: "a", w: "w1" }), metrics: { api_p95_ms: 500 } };
+    expect(scoredTdm174(scoreKit(kitTdm174([ms], { time: 100 }), [t]).contenders[0]).total).toBe(
+      100,
+    );
   });
 });

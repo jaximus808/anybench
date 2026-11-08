@@ -253,6 +253,27 @@ describe("attest", () => {
     expect(Buffer.from(att.signature, "base64")).toHaveLength(64);
   });
 
+  // TDM-174: a contender that runs and fails every gate scores 0 (not "no score").
+  it("attests a contender that failed every gate as scored 0, ranked last", () => {
+    const failing: TrialResult[] = ["todo-api", "bug-hunt"].flatMap((workloadId) =>
+      [0, 1, 2, 3, 4].map((repeat) => ({
+        contenderId: "fails-all",
+        workloadId,
+        repeat,
+        metrics: { wall_s: 20 },
+        gates: { "hidden-tests": { pass: false, reason: "0/16 pass", evidence: [] } },
+      })),
+    );
+    const score = scoreKit(KIT_TDM109, [...trialsTdm109(), ...failing]);
+    const input = inputTdm109(score);
+    input.contenders = [...input.contenders, { id: "fails-all", version: "cheater@1" }];
+    const p = attest(input, loadSigningKey(keyEnvTdm109()), { now: NOW }).payload;
+    const zero = p.scores.find((s) => s.contender_id === "fails-all")!;
+    expect(zero).toMatchObject({ scored: true, total: 0, ci: null });
+    expect(p.ranking).toEqual(["tandem", "claude-code", "fails-all"]);
+    expect(p.scores.find((s) => s.contender_id === "do-less")).toMatchObject({ scored: false });
+  });
+
   it("is deterministic for the same input, key and clock", () => {
     const env = keyEnvTdm109();
     expect(serializeAttestation(signedTdm109(env))).toBe(serializeAttestation(signedTdm109(env)));

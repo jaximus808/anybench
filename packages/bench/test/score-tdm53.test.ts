@@ -40,10 +40,15 @@ function kitTdm53(): KitSpec {
         driver: { type: "coding-agent", verbs: { run: "claude -p" } },
       },
     ],
+    // TDM-174: harness kits need a cap for wall_s (failed trials count at it).
     workloads: [
-      { id: "todo-api", instruction: "workloads/todo-api/instruction.md" },
-      { id: "auth-refactor", instruction: "workloads/auth-refactor/instruction.md" },
-      { id: "bug-hunt", instruction: "workloads/bug-hunt/instruction.md" },
+      { id: "todo-api", instruction: "workloads/todo-api/instruction.md", timeout_s: 3600 },
+      {
+        id: "auth-refactor",
+        instruction: "workloads/auth-refactor/instruction.md",
+        timeout_s: 3600,
+      },
+      { id: "bug-hunt", instruction: "workloads/bug-hunt/instruction.md", timeout_s: 3600 },
     ],
     gates: [{ id: "hidden-tests", kind: "hidden-tests" }],
     requirements: [
@@ -395,7 +400,9 @@ describe("scoring rules", () => {
   });
 
   it("parseTarget", () => {
-    expect(parseTarget("under 120 ms")).toEqual({ op: "le", value: 120 });
+    expect(parseTarget("under 120 ms", "ms")).toEqual({ op: "le", value: 120 });
+    expect(parseTarget("under 2 min", undefined, "wall_s")).toEqual({ op: "le", value: 120 });
+    expect(() => parseTarget("under 120 ms")).toThrow(RangeError); // no unit to check it against
     expect(parseTarget("≤ 30")).toEqual({ op: "le", value: 30 });
     expect(parseTarget("at least 0.9")).toEqual({ op: "ge", value: 0.9 });
     expect(parseTarget("all pass")).toBeUndefined();
@@ -453,7 +460,11 @@ describe("scoring properties", () => {
         fc.array(fc.double({ min: 0, max: 1000, noNaN: true }), { minLength: 1, maxLength: 5 }),
         (ts, walls) => {
           const before = scoreKit(miniKitTdm53(), ts);
-          const cheat = walls.map((w, i) => trial("cheat", w, false, 4, i % 2 ? "w1" : "w2"));
+          // The cheat runs every workload the gate applies on, so the run stays complete.
+          const gated = [...new Set(ts.filter((t) => t.gates.g).map((t) => t.workloadId))];
+          const cheat = (gated.length > 0 ? gated : ["w1"]).flatMap((wl) =>
+            walls.map((w) => trial("cheat", w, false, 4, wl)),
+          );
           const after = scoreKit(miniKitTdm53(), [...ts, ...cheat]);
           expect(after.contenders.at(-1)).toMatchObject({
             contenderId: "cheat",

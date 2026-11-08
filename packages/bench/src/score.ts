@@ -9,20 +9,27 @@
 //   partial total would hide it);
 // - a contender that solves nothing on a workload gets a 0 cell for it, never a cell that
 //   disappears: a contender that fails a workload never ranks above an equally fast one that
-//   solves it.
+//   solves it;
+// - a contender with NO trials on a workload the requirement covers (our infra failed, or it was
+//   never run) is not given a 0 either: the requirement is unscored, `incomplete`, and blocks
+//   the total until the run is complete.
 //
-// Scope. A requirement covers `requirement.workloads` (default: all). A trial whose gate result
-// says `applicable: false` is outside the requirement and outside the gate's tally: it neither
-// passes nor fails.
+// Scope. A requirement covers `requirement.workloads` (default: all). Applicability belongs to
+// the gate × workload, not to the contender: a gate applies on a workload when any scored trial
+// there says it does (`applicable` not false). On such a workload a trial that says
+// `applicable: false` counts as FAILED, so a contender cannot hide its own failures. On a
+// workload where the gate applies to nobody, its trials leave the requirement and the gate's
+// tally (`gatesNotApplicable`): they neither pass nor fail.
 //
 // Cells. For each requirement, every contender gets one cell per workload in the requirement's
 // COMMON workload set, so all contenders are averaged over the same workloads:
 // - `gate_pass_rate`: every in-scope workload with an applicable trial;
 // - everything else: every in-scope workload at least one contender solved (a workload nobody
 //   solved says nothing about speed or cost, so it is left out for everyone).
-// A cell is `measured` (it has a value), `unsolved` (trials ran, none passed: fraction 0) or
-// `no_trials` (this contender has no applicable trial there: fraction 0). Cells keep the raw
-// per-trial `samples` and counts so the stats layer (TDM-175) can attach CIs and verdicts.
+// A cell is `measured` (it has a value) or `unsolved` (trials ran, none passed: fraction 0).
+// Cells keep the raw per-trial `samples` and counts so the stats layer (TDM-175) can attach CIs
+// and verdicts. `survivorship: true` marks a requirement whose value is a median over solved
+// trials only (`median`, and gated reviews), so the report can warn that failures are not in it.
 //
 // Aggregates (per measured requirement; `requirement.aggregate`, or picked by metric):
 // - `median` (default): median of the metric over the gate-passing trials.
@@ -32,12 +39,15 @@
 // - `censored` (default for `wall_s` when a cap is known): time-to-solve, the median over every
 //   applicable trial with each failed trial counted at the cap (`requirement.cap`, else the
 //   workload's `timeout_s`, else the largest contender `wall_clock_cap_s`, in seconds converted
-//   to the requirement's unit).
+//   to the requirement's unit, or the metric's when it has none). Agent and harness kits must
+//   make the cap findable (KitSpecSchema); without one `wall_s` is a `median` with
+//   `survivorship: true`.
 // - `gate_pass_rate`: the share of applicable trials whose gate passed. Reviewed requirements:
 //   the median review over the solved trials (all trials when ungated).
 //
 // Fractions. Each measured cell becomes a fraction in [0, 1]:
-// - a bound `target` in the requirement's unit ("under 120 ms", "under 2 min" on seconds):
+// - a bound `target` in the requirement's unit ("under 120 ms", "under 2 min" on seconds; a
+//   `gate_pass_rate` target is always a ratio, "at least 90%" is 0.9):
 //   meeting it is 1, missing it is the ratio to it (T/v when lower is better, v/T when higher);
 // - no usable target: relative to the best measured contender on that workload (min/v when lower
 //   is better, v/max when higher); values below zero switch to min–max scaling;
@@ -49,6 +59,7 @@ import {
   GateResultSchema,
   convertUnit,
   lookupUnit,
+  metricUnit,
   parseRequirementTarget,
   type KitSpec,
   type MeasuredAggregate,
@@ -85,15 +96,24 @@ export type TrialResult = z.input<typeof TrialResultSchema>;
 type ParsedTrial = z.output<typeof TrialResultSchema>;
 
 export const NO_SCORE_REASONS = {
-  gate_failed: "no score: gate failed",
   gate_missing: "no score: gate missing",
   metric_missing: "no score: metric missing",
   not_reviewed: "no score: not reviewed",
   no_trials: "no score: no trials",
   no_cap: "no score: no cap to count failed trials at",
+  /** Followed by the workload: `no score: no trials on todo-api`. */
+  incomplete: "no score: no trials on",
 } as const;
 export type NoScoreCode = keyof typeof NO_SCORE_REASONS;
-export type NoScoreReason = (typeof NO_SCORE_REASONS)[NoScoreCode];
+export type NoScoreReason =
+  | (typeof NO_SCORE_REASONS)[Exclude<NoScoreCode, "incomplete">]
+  | `${(typeof NO_SCORE_REASONS)["incomplete"]} ${string}`;
+
+function noScoreReason(code: NoScoreCode, workloadId?: string): NoScoreReason {
+  return code === "incomplete"
+    ? `${NO_SCORE_REASONS.incomplete} ${workloadId ?? "?"}`
+    : NO_SCORE_REASONS[code];
+}
 
 /** How a requirement's cell value was computed. */
 export type RequirementAggregate = MeasuredAggregate | "rate" | "review";
@@ -101,9 +121,10 @@ export type RequirementAggregate = MeasuredAggregate | "rate" | "review";
 /**
  * - `measured`: the cell has a value.
  * - `unsolved`: the contender ran applicable trials here and none passed the gate (fraction 0).
- * - `no_trials`: the contender has no applicable trial on this workload (fraction 0).
+ * (A contender with no trials on a covered workload gets no cell: the requirement is
+ * `incomplete`.)
  */
-export type CellStatus = "measured" | "unsolved" | "no_trials";
+export type CellStatus = "measured" | "unsolved";
 
 /** One requirement × workload × contender cell. */
 export interface WorkloadCell {
@@ -138,6 +159,12 @@ interface RequirementScoreBase {
 export interface ScoredRequirement extends RequirementScoreBase {
   scored: true;
   aggregate: RequirementAggregate;
+  /**
+   * True when the value is a median over solved trials only (`median`, gated `review`): failed
+   * trials are not in it, so a contender that solves 1/5 fast can look better than one that
+   * solves 5/5. Reports should warn next to it.
+   */
+  survivorship: boolean;
   /** The common workload set, in kit order: the same for every contender. */
   workloads: string[];
   /** Mean of the per-workload fractions, in [0, 1]. */
@@ -151,6 +178,8 @@ export interface UnscoredRequirement extends RequirementScoreBase {
   scored: false;
   code: NoScoreCode;
   reason: NoScoreReason;
+  /** `incomplete` only: the first covered workload this contender has no trials on. */
+  workloadId?: string;
   points: null;
 }
 export type RequirementScore = ScoredRequirement | UnscoredRequirement;
@@ -216,17 +245,19 @@ export interface TargetThreshold {
 }
 
 /**
- * Parse a requirement's human-readable `target` into a threshold in `unit`, when it is a simple
- * bound ("under 120 ms", "at least 90%", "≤ 30"; "under 2 min" on unit `s` is 120). Anything
- * else ("all pass", "$5 per task" without a bound word) returns undefined and the requirement
- * is scored relative to the best contender. Throws a RangeError when the bound is in a unit that
- * does not convert to `unit` ("under 120 ms" on bytes); KitSpecSchema rejects such kits.
+ * Parse a requirement's human-readable `target` into a threshold in `unit` (or, without one, the
+ * unit `metric`'s name implies), when it is a simple bound ("under 120 ms", "at least 90%",
+ * "≤ 30"; "under 2 min" on unit `s` is 120; "at least 90%" on `gate_pass_rate` is 0.9). Anything
+ * else ("all pass", "$5 per task" without a bound word) returns undefined and the requirement is
+ * scored relative to the best contender. Throws a RangeError when the bound can't be read safely
+ * (a unit that does not convert, an ambiguous number like "1,5"); KitSpecSchema rejects such kits.
  */
 export function parseTarget(
   target: string | undefined,
   unit?: string,
+  metric?: string,
 ): TargetThreshold | undefined {
-  const r = parseRequirementTarget(target, unit);
+  const r = parseRequirementTarget(target, unit, metric);
   if (!r.ok) throw new RangeError(r.error);
   return r.bound;
 }
@@ -276,9 +307,36 @@ interface Plan {
   target: TargetThreshold | undefined;
 }
 
+/** Where each gate applies: gate id → workloads on which any scored trial says it applies. */
+type Applicability = Map<string, Set<string>>;
+
+function applicability(trials: readonly ParsedTrial[]): Applicability {
+  const m: Applicability = new Map();
+  for (const t of trials) {
+    for (const [g, r] of Object.entries(t.gates)) {
+      if (r.applicable === false) continue;
+      const set = m.get(g);
+      if (set) set.add(t.workloadId);
+      else m.set(g, new Set([t.workloadId]));
+    }
+  }
+  return m;
+}
+
+type GateState = "pass" | "fail" | "missing" | "na";
+
+/** A trial's result for a gate, with applicability decided per gate × workload. */
+function gateState(t: ParsedTrial, gateId: string, applies: Applicability): GateState {
+  const r = t.gates[gateId];
+  if (r === undefined) return "missing";
+  if (!applies.get(gateId)?.has(t.workloadId)) return "na";
+  // Applies here (to someone): a trial that claims otherwise counts as a failure.
+  return r.pass && r.applicable !== false ? "pass" : "fail";
+}
+
+/** A cap in seconds, in `unit` (undefined when `unit` is unknown or not a time). */
 function seconds(unit: string | undefined, valueS: number): number | undefined {
-  if (unit === undefined) return valueS;
-  if (lookupUnit(unit)?.dim !== "time") return undefined;
+  if (unit === undefined || lookupUnit(unit)?.dim !== "time") return undefined;
   return convertUnit(valueS, "s", unit);
 }
 
@@ -296,7 +354,7 @@ function planFor(req: Requirement, kit: ScoreKitInput, workloadIds: readonly str
   const capFor = (w: string): number | undefined => {
     if (req.cap !== undefined) return req.cap;
     const s = timeouts.get(w) ?? contenderCap;
-    return s === undefined ? undefined : seconds(req.unit, s);
+    return s === undefined ? undefined : seconds(req.unit ?? metricUnit(req.metric), s);
   };
 
   let aggregate: RequirementAggregate;
@@ -309,7 +367,7 @@ function planFor(req: Requirement, kit: ScoreKitInput, workloadIds: readonly str
       scoped.length > 0 && scoped.every((w) => capFor(w) !== undefined) ? "censored" : "median";
   } else aggregate = "median";
 
-  const target = parseTarget(req.target, req.unit);
+  const target = parseTarget(req.target, req.unit, req.metric);
   const usable = target && (target.op === "le") === (req.better === "lower") ? target : undefined;
   return { req, aggregate, inScope, capFor, target: usable };
 }
@@ -318,51 +376,72 @@ function planFor(req: Requirement, kit: ScoreKitInput, workloadIds: readonly str
 // Phase 1: one contender's raw cells for one requirement.
 
 interface RawCell {
-  status: "measured" | "unsolved";
+  status: CellStatus;
   value: number | null;
   samples: number[];
   trials: number;
   solved: number;
   cap?: number;
 }
-type RawCells = { ok: true; cells: Map<string, RawCell> } | { ok: false; code: NoScoreCode };
+type RawCells =
+  { ok: true; cells: Map<string, RawCell> } | { ok: false; code: NoScoreCode; workloadId?: string };
 
-function byWorkload(trials: readonly ParsedTrial[]): Map<string, ParsedTrial[]> {
-  const m = new Map<string, ParsedTrial[]>();
-  for (const t of trials) {
-    const list = m.get(t.workloadId);
-    if (list) list.push(t);
-    else m.set(t.workloadId, [t]);
+function byWorkload<T extends { trial: ParsedTrial }>(items: readonly T[]): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const x of items) {
+    const list = m.get(x.trial.workloadId);
+    if (list) list.push(x);
+    else m.set(x.trial.workloadId, [x]);
   }
   return m;
 }
 
-/** In-scope trials the requirement applies to, or the reason it cannot be scored. */
-function applicableTrials(
-  plan: Plan,
-  trials: readonly ParsedTrial[],
-): { ok: true; trials: ParsedTrial[] } | { ok: false; code: NoScoreCode } {
-  const scoped = trials.filter((t) => plan.inScope(t.workloadId));
-  const gateId = plan.req.gate_id;
-  if (gateId === undefined) return { ok: true, trials: scoped };
-  if (scoped.some((t) => t.gates[gateId] === undefined)) return { ok: false, code: "gate_missing" };
-  return { ok: true, trials: scoped.filter((t) => t.gates[gateId]!.applicable !== false) };
+interface Judged {
+  trial: ParsedTrial;
+  passed: boolean;
 }
 
-function rawCells(plan: Plan, trials: readonly ParsedTrial[]): RawCells {
+/** In-scope trials the requirement applies to, each with its pass/fail, or why it can't score. */
+function judgedTrials(
+  plan: Plan,
+  trials: readonly ParsedTrial[],
+  applies: Applicability,
+): { ok: true; trials: Judged[] } | { ok: false; code: NoScoreCode } {
+  const scoped = trials.filter((t) => plan.inScope(t.workloadId));
+  const gateId = plan.req.gate_id;
+  if (gateId === undefined)
+    return { ok: true, trials: scoped.map((t) => ({ trial: t, passed: true })) };
+  const out: Judged[] = [];
+  for (const t of scoped) {
+    const st = gateState(t, gateId, applies);
+    if (st === "missing") return { ok: false, code: "gate_missing" };
+    if (st !== "na") out.push({ trial: t, passed: st === "pass" });
+  }
+  return { ok: true, trials: out };
+}
+
+function rawCells(
+  plan: Plan,
+  trials: readonly ParsedTrial[],
+  applies: Applicability,
+  covered: readonly string[],
+): RawCells {
   if (trials.length === 0) return { ok: false, code: "no_trials" };
-  const app = applicableTrials(plan, trials);
-  if (!app.ok) return app;
+  const judged = judgedTrials(plan, trials, applies);
+  if (!judged.ok) return judged;
+  const groups = byWorkload(judged.trials);
+  // Our infra failing (or a workload never run) is not the contender's 0: refuse to score.
+  const gap = covered.find((w) => !groups.has(w));
+  if (gap !== undefined) return { ok: false, code: "incomplete", workloadId: gap };
+
   const { req, aggregate } = plan;
-  const gateId = req.gate_id;
-  const passed = (t: ParsedTrial) => gateId === undefined || t.gates[gateId]!.pass;
   const metricOf = (t: ParsedTrial) =>
     req.type === "measured" ? t.metrics[req.metric] : undefined;
 
   const cells = new Map<string, RawCell>();
-  for (const [w, ts] of byWorkload(app.trials)) {
-    const solvedTs = ts.filter(passed);
-    const base = { trials: ts.length, solved: solvedTs.length };
+  for (const [w, js] of groups) {
+    const solvedTs = js.filter((j) => j.passed).map((j) => j.trial);
+    const base = { trials: js.length, solved: solvedTs.length };
     const unsolved = (samples: number[], extra: { cap?: number } = {}): RawCell => ({
       status: "unsolved",
       value: null,
@@ -373,7 +452,7 @@ function rawCells(plan: Plan, trials: readonly ParsedTrial[]): RawCells {
 
     switch (aggregate) {
       case "rate": {
-        const samples = ts.map((t) => (passed(t) ? 1 : 0));
+        const samples = js.map((j) => (j.passed ? 1 : 0));
         cells.set(w, { status: "measured", value: base.solved / base.trials, samples, ...base });
         break;
       }
@@ -395,12 +474,12 @@ function rawCells(plan: Plan, trials: readonly ParsedTrial[]): RawCells {
         const cap = plan.capFor(w);
         if (cap === undefined) return { ok: false, code: "no_cap" };
         const samples: number[] = [];
-        for (const t of ts) {
-          if (!passed(t)) {
+        for (const j of js) {
+          if (!j.passed) {
             samples.push(cap);
             continue;
           }
-          const v = metricOf(t);
+          const v = metricOf(j.trial);
           if (v === undefined) return { ok: false, code: "metric_missing" };
           samples.push(v);
         }
@@ -414,8 +493,8 @@ function rawCells(plan: Plan, trials: readonly ParsedTrial[]): RawCells {
       }
       case "per_solved": {
         const samples: number[] = [];
-        for (const t of ts) {
-          const v = metricOf(t);
+        for (const j of js) {
+          const v = metricOf(j.trial);
           if (v === undefined) return { ok: false, code: "metric_missing" };
           samples.push(v);
         }
@@ -462,33 +541,51 @@ function workloadOrder(kit: ScoreKitInput, trials: readonly ParsedTrial[]): stri
   return [...ids];
 }
 
-function commonWorkloads(
+/**
+ * Workloads every contender must have trials on for this requirement: the in-scope workloads
+ * where it applies (the gate applies there for someone; any trial when ungated), plus scoped
+ * workloads nobody ran at all.
+ */
+function coveredWorkloads(
   plan: Plan,
   order: readonly string[],
   trials: readonly ParsedTrial[],
+  applies: Applicability,
+): string[] {
+  const gateId = plan.req.gate_id;
+  const ran = new Set(trials.map((t) => t.workloadId));
+  const all = [...order, ...(plan.req.workloads ?? []).filter((w) => !order.includes(w))];
+  const keep = new Set<string>();
+  for (const w of all) {
+    if (!plan.inScope(w)) continue;
+    if (!ran.has(w)) {
+      if (plan.req.workloads?.includes(w)) keep.add(w);
+      continue;
+    }
+    if (gateId === undefined || applies.get(gateId)?.has(w)) keep.add(w);
+  }
+  return all.filter((w) => keep.has(w));
+}
+
+/** The workloads every contender is averaged over (see the header). */
+function commonWorkloads(
+  plan: Plan,
+  covered: readonly string[],
   raws: Iterable<RawCells>,
 ): string[] {
+  if (plan.aggregate === "rate") return [...covered];
   const keep = new Set<string>();
-  if (plan.aggregate === "rate") {
-    const gateId = plan.req.gate_id!;
-    for (const t of trials) {
-      const g = t.gates[gateId];
-      if (plan.inScope(t.workloadId) && g !== undefined && g.applicable !== false)
-        keep.add(t.workloadId);
-    }
-  } else {
-    for (const r of raws) {
-      if (!r.ok) continue;
-      for (const [w, c] of r.cells) if (c.status === "measured") keep.add(w);
-    }
+  for (const r of raws) {
+    if (!r.ok) continue;
+    for (const [w, c] of r.cells) if (c.status === "measured") keep.add(w);
   }
-  return order.filter((w) => keep.has(w));
+  return covered.filter((w) => keep.has(w));
 }
 
 /**
  * Score every contender over the kit's requirements. Pure: same kit and trials, same scores.
  * Throws a ZodError if a trial result is malformed, and a RangeError if a requirement's target
- * is in a unit that does not match its own.
+ * can't be read safely in its unit.
  */
 export function scoreKit(
   kit: ScoreKitInput,
@@ -503,12 +600,16 @@ export function scoreKit(
   for (const t of trials) trialsOf.get(t.contenderId)?.push(t);
   const scoredTrials = trials.filter((t) => trialsOf.has(t.contenderId));
   const order = workloadOrder(kit, scoredTrials);
+  const applies = applicability(scoredTrials);
 
-  // Phase 1: plan, raw cells per contender, and the common workload set, per requirement.
+  // Phase 1: plan, covered workloads, raw cells per contender, and the common set.
   const perReq = kit.requirements.map((req) => {
     const plan = planFor(req, kit, order);
-    const raw = new Map(contenderIds.map((c) => [c, rawCells(plan, trialsOf.get(c)!)]));
-    const common = commonWorkloads(plan, order, scoredTrials, raw.values());
+    const covered = coveredWorkloads(plan, order, scoredTrials, applies);
+    const raw = new Map(
+      contenderIds.map((c) => [c, rawCells(plan, trialsOf.get(c)!, applies, covered)]),
+    );
+    const common = commonWorkloads(plan, covered, raw.values());
     const pools = new Map<string, number[]>();
     for (const w of common) {
       const pool: number[] = [];
@@ -544,24 +645,14 @@ export function scoreKit(
           weight,
           scored: false,
           code: mine.code,
-          reason: NO_SCORE_REASONS[mine.code],
+          reason: noScoreReason(mine.code, mine.workloadId),
+          ...(mine.workloadId === undefined ? {} : { workloadId: mine.workloadId }),
           points: null,
         };
       }
       const cells: WorkloadCell[] = common.map((workloadId) => {
-        const cell = mine.cells.get(workloadId);
-        if (cell === undefined) {
-          return {
-            workloadId,
-            status: "no_trials",
-            value: null,
-            fraction: 0,
-            n: 0,
-            samples: [],
-            trials: 0,
-            solved: 0,
-          };
-        }
+        // Every covered workload has a cell (else the requirement is incomplete).
+        const cell = mine.cells.get(workloadId)!;
         const fraction =
           cell.status === "measured" ? cellFraction(plan, cell.value!, pools.get(workloadId)!) : 0;
         return { workloadId, ...cell, fraction, n: cell.samples.length };
@@ -574,6 +665,9 @@ export function scoreKit(
         weight,
         scored: true,
         aggregate: plan.aggregate,
+        survivorship:
+          (req.type === "measured" && plan.aggregate === "median") ||
+          (plan.aggregate === "review" && req.gate_id !== undefined),
         workloads: [...common],
         fraction,
         points: fraction * weight,
@@ -587,10 +681,10 @@ export function scoreKit(
       const tally: GateTally = { passed: 0, failed: 0, missing: 0, total: 0 };
       let na = 0;
       for (const t of ts) {
-        const r = t.gates[g];
-        if (!inScope(t.workloadId) || r?.applicable === false) na++;
-        else if (r === undefined) tally.missing++;
-        else if (r.pass) tally.passed++;
+        const st = inScope(t.workloadId) ? gateState(t, g, applies) : "na";
+        if (st === "na") na++;
+        else if (st === "missing") tally.missing++;
+        else if (st === "pass") tally.passed++;
         else tally.failed++;
       }
       tally.total = tally.passed + tally.failed + tally.missing;

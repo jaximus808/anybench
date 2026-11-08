@@ -79,6 +79,8 @@ describe("schedulableFromKit", () => {
     const bare = rawKitTdm159("kit-agent");
     for (const w of bare.workloads) delete w.timeout_s;
     for (const c of bare.contenders) delete c.driver.wall_clock_cap_s;
+    // TDM-174: an agent kit's wall_s needs a cap to count failures at; give it on the requirement.
+    for (const r of bare.requirements) if (r.metric === "wall_s") r.cap = 3600;
     bare.schedule = { block_seconds: 300 };
     expect(schedulableFromKit(KitSpecSchema.parse(bare)).est_trial_seconds).toBe(300);
   });

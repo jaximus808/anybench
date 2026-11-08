@@ -21,7 +21,12 @@ import {
   SubjectKindSchema,
 } from "./kit-primitives.js";
 import { GateSchema, RequirementSchema } from "./requirement.js";
-import { lookupUnit, parseRequirementTarget } from "./target.js";
+import {
+  GATE_PASS_RATE_METRIC_NAME,
+  lookupUnit,
+  metricUnit,
+  parseRequirementTarget,
+} from "./target.js";
 import { WorkloadSchema } from "./workload.js";
 
 export const KIT_SCHEMA_VERSION = 2 as const;
@@ -285,21 +290,26 @@ export const KitSpecSchema = z
     });
   });
 export type KitSpec = z.infer<typeof KitSpecSchema>;
-/** Mirrors `GATE_PASS_RATE_METRIC` in @anybench/bench (core cannot import bench). */
-const GATE_PASS_RATE = "gate_pass_rate";
+const GATE_PASS_RATE = GATE_PASS_RATE_METRIC_NAME;
+
+/** The metric agent and harness kits must score as time-to-solve, with failures at the cap. */
+const WALL_METRIC = "wall_s";
 
 /**
  * TDM-174 [16.3]: requirement scope, target and aggregation rules.
  * - `workloads` names real workloads, each once.
- * - a bound `target` is in a unit that converts to the requirement's `unit`.
+ * - a bound `target` reads safely in the requirement's unit (see parseRequirementTarget).
  * - `gate_pass_rate` takes no `aggregate`/`cap`; `cap` goes only with `censored` (or no aggregate).
  * - `aggregate: censored` can find a cap for every scoped workload.
+ * - agent/harness kits: `wall_s` counts failures at a cap the kit names (no median over solved
+ *   trials only, which ranks a contender that solves 1/5 fast above one that solves 5/5).
  */
 function checkRequirementScoringTdm174(
-  kit: Pick<KitSpec, "requirements" | "workloads" | "contenders">,
+  kit: Pick<KitSpec, "subject" | "requirements" | "workloads" | "contenders">,
   issue: (path: PropertyKey[], message: string) => void,
 ): void {
   const workloads = new Map(kit.workloads.map((w) => [w.id, w]));
+  const agentKit = kit.subject.kind === "agent" || kit.subject.kind === "harness";
   kit.requirements.forEach((r, i) => {
     const seen = new Set<string>();
     r.workloads?.forEach((w, j) => {
@@ -311,7 +321,7 @@ function checkRequirementScoringTdm174(
     });
     if (r.type !== "measured") return;
 
-    const t = parseRequirementTarget(r.target, r.unit);
+    const t = parseRequirementTarget(r.target, r.unit, r.metric);
     if (!t.ok) issue(["requirements", i, "target"], t.error);
 
     if (r.metric === GATE_PASS_RATE) {
@@ -326,19 +336,34 @@ function checkRequirementScoringTdm174(
     if (r.cap !== undefined && r.aggregate !== undefined && r.aggregate !== "censored") {
       issue(["requirements", i, "cap"], `cap only applies to aggregate 'censored'`);
     }
-    if (r.aggregate === "censored" && r.cap === undefined) {
-      const timeUnit = r.unit === undefined || lookupUnit(r.unit)?.dim === "time";
+
+    const agentWall = agentKit && r.metric === WALL_METRIC;
+    if (agentWall && r.aggregate === "median") {
+      issue(
+        ["requirements", i, "aggregate"],
+        `${kit.subject.kind} kits score ${WALL_METRIC} as time-to-solve: a median over solved trials only hides failures; use 'censored'`,
+      );
+      return;
+    }
+    const needsCap = r.aggregate === "censored" || (agentWall && r.aggregate === undefined);
+    if (needsCap && r.cap === undefined) {
+      const unit = r.unit ?? metricUnit(r.metric);
+      const timeUnit = unit !== undefined && lookupUnit(unit)?.dim === "time";
       const scoped = r.workloads ?? kit.workloads.map((w) => w.id);
       const everyContenderCapped = kit.contenders.every(
         (c) => c.driver.wall_clock_cap_s !== undefined,
       );
       const everyWorkloadCapped = scoped.every((w) => workloads.get(w)?.timeout_s !== undefined);
       if (!timeUnit || !(everyContenderCapped || everyWorkloadCapped)) {
+        const what =
+          r.aggregate === "censored"
+            ? "aggregate 'censored'"
+            : `${WALL_METRIC} in agent and harness kits`;
         issue(
           ["requirements", i, "cap"],
           timeUnit
-            ? "aggregate 'censored' counts failed trials at the cap: set cap, every workload's timeout_s, or every contender's wall_clock_cap_s"
-            : `aggregate 'censored' on a metric in '${r.unit}' needs an explicit cap in that unit`,
+            ? `${what} counts failed trials at the cap: set cap, every workload's timeout_s, or every contender's wall_clock_cap_s`
+            : `${what} on a metric in '${unit ?? "no unit"}' needs an explicit cap in that unit`,
         );
       }
     }
