@@ -38,7 +38,11 @@ import {
   defaultKitsDir,
   headToHeadProfile,
 } from "../src/orchestrator/curated.js";
-import { backfillRunMetrics, legacyGateMetrics } from "../src/orchestrator/metrics-backfill.js";
+import {
+  backfillRunMetrics,
+  legacyGateMetrics,
+  rescoreRun,
+} from "../src/orchestrator/metrics-backfill.js";
 import { storedScoreOf, type StoredScore } from "../src/orchestrator/proof-score.js";
 import { kitContenderSlugs } from "../src/orchestrator/store.js";
 import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./helpers/pg-tdm11.js";
@@ -446,6 +450,24 @@ describe.skipIf(!available)("trial metrics end to end (metrics-fix, local Postgr
     await backfillRunMetrics(h.db, { runId: s.runId, apply: true, proxySpend: ledger });
     const again = await h.db.select().from(trials).where(eq(trials.runId, s.runId));
     expect(again.sort(byId).map((r) => [r.id, r.metrics, r.costMicroUsd])).toEqual(snapshot);
+
+    // rescoreRun (scripts/ops/rescore-run.ts): re-scores from the stored rows and rebuilds the
+    // report; trial rows are never written.
+    const fullRows = async () =>
+      (await h.db.select().from(trials).where(eq(trials.runId, s.runId))).sort(byId);
+    const beforeRescore = await fullRows();
+    await h.db.update(reports).set({ md: "stale" }).where(eq(reports.runId, s.runId));
+    const rescoreDry = await rescoreRun(h.db, { runId: s.runId, apply: false });
+    expect(rescoreDry).toMatchObject({ trials: 6, scoreWritten: false, report: "unchanged" });
+    expect(rescoreDry.answer).toMatch(/^(On the tasks tested|Result)/);
+    const rescored = await rescoreRun(h.db, { runId: s.runId, apply: true });
+    expect(rescored).toMatchObject({ scoreWritten: true, report: "rebuilt" });
+    expect(await fullRows()).toEqual(beforeRescore);
+    const [rerun] = await h.db.select().from(runs).where(eq(runs.id, s.runId));
+    expect(typeof (rerun!.stageOutputs as { rescored_at?: unknown }).rescored_at).toBe("string");
+    const [rerep] = await h.db.select().from(reports).where(eq(reports.runId, s.runId));
+    expect(rerep!.md).not.toBe("stale");
+    expect((rerep!.json as { answer: string }).answer).toBe(rescored.answer);
   });
 
   it("legacyGateMetrics reads p95 only from a passing api-load verdict", () => {

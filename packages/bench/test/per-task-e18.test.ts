@@ -123,8 +123,10 @@ describe("per-task verdicts (E18)", () => {
     const seeds = 200;
     for (let s = 1; s <= seeds; s++) {
       const ks = scoreKit(kit, runPt(kit, 10, 0x18a + s), { seed: s, iterations: 200 });
-      if (taskVerdictsPt(ks).some((c) => c.verdict !== "indistinguishable")) positives++;
-      expect(ks.stats.perTask!.headline).toEqual([]);
+      const anyVerdict = taskVerdictsPt(ks).some((c) => c.verdict !== "indistinguishable");
+      if (anyVerdict) positives++;
+      // A headline needs a significant per-task verdict: under A/A it is as rare as those.
+      if (!anyVerdict) expect(ks.stats.perTask!.headline).toEqual([]);
     }
     expect(positives / seeds).toBeLessThanOrEqual(DECISION_RULE.alpha);
   }, 120_000);
@@ -140,7 +142,9 @@ describe("per-task verdicts (E18)", () => {
         iterations: 200,
       });
       if (taskVerdictsPt(ks).some((c) => c.verdict === "better")) anyBetter++;
-      if (ks.stats.perTask!.headline.some((h) => h.requirementId === "wall")) {
+      if (
+        ks.stats.perTask!.headline.some((h) => h.requirementId === "wall" && h.tasks.length === 3)
+      ) {
         allTasks++;
         example ??= ks;
       }
@@ -171,6 +175,51 @@ describe("per-task verdicts (E18)", () => {
       /insufficient tasks for a general claim: the exact test over 3 tasks can't go below p=0\.250, ≥8 tasks needed/,
     );
   }, 120_000);
+
+  it("headline: a verdict on some tasks names the rest as no detectable difference; mixed directions stay out", () => {
+    // Every trial solves; the candidate's time is `k[task]`× the baseline's (6 repeats, no overlap
+    // when k ≠ 1), cost unchanged. Holm over 10 tests: a full 6 vs 6 split (p=0.0022) survives.
+    const allPass = (k: Record<string, number>): TrialResult[] =>
+      kit.workloads.flatMap((w) =>
+        [BASE_PT, CAND_PT].flatMap((c) =>
+          [0, 1, 2, 3, 4, 5].map((repeat) => ({
+            contenderId: c,
+            workloadId: w.id,
+            repeat,
+            metrics: {
+              wall_s: (100 + repeat) * (c === CAND_PT ? k[w.id]! : 1),
+              cost_micro_usd: 400_000 + 1000 * repeat,
+              ...(w.id === "todo-api" ? { api_p95_ms: 90 + repeat } : {}),
+            },
+            gates: {
+              "hidden-tests": { pass: true, reason: "pass", evidence: [] },
+              "api-load":
+                w.id === "todo-api"
+                  ? { pass: true, reason: "p95 measured", evidence: [] }
+                  : { pass: false, applicable: false, reason: "not applicable", evidence: [] },
+            },
+          })),
+        ),
+      );
+    const partial = scoreKit(kit, allPass({ "todo-api": 1, "auth-refactor": 3, "bug-hunt": 3 }), {
+      seed: 1,
+    }).stats.perTask!;
+    expect(partial.headline.map((h) => [h.requirementId, h.statement])).toEqual([
+      [
+        "wall",
+        "tandem was slower on 2 of 3 tasks tested (auth-refactor and bug-hunt; no detectable difference on todo-api)",
+      ],
+    ]);
+    expect(partial.headline[0]).toMatchObject({
+      verdict: "worse",
+      tasks: ["auth-refactor", "bug-hunt"],
+      inconclusive: ["todo-api"],
+    });
+    const mixed = scoreKit(kit, allPass({ "todo-api": 1, "auth-refactor": 3, "bug-hunt": 1 / 3 }), {
+      seed: 1,
+    }).stats.perTask!;
+    expect(mixed.headline).toEqual([]);
+  });
 
   it("software kits have no per-task section (their per-workload comparisons already are)", () => {
     const ks = scoreKit(

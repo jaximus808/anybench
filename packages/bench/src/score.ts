@@ -325,7 +325,11 @@ export interface PerTaskStats {
   tasks: string[];
   /** Always shown next to a per-task result: what it does not cover. */
   scope: string;
-  /** Requirements where every task it covers agrees in direction and is significant. */
+  /**
+   * Requirements with a significant per-task verdict on at least one task it covers and none in
+   * the other direction: on every task ("faster on all 3 tasks tested") or on some of them, with
+   * the others named as no detectable difference.
+   */
   headline: PerTaskFinding[];
 }
 
@@ -335,8 +339,16 @@ export interface PerTaskFinding {
   verdict: "better" | "worse";
   /** "faster", "cheaper", "solved more often", … */
   adjective: string;
+  /** The tasks where this verdict is significant (each task's own Holm-corrected test). */
   tasks: string[];
-  /** "<contender> was faster on all 3 tasks tested". Reports swap in the display name. */
+  /** Tasks the requirement covers with no detectable difference there (empty when all agree). */
+  inconclusive: string[];
+  /**
+   * Where it holds: "on all 3 tasks tested", or "on 2 of 3 tasks tested (auth-refactor and
+   * bug-hunt; no detectable difference on todo-api)". Reports join findings that share it.
+   */
+  where: string;
+  /** "<contender> was faster <where>". Reports swap in the display name. */
   statement: string;
 }
 
@@ -1114,6 +1126,11 @@ export function perTaskAdjective(req: Requirement, verdict: "better" | "worse"):
   return `${higher ? "higher" : "lower"} on ${req.id}`;
 }
 
+/** "a", "a and b", "a, b and c". */
+function listAnd(xs: readonly string[]): string {
+  return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]!}`;
+}
+
 function perTaskVerdicts(
   kit: ScoreKitInput,
   scores: ContenderScore[],
@@ -1180,27 +1197,40 @@ function perTaskVerdicts(
       ? `${T} task${T === 1 ? "" : "s"}: this doesn't generalise to other tasks; ≥${general} tasks needed for a general claim.`
       : `${T} tasks: per-task results speak for these tasks only; the general claim is the task-paired verdict.`;
 
+  // A requirement makes the headline when some task's own (Holm-corrected) verdict is better or
+  // worse and no task goes the other way. Each per-task verdict already controls the family-wise
+  // error, so a finding on 2 of 3 tasks is as well supported as one on all 3; the tasks without a
+  // detectable difference are named next to it, never dropped silently.
   const headline: PerTaskFinding[] = [];
   for (const s of scores) {
     if (s.contenderId === baseline) continue;
     kit.requirements.forEach((req, ri) => {
       const r = s.requirements[ri];
       if (!r?.scored || r.byWorkload.length === 0) return;
-      const vs = r.byWorkload.map((c) => c.taskComparison?.verdict ?? null);
-      const first = vs[0];
-      if ((first !== "better" && first !== "worse") || !vs.every((v) => v === first)) return;
-      const ids = r.byWorkload.map((c) => c.workloadId);
-      const adjective = perTaskAdjective(req, first);
+      const hit = (v: "better" | "worse") =>
+        r.byWorkload.filter((c) => c.taskComparison?.verdict === v).map((c) => c.workloadId);
+      const better = hit("better");
+      const worse = hit("worse");
+      if (better.length > 0 === worse.length > 0) return; // none, or mixed directions
+      const verdict = better.length > 0 ? "better" : "worse";
+      const ids = verdict === "better" ? better : worse;
+      const covered = r.byWorkload.map((c) => c.workloadId);
+      const inconclusive = covered.filter((w) => !ids.includes(w));
+      const adjective = perTaskAdjective(req, verdict);
       const where =
-        ids.length === T && T > 1
-          ? `on all ${T} tasks tested`
-          : `on the ${ids.length} task${ids.length === 1 ? "" : "s"} it covers (${ids.join(", ")})`;
+        inconclusive.length > 0
+          ? `on ${ids.length} of ${covered.length} ${covered.length === T ? "tasks tested" : "tasks it covers"} (${listAnd(ids)}; no detectable difference on ${listAnd(inconclusive)})`
+          : covered.length === T && T > 1
+            ? `on all ${T} tasks tested`
+            : `on the ${ids.length} task${ids.length === 1 ? "" : "s"} it covers (${ids.join(", ")})`;
       headline.push({
         contenderId: s.contenderId,
         requirementId: req.id,
-        verdict: first,
+        verdict,
         adjective,
         tasks: ids,
+        inconclusive,
+        where,
         statement: `${s.contenderId} was ${adjective} ${where}`,
       });
     });

@@ -396,11 +396,44 @@ function perTaskLines(ks: KitScore, reqId: string, nameOf: (id: string) => strin
   return out;
 }
 
-/** A per-task finding with the setup's display name ("Tandem was faster on all 3 tasks tested"). */
-function namedFinding(f: PerTaskFinding, nameOf: (id: string) => string): string {
-  return f.statement.startsWith(f.contenderId)
-    ? `${nameOf(f.contenderId)}${f.statement.slice(f.contenderId.length)}`
-    : f.statement;
+/**
+ * The per-task findings as headline sentences, with the setup's display name. Findings of one
+ * setup that hold on the same tasks share a sentence: "Tandem ×3 was slower and more expensive on
+ * all 3 tasks tested". Scores stored before `where` existed keep their own statements.
+ */
+export function perTaskHeadlineOf(
+  findings: readonly PerTaskFinding[],
+  nameOf: (id: string) => string,
+): string[] {
+  const groups = new Map<string, PerTaskFinding[]>();
+  const out: (string | PerTaskFinding[])[] = [];
+  for (const f of findings) {
+    if (typeof f.where !== "string") {
+      out.push(
+        f.statement.startsWith(f.contenderId)
+          ? `${nameOf(f.contenderId)}${f.statement.slice(f.contenderId.length)}`
+          : f.statement,
+      );
+      continue;
+    }
+    const key = `${f.contenderId}\u0000${f.where}`;
+    const g = groups.get(key);
+    if (g) g.push(f);
+    else {
+      const fresh = [f];
+      groups.set(key, fresh);
+      out.push(fresh);
+    }
+  }
+  return out.map((x) => {
+    if (typeof x === "string") return x;
+    const adjectives = x.map((f) => f.adjective);
+    const joined =
+      adjectives.length === 1
+        ? adjectives[0]!
+        : `${adjectives.slice(0, -1).join(", ")} and ${adjectives[adjectives.length - 1]!}`;
+    return `${nameOf(x[0]!.contenderId)} was ${joined} ${x[0]!.where}`;
+  });
 }
 
 function verdictIds(c: ContenderScore, verdict: "better" | "worse"): string[] {
@@ -475,7 +508,7 @@ export function buildSummary(
   const nameOf = (id: string) => kit.contenders.find((k) => k.id === id)?.name ?? id;
   // E18: per-task results (agent and harness kits), scoped to the tasks tested.
   const perTask = decided ? (stats.perTask ?? null) : null;
-  const perTaskHeadline = perTask ? perTask.headline.map((f) => namedFinding(f, nameOf)) : [];
+  const perTaskHeadline = perTask ? perTaskHeadlineOf(perTask.headline, nameOf) : [];
   const need = minRepeats(kind);
   const contenderIds = ks.contenders.map((c) => c.contenderId);
 
@@ -495,7 +528,8 @@ export function buildSummary(
   const generalSentence = headline
     ? `Result on ${stats!.primary} (the primary requirement): ${headline}. (${contenderIds.length} setups; ${score.trials.scored} measured trials; Holm-corrected across ${stats!.family} comparisons.) No setup is ranked by a composite score.`
     : `Result: ${head} per setup (${contenderIds.length} setups; ${score.trials.scored} measured trials; the plan needs at least ${need} repeats per setup). No setup is ranked and no composite score is shown.`;
-  // The per-task finding leads when every task agrees; the scope line is always there.
+  // The per-task findings lead (every task agreeing, or some with the rest named as no detectable
+  // difference); the scope line is always there.
   const sentence = perTask
     ? [
         perTaskHeadline.length ? `On the tasks tested: ${perTaskHeadline.join("; ")}.` : null,

@@ -92,7 +92,7 @@ describe("head-to-head per-task results in the report (E18)", () => {
   it("Tandem 2.5× faster and cheaper: the headline says so per task, with the scope line", async () => {
     const { md, report } = await summaryE18pt(11, 0.4);
     expect(report.answer).toMatch(
-      /^On the tasks tested: Tandem ×3 was faster on all 3 tasks tested; Tandem ×3 was cheaper on all 3 tasks tested\. Result on tests-pass/,
+      /^On the tasks tested: Tandem ×3 was faster and cheaper on all 3 tasks tested\. Result on tests-pass/,
     );
     expect(report.answer).toContain(SCOPE_E18PT);
     // The general claim stays task-paired and says why it can't conclude.
