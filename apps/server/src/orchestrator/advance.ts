@@ -926,17 +926,18 @@ class RunAdvance {
     if (!kit) return this.hold(run, "needs_human", "running needs a valid kit");
     let all = await this.store.trials(run.id);
     if (all.length < this.plan(run, kit.spec).length) {
-      // Before any contender trial exists: the kit must still be the one frozen at Go.
+      // Before any contender trial exists: freeze the kit (auto-go froze it at Go; a Go through
+      // the API is frozen here), and refuse a kit that changed since it was frozen.
+      const now = await preregistrationOf(kit.row, kit.spec);
       const frozen = PreregSchema.safeParse(this.outputs(run).prereg);
-      if (frozen.success) {
-        const changed = preregMismatch(frozen.data, await preregistrationOf(kit.row, kit.spec));
-        if (changed) {
-          return this.hold(
-            run,
-            "needs_human",
-            `the kit changed after it was preregistered at Go (${changed}): prove it again before Go`,
-          );
-        }
+      if (!frozen.success) return this.save(run, { outputs: { prereg: now } });
+      const changed = preregMismatch(frozen.data, now);
+      if (changed) {
+        return this.hold(
+          run,
+          "needs_human",
+          `the kit changed after it was preregistered at Go (${changed}): prove it again before Go`,
+        );
       }
       const created = await this.ensureTrials(run, kit);
       if (created === null) return CONTINUE; // the run moved: re-read

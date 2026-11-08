@@ -173,7 +173,7 @@ export function naiveKitDesigner(opts: KitDesignerOptions): AgentStagePort["desi
     if (u.driver_type !== "cli") {
       const why =
         u.driver_type === "coding-agent" || u.driver_type === "harness"
-          ? `automatic kits for ${u.driver_type} repos need tasks mined from the repo's history (TDM-186), which is not built in yet`
+          ? `automatic kits for ${u.driver_type} repos are not built yet: they need tasks mined from the repo's history (the TDM-186 miner) turned into issue text, a hidden-tests gate and pinned Claude Code contenders (TDM-60 follow-up)`
           : `driver ${u.driver_type ?? "unknown"} is not supported yet`;
       await say(ctx, why);
       return stageHold(why);

@@ -883,6 +883,54 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     await expectDeliveredOnce(id, r);
   }, 60_000);
 
+  it("TDM-60 prereg: the kit is frozen before the first trial; a kit changed since refuses to start", async () => {
+    const r = rig();
+    const { w } = r.worker();
+    // 1. Go through the API: frozen before the first trial, matching the kit row.
+    const id = await createRun(r.queue, { auto_go: false });
+    await drainTdm54(w, r.queue);
+    expect((await runRow(id)).state).toBe("awaiting_go");
+    let before = api.jobs.jobs.length;
+    expect(await runsAppGo(id)).toBe(200);
+    forwardApiJobs(r.queue, before);
+    await drainTdm54(w, r.queue);
+    const done = await runRow(id);
+    const [kitRow] = await h.db.select().from(kits).where(eq(kits.id, done.kitId!));
+    const prereg = (done.stageOutputs as { prereg?: Record<string, unknown> }).prereg;
+    expect(prereg).toMatchObject({ kit_id: kitRow!.id, kit_hash: kitRow!.hash, repeats: 2 });
+    // 2. A preregistration that no longer matches the kit (here: other repeats) holds the run.
+    const id2 = await createRun(r.queue, { auto_go: false });
+    await drainTdm54(w, r.queue);
+    const held = await runRow(id2);
+    const [k2] = await h.db.select().from(kits).where(eq(kits.id, held.kitId!));
+    await h.db
+      .update(runs)
+      .set({
+        stageOutputs: {
+          ...(held.stageOutputs as object),
+          prereg: {
+            kit_id: k2!.id,
+            kit_version: k2!.version,
+            kit_hash: k2!.hash,
+            files_sha256: null,
+            weights: (k2!.spec as { scoring: { weights: Record<string, number> } }).scoring.weights,
+            primary: null,
+            repeats: 99,
+            frozen_at: new Date().toISOString(),
+          },
+        },
+      })
+      .where(eq(runs.id, id2));
+    before = api.jobs.jobs.length;
+    expect(await runsAppGo(id2)).toBe(200);
+    forwardApiJobs(r.queue, before);
+    await drainTdm54(w, r.queue);
+    const after = await runRow(id2);
+    expect(after.state).toBe("needs_human");
+    expect(after.pausedReason).toMatch(/changed after it was preregistered at Go \(.*repeats\)/);
+    expect(await h.db.select().from(trials).where(eq(trials.runId, id2))).toEqual([]);
+  }, 60_000);
+
   async function runsAppGo(id: string): Promise<number> {
     const open = runsAppTdm67(h.url, { billingGate: async () => ({ allowed: true }) });
     try {
