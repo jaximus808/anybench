@@ -59,4 +59,23 @@ describe("account manager role (TDM-167)", () => {
     expect(err).toBeInstanceOf(ReplyClassifierError);
     expect((err as ReplyClassifierError).costMicroUsd).toBe(900n);
   });
+
+  it("an agent setup failure costs nothing and is retried on the next reply", async () => {
+    const naive = new FakeNaive();
+    let fail = true;
+    const real = naive.agents.findByName.bind(naive.agents);
+    naive.agents.findByName = async (name: string) => {
+      if (fail) throw new Error("naive unreachable");
+      return real(name);
+    };
+    naive.script(ACCOUNT_MANAGER_ROLE, {
+      output: { category: "unclear", reason: "x" },
+      costMicroUsd: 500n,
+    });
+    const c = createNaiveReplyClassifier({ naive, budgetMicroUsd: 20_000n });
+    const err = await c.classify(reply).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "agent_setup_failed", costMicroUsd: 0n });
+    fail = false;
+    expect((await c.classify(reply)).category).toBe("unclear");
+  });
 });

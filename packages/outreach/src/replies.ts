@@ -152,7 +152,7 @@ const NOT_NOW = [
   /\bnot (?:a )?(?:priority|good fit|fit)\b/i,
   /\bpass(?:ing)? (?:for now|on this)\b/i,
   /\btoo busy\b/i,
-  /\bwe(?:'re| are) good\b/i,
+  /\bwe(?:'re| are) good(?:,|\s+for now\b|\s+thanks?\b)/i,
 ];
 const INTERESTED = [
   /\b(?:i'?m|i am|we'?re|we are|very|definitely|sounds|would be|be) interested\b/i,
@@ -162,6 +162,7 @@ const INTERESTED = [
   /\b(?:sounds|looks) (?:good|great|interesting|cool|awesome)\b/i,
   /\blet'?s do (?:it|this)\b/i,
   /\bgo (?:ahead|for it)\b/i,
+  /^\W*(?:do it|run it|try it|ship it)\b/i,
   /\b(?:please )?(?:run|try) it\b/i,
   /\bhappy to (?:try|chat|talk|see|hop|jump|take a look)\b/i,
   /\bwould love (?:to|that|a|the)\b/i,
@@ -169,7 +170,7 @@ const INTERESTED = [
   /\b(?:let'?s|can we|could we) (?:chat|talk|set up|schedule|hop on|meet)\b/i,
   /\bbook a (?:call|time|meeting)\b/i,
 ];
-const QUESTION = [/\?/, /^\s*(?:how|what|why|who|when|where|which|can|could|is|are|do|does)\b/im];
+const QUESTION = [/\?/, /^\s*(?:how|what|why|who|when|where|which)\b/im];
 
 const firstMatch = (res: RegExp[], s: string) => res.find((re) => re.test(s));
 

@@ -154,7 +154,14 @@ export function createNaiveReplyClassifier(o: {
     maxCostMicroUsd: budget,
     async classify(reply) {
       ensured ??= ensureAgent(o.naive, spec);
-      const agent = await ensured;
+      let agent: Awaited<ReturnType<typeof ensureAgent>>;
+      try {
+        agent = await ensured;
+      } catch (err) {
+        ensured = undefined; // retry on the next reply
+        // No session exists yet, so nothing was spent.
+        throw new ReplyClassifierError("agent_setup_failed", (err as Error).message, 0n);
+      }
       const input = {
         from: reply.from,
         subject: reply.subject ?? "",
