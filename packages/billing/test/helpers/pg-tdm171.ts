@@ -61,18 +61,33 @@ export async function setComputerTdm171(
   }
 }
 
+/** seedUserTdm87, with the run moved to `delivered` (or `runState`). */
+export async function seedDeliveredTdm171(
+  pool: pg.Pool,
+  trials: number,
+  options: SeedOptionsTdm87 & { runState?: string } = {},
+): Promise<FixtureUserTdm87> {
+  const u = await seedUserTdm87(pool, trials, options);
+  await setRunStateTdm171(pool, u.runId, options.runState ?? "delivered");
+  return u;
+}
+
 export interface BilledFixtureTdm171 extends FixtureUserTdm87 {
   /** computerIds[i] is trial i's destroyed computer. */
   computerIds: string[];
 }
 
-/** A user with one run and `trials` trials, each with its own destroyed computer costing `cost`. */
+/**
+ * A user with one run and `trials` trials, each with its own destroyed computer costing `cost`.
+ * The run is `delivered` unless `runState` says otherwise (compute bills only terminal runs).
+ */
 export async function seedWithComputersTdm171(
   pool: pg.Pool,
   trials: number,
-  options: SeedOptionsTdm87 & { cost?: bigint | readonly bigint[] } = {},
+  options: SeedOptionsTdm87 & { cost?: bigint | readonly bigint[]; runState?: string } = {},
 ): Promise<BilledFixtureTdm171> {
   const u = await seedUserTdm87(pool, trials, options);
+  await setRunStateTdm171(pool, u.runId, options.runState ?? "delivered");
   const computerIds: string[] = [];
   for (let i = 0; i < u.trialIds.length; i++) {
     const cost =

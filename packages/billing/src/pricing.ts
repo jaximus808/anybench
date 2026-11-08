@@ -1,16 +1,20 @@
 // Cost-plus pricing (TDM-171, plan.md section 8, founder decision 2026-11-07).
 //
-// What a user pays for one benchmark run:
-//   - one `run_fee` of RUN_FEE_MICRO_USD, when the run was delivered or failed because of the
-//     subject. A run that ended failed because of infrastructure or our own pipeline pays nothing;
-//   - one `compute` charge per eval computer: what Naïve charged us for it (the computers registry,
-//     TDM-31: blocks billed x block price, `computers.cost_micro_usd`) plus COMPUTE_MARKUP_BPS,
-//     rounded down. A computer that only served failed_infra attempts is never billed.
+// What a user pays for one benchmark run, decided once the run is terminal:
+//   - delivered, or failed because of the subject: one `run_fee` of RUN_FEE_MICRO_USD plus compute;
+//   - cancelled by the user: compute actually consumed, no run fee (otherwise start-then-cancel
+//     would be free compute);
+//   - failed because of infrastructure or our own pipeline: nothing at all;
+//   - not terminal yet (live or on hold): nothing yet (`run_not_final`).
+// Compute is one `compute` charge per eval computer: what Naïve charged us for it (the computers
+// registry, TDM-31: blocks billed x block price, `computers.cost_micro_usd`) plus
+// COMPUTE_MARKUP_BPS, rounded down. Inside a billable run, a computer that only served
+// failed_infra attempts (or was an earlier attempt of a retried trial) is never billed.
 //
 // Everything here is pure and bigint: the ledger (ledger.ts) feeds it the rows it read under lock,
 // so the decisions are made from what the DATABASE says, never from what a caller claims.
 import {
-  isBillableTrialState,
+  isTerminalRunState,
   NonNegativeMicroUsdSchema,
   withMarkupBps,
   type MicroUsd,
@@ -80,6 +84,13 @@ export type RunFeeDecision =
   | { billable: false; reason: "run_not_final" | "cancelled" | "failed_not_subject" };
 
 /**
+ * Who cancelled a run. TODO(9.3 auto-actions, kill switch, admin): runs do not record a cancel
+ * reason yet, so every cancelled run is treated as user-cancelled. Once 9.3 stores one, a cancel
+ * caused by us (kill switch, auto-action, admin) must map to `ours` and bill nothing.
+ */
+export type CancelCause = "user" | "ours";
+
+/**
  * Whether a run owes its run fee, from the run's stored state and its trials' stored states.
  *
  * - `delivered`: yes.
@@ -108,6 +119,53 @@ export function runFeeDecision(
 
 // ---- Compute ------------------------------------------------------------------------------------
 
+export type ComputeRunDecision =
+  | {
+      billable: true;
+      basis: "delivered" | "failed_subject" | "user_cancelled";
+      /** Trial states whose computers are billed in this run. */
+      trialStates: readonly TrialState[];
+    }
+  | { billable: false; reason: "run_not_final" | "not_billable"; detail: string };
+
+const SUBJECT_STATES: readonly TrialState[] = ["done", "failed_subject"];
+/** A user cancel bills what ran: also the trials cut off mid-run by the cancel. */
+const USER_CANCELLED_STATES: readonly TrialState[] = ["done", "failed_subject", "cancelled"];
+
+/**
+ * Whether a run's compute is billable at all, from its stored state and its trials' states:
+ * delivered or subject-failed (the run fee rule, runFeeDecision), or cancelled by the user.
+ * A run that failed in infra or our pipeline, or that we cancelled, bills no compute; a run that is
+ * not terminal bills nothing yet.
+ */
+export function computeRunDecision(
+  runState: RunState,
+  trialStates: readonly TrialState[],
+  cancelCause: CancelCause = "user",
+): ComputeRunDecision {
+  if (runState === "cancelled") {
+    return cancelCause === "user"
+      ? { billable: true, basis: "user_cancelled", trialStates: USER_CANCELLED_STATES }
+      : { billable: false, reason: "not_billable", detail: "run was cancelled by us" };
+  }
+  if (!isTerminalRunState(runState)) {
+    return {
+      billable: false,
+      reason: "run_not_final",
+      detail: `run is ${runState}, not terminal`,
+    };
+  }
+  const fee = runFeeDecision(runState, trialStates);
+  if (!fee.billable) {
+    return {
+      billable: false,
+      reason: "not_billable",
+      detail: `run is ${runState} (${fee.reason}): failed in infra or our pipeline`,
+    };
+  }
+  return { billable: true, basis: fee.outcome, trialStates: SUBJECT_STATES };
+}
+
 /** The `computers` columns a billing decision needs. */
 export interface ComputerForBilling {
   id: string;
@@ -134,7 +192,7 @@ export type ComputeDecision =
     }
   | {
       billable: false;
-      reason: "computer_not_final" | "zero_cost" | "not_billable";
+      reason: "run_not_final" | "computer_not_final" | "zero_cost" | "not_billable";
       detail: string;
     };
 
@@ -154,21 +212,35 @@ export function servedTrials(
 }
 
 /**
- * Whether one eval computer is billed, from its stored row and its run's stored trials.
+ * Whether one eval computer is billed, from its stored row, its run's stored state and the run's
+ * stored trials.
  *
+ * - Only inside a compute-billable run (computeRunDecision): delivered, subject-failed or
+ *   user-cancelled. A non-terminal run gives `run_not_final` (bill it later); a run that failed in
+ *   infra or our pipeline, or that we cancelled, is never billed.
  * - Only a `destroyed` computer: its blocks and cost are final.
- * - A computer that served trials is billed iff at least one of them ended `done` or
- *   `failed_subject` (both terminal, so the answer cannot change later). One that served only
- *   failed_infra (or cancelled) trials is never billed, and neither is an earlier attempt of a
- *   trial that was retried onto another computer.
+ * - A computer that served trials is billed iff at least one of them ended in a state the run
+ *   bills (done or failed_subject; plus cancelled in a user-cancelled run). One that served only
+ *   failed_infra trials is never billed, and neither is an earlier attempt of a trial that was
+ *   retried onto another computer.
  * - A run-level computer (no creating trial, no trial pointing at it, e.g. scoring) is folded into
- *   the run's trials: billed iff some trial of the run is billable.
+ *   the run's trials: billed iff some trial of the run is billed.
  * - A zero-cost computer (docker-local) makes no entry.
+ *
+ * Every input is final once the run is terminal, so the answer cannot change afterwards.
  */
 export function computeDecision(
   computer: ComputerForBilling,
+  runState: RunState,
   runTrials: readonly TrialForBilling[],
+  cancelCause: CancelCause = "user",
 ): ComputeDecision {
+  const run = computeRunDecision(
+    runState,
+    runTrials.map((t) => t.state),
+    cancelCause,
+  );
+  if (!run.billable) return { billable: false, reason: run.reason, detail: run.detail };
   if (computer.status !== "destroyed") {
     return {
       billable: false,
@@ -176,12 +248,13 @@ export function computeDecision(
       detail: `computer ${computer.id} is ${computer.status}, not destroyed`,
     };
   }
+  const bills = (t: TrialForBilling) => run.trialStates.includes(t.state);
   const served = servedTrials(computer, runTrials);
   let billed: TrialForBilling[];
   if (served.length > 0) {
-    billed = served.filter((t) => isBillableTrialState(t.state));
+    billed = served.filter(bills);
   } else if (computer.trialId === null) {
-    billed = runTrials.filter((t) => isBillableTrialState(t.state));
+    billed = runTrials.filter(bills);
   } else {
     return {
       billable: false,
@@ -193,7 +266,7 @@ export function computeDecision(
     return {
       billable: false,
       reason: "not_billable",
-      detail: `computer ${computer.id} served no done or failed_subject trial`,
+      detail: `computer ${computer.id} served no trial in a billed state (${run.trialStates.join(", ")})`,
     };
   }
   if (computer.costMicroUsd === 0n) {

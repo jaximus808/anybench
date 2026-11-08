@@ -2,7 +2,6 @@
 import {
   RUN_STATES,
   TRIAL_STATES,
-  isBillableTrialState,
   withMarkupBps,
   type KitSpecInput,
   type TrialState,
@@ -71,9 +70,10 @@ describe("computeDecision", () => {
     ...over,
   });
 
-  it("property: billed iff destroyed, cost > 0 and a served trial is done/failed_subject", () => {
+  it("property: billed iff the run bills compute, the computer is destroyed, cost > 0 and it served a billed trial", () => {
     fc.assert(
       fc.property(
+        fc.constantFrom(...RUN_STATES),
         fc.array(
           fc.record({
             state: fc.constantFrom<TrialState>(...TRIAL_STATES),
@@ -84,28 +84,68 @@ describe("computeDecision", () => {
         fc.boolean(),
         fc.constantFrom("destroyed", "running", "leaked"),
         fc.bigInt({ min: 0n, max: 10n }),
-        (trials, tagged, status, cost) => {
+        (runState, trials, tagged, status, cost) => {
           const runTrials: TrialForBilling[] = trials.map((t, i) => ({
             id: `t${i + 1}`,
             state: t.state,
             computerId: t.on,
           }));
           const c = computer({ status, costMicroUsd: cost, trialId: tagged ? "t1" : null });
-          const d = computeDecision(c, runTrials);
+          const d = computeDecision(c, runState, runTrials);
+          const states = runTrials.map((t) => t.state);
+          // Independent model of the run rule: delivered; failed with only failed_subject and
+          // cancelled trials (at least one failed_subject); or (user-)cancelled.
+          const subjectFailed =
+            runState === "failed" &&
+            states.includes("failed_subject") &&
+            states.every((x) => x === "failed_subject" || x === "cancelled");
+          const runBills = runState === "delivered" || subjectFailed || runState === "cancelled";
+          const billedStates: TrialState[] =
+            runState === "cancelled"
+              ? ["done", "failed_subject", "cancelled"]
+              : ["done", "failed_subject"];
           const served = runTrials.filter(
             (t) => t.computerId === "c1" || (tagged && t.id === "t1" && t.computerId === null),
           );
           const pool = served.length > 0 || tagged ? served : runTrials;
           const expected =
-            status === "destroyed" && cost > 0n && pool.some((t) => isBillableTrialState(t.state));
+            runBills &&
+            status === "destroyed" &&
+            cost > 0n &&
+            pool.some((t) => billedStates.includes(t.state));
           expect(d.billable).toBe(expected);
+          // Never on a live or held run, never on a run that failed with an infra or done trial.
+          if (!["delivered", "failed", "cancelled"].includes(runState)) {
+            expect(d).toMatchObject({ billable: false, reason: "run_not_final" });
+          }
+          if (
+            runState === "failed" &&
+            (states.includes("failed_infra") || states.includes("done"))
+          ) {
+            expect(d.billable).toBe(false);
+          }
           // A computer that served only failed_infra trials is never billed.
           if (served.length > 0 && served.every((t) => t.state === "failed_infra")) {
             expect(d.billable).toBe(false);
           }
         },
       ),
+      { numRuns: 500 },
     );
+  });
+
+  it("a cancel caused by us bills nothing", () => {
+    const d = computeDecision(
+      computer(),
+      "cancelled",
+      [{ id: "t1", state: "done", computerId: "c1" }],
+      "ours",
+    );
+    expect(d).toMatchObject({ billable: false, reason: "not_billable" });
+    expect(
+      computeDecision(computer(), "cancelled", [{ id: "t1", state: "cancelled", computerId: "c1" }])
+        .billable,
+    ).toBe(true);
   });
 });
 

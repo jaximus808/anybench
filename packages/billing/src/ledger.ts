@@ -1,11 +1,21 @@
 // Usage ledger in integer micro-USD (TDM-87, plan.md section 8; cost-plus entries TDM-171).
 //
-// What it bills (cost-plus, pricing.ts): one `run_fee` per run that was delivered or failed because
-// of the subject (`run:<id>:fee`), and one `compute` entry per eval computer at the registry's cost
-// plus COMPUTE_MARKUP_BPS (`computer:<id>:compute`). Both decisions are made from the run, trial
-// and computer rows read in the same transaction (FOR SHARE), never from what the caller says:
-// a run that failed in our pipeline pays no fee, and a computer that only served failed_infra
-// attempts is never billed.
+// What it bills (cost-plus, pricing.ts), once the run is terminal:
+//   - delivered or subject-failed run: one `run_fee` (`run:<id>:fee`) plus one `compute` entry
+//     per eval computer at the registry's cost + COMPUTE_MARKUP_BPS (`computer:<id>:compute`);
+//   - user-cancelled run: the compute it consumed, no run fee;
+//   - run that failed in infra or our pipeline (or that we cancelled): nothing;
+//   - run not terminal yet: nothing yet (skipped with `run_not_final`).
+// Inside a billable run, a computer that only served failed_infra attempts is never billed. Every
+// decision is made from the run, trial and computer rows read in the same transaction
+// (FOR SHARE), never from what the caller says.
+//
+// Caller contract (the worker, 5.x / 10.x):
+//   1. When a run reaches a terminal state, call `recordRunCharges` (run fee, then every computer
+//      of the run). Computers still being destroyed skip with `computer_not_final`.
+//   2. When the registry destroys a computer whose run is already terminal (a late destroy, or the
+//      reaper), call `recordComputerUsage` for it from that destroy hook.
+// Every call is idempotent, so calling both, or retrying either, never bills twice.
 //
 // The ledger owns usage_entries, credit_grants, cost_entries and the cached balances on
 // billing_accounts. Every mutation runs in ONE transaction that first locks the account row with
@@ -50,7 +60,13 @@ import {
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { z } from "zod";
-import { BpsSchema, computeChargeMicroUsd, computeDecision, runFeeDecision } from "./pricing.js";
+import {
+  BpsSchema,
+  computeChargeMicroUsd,
+  computeDecision,
+  CostPlusPricingSchema,
+  runFeeDecision,
+} from "./pricing.js";
 import {
   billingAccounts,
   computers,
@@ -185,12 +201,32 @@ const MarkReportedInputSchema = z
 export type UsageEntry = typeof usageEntries.$inferSelect;
 export type CreditGrant = typeof creditGrants.$inferSelect;
 
-export type SkipReason = "not_billable" | "computer_not_final" | "zero_cost";
+/**
+ * `run_not_final`: the run is live or on hold, bill it once terminal. `computer_not_final`: the
+ * registry has not destroyed it yet, bill it from the destroy hook. `not_billable` and
+ * `zero_cost` are final.
+ */
+export type SkipReason = "run_not_final" | "not_billable" | "computer_not_final" | "zero_cost";
 
 export type RecordUsageResult =
   | { status: "recorded"; entry: UsageEntry }
   | { status: "duplicate"; entry: UsageEntry }
   | { status: "skipped"; reason: SkipReason; detail?: string };
+
+export const RecordRunChargesInputSchema = z.object({
+  runId: RunIdSchema,
+  userId: UserIdSchema,
+  /** RUN_FEE_MICRO_USD and COMPUTE_MARKUP_BPS from config. */
+  pricing: CostPlusPricingSchema,
+  comped: CompAssertionSchema,
+});
+export type RecordRunChargesInput = z.input<typeof RecordRunChargesInputSchema>;
+
+export interface RecordRunChargesResult {
+  runFee: RecordUsageResult;
+  /** One per computer of the run, oldest first. */
+  computers: { computerId: string; result: RecordUsageResult }[];
+}
 
 export type ApplyGrantResult =
   { status: "applied"; grant: CreditGrant } | { status: "duplicate"; grant: CreditGrant };
@@ -243,15 +279,24 @@ export function applyNetDelta(balance: Balance, delta: MicroUsd): Balance {
 export interface Ledger {
   /**
    * The run fee, once per run (`run:<id>:fee`), if the stored run and trial states say it is owed
-   * (pricing.ts runFeeDecision). Call it when the run reaches a terminal state; earlier it skips.
+   * (pricing.ts runFeeDecision: delivered or subject-failed). Call it when the run reaches a
+   * terminal state; earlier it skips with `run_not_final`.
    */
   recordRunFee(input: RecordRunFeeInput): Promise<RecordUsageResult>;
   /**
    * One computer's compute charge (`computer:<id>:compute`): its registry cost plus the markup, if
-   * the stored rows say it is billable (pricing.ts computeDecision). Call it after the registry
-   * destroys the computer; before that it skips with `computer_not_final`.
+   * the stored rows say it is billable (pricing.ts computeDecision): the run is terminal and
+   * compute-billable (delivered, subject-failed or user-cancelled), the computer is destroyed, and
+   * it served a trial the run bills. Skips with `run_not_final` while the run is live and with
+   * `computer_not_final` until the registry destroys it.
    */
   recordComputerUsage(input: RecordComputerUsageInput): Promise<RecordUsageResult>;
+  /**
+   * The run-terminal hook: recordRunFee, then recordComputerUsage for every computer of the run
+   * (each in its own transaction, all idempotent). Computers destroyed later are billed from their
+   * destroy hook with recordComputerUsage.
+   */
+  recordRunCharges(input: RecordRunChargesInput): Promise<RecordRunChargesResult>;
   recordManagedTokens(input: RecordManagedTokensInput): Promise<RecordUsageResult>;
   applyGrant(input: ApplyGrantInput): Promise<ApplyGrantResult>;
   getAccountSummary(userId: string): Promise<AccountSummary>;
@@ -421,7 +466,7 @@ async function lockRunTrials(tx: Tx, runId: string, userId: string) {
 
 /** Build the ledger over an injected Drizzle database or transaction. */
 export function createLedger(db: LedgerDb): Ledger {
-  return {
+  const ledger: Ledger = {
     async recordRunFee(raw) {
       const input = parse(RecordRunFeeInputSchema, raw);
       return db.transaction(async (tx) => {
@@ -434,7 +479,7 @@ export function createLedger(db: LedgerDb): Ledger {
         if (!decision.billable) {
           return {
             status: "skipped",
-            reason: "not_billable",
+            reason: decision.reason === "run_not_final" ? "run_not_final" : "not_billable",
             detail: `run ${input.runId} is ${run.state}: ${decision.reason}`,
           };
         }
@@ -484,7 +529,9 @@ export function createLedger(db: LedgerDb): Ledger {
           );
         }
         const runTrials = await lockRunTrials(tx, runId, input.userId);
-        const decision = computeDecision(computer, runTrials);
+        // TODO(9.3 auto-actions): pass the stored cancel cause once runs record one; until then a
+        // cancelled run is treated as user-cancelled (compute billed, no run fee).
+        const decision = computeDecision(computer, run.state, runTrials);
         if (!decision.billable) {
           return { status: "skipped", reason: decision.reason, detail: decision.detail };
         }
@@ -498,6 +545,35 @@ export function createLedger(db: LedgerDb): Ledger {
           comped: run.comp,
         });
       });
+    },
+
+    async recordRunCharges(raw) {
+      const input = parse(RecordRunChargesInputSchema, raw);
+      const runFee = await ledger.recordRunFee({
+        runId: input.runId,
+        userId: input.userId,
+        amount: input.pricing.runFeeMicroUsd,
+        comped: input.comped,
+      });
+      const rows = await db
+        .select({ id: computers.id })
+        .from(computers)
+        .where(eq(computers.runId, input.runId))
+        .orderBy(asc(computers.id));
+      const results: RecordRunChargesResult["computers"] = [];
+      for (const { id } of rows) {
+        results.push({
+          computerId: id,
+          result: await ledger.recordComputerUsage({
+            computerId: id,
+            userId: input.userId,
+            runId: input.runId,
+            markupBps: input.pricing.computeMarkupBps,
+            comped: input.comped,
+          }),
+        });
+      }
+      return { runFee, computers: results };
     },
 
     async recordManagedTokens(raw) {
@@ -737,4 +813,5 @@ export function createLedger(db: LedgerDb): Ledger {
       };
     },
   };
+  return ledger;
 }

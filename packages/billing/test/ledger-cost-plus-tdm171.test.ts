@@ -23,6 +23,7 @@ import {
   pointTrialTdm171,
   seedWithComputersTdm171,
   setComputerTdm171,
+  seedDeliveredTdm171,
   setRunStateTdm171,
 } from "./helpers/pg-tdm171.js";
 
@@ -109,7 +110,8 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
         const u = await seedUserTdm87(h.pool, c.states.length, { states: c.states });
         await setRunStateTdm171(h.pool, u.runId, c.run);
         const r = await ledger.recordRunFee({ runId: u.runId, userId: u.userId, amount: RUN_FEE });
-        expect(r, JSON.stringify(c)).toMatchObject({ status: "skipped", reason: "not_billable" });
+        const reason = ["failed", "cancelled"].includes(c.run) ? "not_billable" : "run_not_final";
+        expect(r, JSON.stringify(c)).toMatchObject({ status: "skipped", reason });
         expect(await entries(u.userId)).toEqual([]);
       }
     });
@@ -118,7 +120,10 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
       const u = await seedUserTdm87(h.pool, 1);
       await setRunStateTdm171(h.pool, u.runId, "running");
       const input = { runId: u.runId, userId: u.userId, amount: RUN_FEE };
-      expect((await ledger.recordRunFee(input)).status).toBe("skipped");
+      expect(await ledger.recordRunFee(input)).toMatchObject({
+        status: "skipped",
+        reason: "run_not_final",
+      });
       await setRunStateTdm171(h.pool, u.runId, "delivered");
       expect((await ledger.recordRunFee(input)).status).toBe("recorded");
     });
@@ -180,7 +185,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
 
     it("a retried trial: the failed_infra attempt's computer is not billed, the final one is", async () => {
-      const u = await seedUserTdm87(h.pool, 1);
+      const u = await seedDeliveredTdm171(h.pool, 1);
       const t = u.trialIds[0]!;
       const first = await addComputerTdm171(h.pool, { runId: u.runId, trialId: t });
       const second = await addComputerTdm171(h.pool, { runId: u.runId, trialId: t });
@@ -201,7 +206,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
 
     it("the creating trial counts while it has no computer_id yet (the reaper's rule)", async () => {
-      const u = await seedUserTdm87(h.pool, 1);
+      const u = await seedDeliveredTdm171(h.pool, 1);
       const c = await addComputerTdm171(h.pool, {
         runId: u.runId,
         trialId: u.trialIds[0]!,
@@ -212,7 +217,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
 
     it("packed: billed once if any trial on it is billable, never if all were failed_infra", async () => {
-      const u = await seedUserTdm87(h.pool, 3, {
+      const u = await seedDeliveredTdm171(h.pool, 3, {
         states: ["failed_infra", "done", "failed_infra"],
       });
       const packed = await addComputerTdm171(h.pool, { runId: u.runId, trialId: u.trialIds[0]! });
@@ -225,7 +230,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
       if (r.status !== "recorded") throw new Error(`expected recorded, got ${r.status}`);
       // The creating trial failed in infra, so the entry is not pinned on it.
       expect(r.entry.trialId).toBeNull();
-      const v = await seedUserTdm87(h.pool, 2, { states: ["failed_infra", "failed_infra"] });
+      const v = await seedDeliveredTdm171(h.pool, 2, { states: ["failed_infra", "failed_infra"] });
       const allInfra = await addComputerTdm171(h.pool, { runId: v.runId, trialId: v.trialIds[0]! });
       await pointTrialTdm171(h.pool, v.trialIds[1]!, allInfra);
       expect(
@@ -234,7 +239,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
 
     it("a run-level (scoring) computer is folded into the run's trials", async () => {
-      const u = await seedUserTdm87(h.pool, 2, { states: ["failed_infra", "done"] });
+      const u = await seedDeliveredTdm171(h.pool, 2, { states: ["failed_infra", "done"] });
       const scoring = await addComputerTdm171(h.pool, { runId: u.runId, trialId: null });
       const r = await ledger.recordComputerUsage({
         computerId: scoring,
@@ -243,7 +248,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
       });
       if (r.status !== "recorded") throw new Error(`expected recorded, got ${r.status}`);
       expect(r.entry.trialId).toBeNull();
-      const v = await seedUserTdm87(h.pool, 1, { states: ["failed_infra"] });
+      const v = await seedDeliveredTdm171(h.pool, 1, { states: ["failed_infra"] });
       const orphan = await addComputerTdm171(h.pool, { runId: v.runId, trialId: null });
       expect(
         await ledger.recordComputerUsage({ computerId: orphan, userId: v.userId, markupBps: 0 }),
@@ -279,7 +284,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
 
     it("rejects an unknown computer", async () => {
-      const u = await seedUserTdm87(h.pool, 0);
+      const u = await seedDeliveredTdm171(h.pool, 0);
       expect(
         await codeOf(
           ledger.recordComputerUsage({
@@ -305,6 +310,109 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
     });
   });
 
+  describe("compute bills only runs that are terminal and compute-billable (review fix)", () => {
+    const pricing = { runFeeMicroUsd: RUN_FEE, computeMarkupBps: MARKUP };
+    const statuses = (r: Awaited<ReturnType<Ledger["recordRunCharges"]>>) => ({
+      fee: r.runFee.status === "skipped" ? r.runFee.reason : r.runFee.status,
+      computers: r.computers.map((c) =>
+        c.result.status === "skipped" ? c.result.reason : c.result.status,
+      ),
+    });
+
+    it("a run that failed in our pipeline (done + failed_infra trials): no fee, no compute", async () => {
+      const u = await seedWithComputersTdm171(h.pool, 2, {
+        states: ["done", "failed_infra"],
+        runState: "failed",
+      });
+      const r = await ledger.recordRunCharges({ runId: u.runId, userId: u.userId, pricing });
+      expect(statuses(r)).toEqual({
+        fee: "not_billable",
+        computers: ["not_billable", "not_billable"],
+      });
+      expect(await entries(u.userId)).toEqual([]);
+    });
+
+    it("a run that failed because of the subject: fee plus compute", async () => {
+      const u = await seedWithComputersTdm171(h.pool, 2, {
+        states: ["failed_subject", "failed_subject"],
+        cost: [10_000n, 20_001n],
+        runState: "failed",
+      });
+      const r = await ledger.recordRunCharges({ runId: u.runId, userId: u.userId, pricing });
+      expect(statuses(r)).toEqual({ fee: "recorded", computers: ["recorded", "recorded"] });
+      expect((await ledger.getAccountSummary(u.userId)).unbilled).toBe(
+        RUN_FEE + withMarkupBps(10_000n, MARKUP) + withMarkupBps(20_001n, MARKUP),
+      );
+      // The hook is idempotent: a second call bills nothing more.
+      const again = await ledger.recordRunCharges({ runId: u.runId, userId: u.userId, pricing });
+      expect(statuses(again)).toEqual({ fee: "duplicate", computers: ["duplicate", "duplicate"] });
+    });
+
+    it("a live run with a destroyed done computer: run_not_final, then billed once delivered", async () => {
+      const u = await seedWithComputersTdm171(h.pool, 1, { runState: "running" });
+      const input = { computerId: u.computerIds[0]!, userId: u.userId, markupBps: MARKUP };
+      expect(await ledger.recordComputerUsage(input)).toMatchObject({
+        status: "skipped",
+        reason: "run_not_final",
+      });
+      for (const held of ["needs_human", "paused_budget", "scoring"]) {
+        await setRunStateTdm171(h.pool, u.runId, held);
+        expect((await ledger.recordComputerUsage(input)).status, held).toBe("skipped");
+      }
+      expect(await entries(u.userId)).toEqual([]);
+      await setRunStateTdm171(h.pool, u.runId, "delivered");
+      expect((await ledger.recordComputerUsage(input)).status).toBe("recorded");
+      expect((await ledger.recordComputerUsage(input)).status).toBe("duplicate");
+      expect((await entries(u.userId)).length).toBe(1);
+    });
+
+    it("a user-cancelled run: compute actually consumed (incl. trials cut off), no run fee", async () => {
+      const u = await seedWithComputersTdm171(h.pool, 3, {
+        states: ["done", "cancelled", "failed_infra"],
+        runState: "cancelled",
+      });
+      const r = await ledger.recordRunCharges({ runId: u.runId, userId: u.userId, pricing });
+      expect(statuses(r).fee).toBe("not_billable");
+      const byComputer = new Map(r.computers.map((c) => [c.computerId, c.result.status]));
+      expect(byComputer.get(u.computerIds[0]!)).toBe("recorded");
+      expect(byComputer.get(u.computerIds[1]!)).toBe("recorded");
+      expect(byComputer.get(u.computerIds[2]!)).toBe("skipped");
+      expect((await entries(u.userId)).map((e) => e.type)).toEqual(["compute", "compute"]);
+    });
+
+    it("a computer destroyed after the run ended is billed from its destroy hook", async () => {
+      const u = await seedWithComputersTdm171(h.pool, 2, { runState: "delivered" });
+      await setComputerTdm171(h.pool, u.computerIds[1]!, { status: "destroying" });
+      const r = await ledger.recordRunCharges({ runId: u.runId, userId: u.userId, pricing });
+      const byComputer = new Map(
+        r.computers.map((c) => [
+          c.computerId,
+          c.result.status === "skipped" ? c.result.reason : c.result.status,
+        ]),
+      );
+      expect(r.runFee.status).toBe("recorded");
+      expect(byComputer.get(u.computerIds[0]!)).toBe("recorded");
+      expect(byComputer.get(u.computerIds[1]!)).toBe("computer_not_final");
+      await setComputerTdm171(h.pool, u.computerIds[1]!, { status: "destroyed" });
+      const late = await ledger.recordComputerUsage({
+        computerId: u.computerIds[1]!,
+        userId: u.userId,
+        markupBps: MARKUP,
+      });
+      expect(late.status).toBe("recorded");
+      expect((await entries(u.userId)).length).toBe(3);
+    });
+
+    it("recordRunCharges rejects someone else's run", async () => {
+      const a = await seedUserTdm87(h.pool, 0);
+      const b = await seedWithComputersTdm171(h.pool, 1);
+      expect(
+        await codeOf(ledger.recordRunCharges({ runId: b.runId, userId: a.userId, pricing })),
+      ).toBe("run_mismatch");
+      expect(await entries(b.userId)).toEqual([]);
+    });
+  });
+
   // Concurrent writers: random runs (states, computers, retries) and a burst of duplicate calls,
   // all at once. Exactly one entry per key, balance == the model, decisions == the pure functions.
   it("property: idempotent and DB-decided under concurrent writers", async () => {
@@ -324,13 +432,22 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
         }),
         { minLength: 0, maxLength: 4 },
       ),
+      // Force a subject-failed shape sometimes (random states rarely produce one).
+      allSubject: fc.boolean(),
       scoring: fc.option(fc.bigInt({ min: 1n, max: 1_000_000n }), { nil: undefined }),
       comped: fc.boolean(),
       markupBps: fc.integer({ min: 0, max: 20_000 }),
       copies: fc.integer({ min: 1, max: 4 }),
     });
     await fc.assert(
-      fc.asyncProperty(scenario, async (s) => {
+      fc.asyncProperty(scenario, async (s0) => {
+        const s = s0.allSubject
+          ? { ...s0, trials: s0.trials.map((t) => ({ ...t, state: "failed_subject" as const })) }
+          : s0;
+        const billedStates: TrialState[] =
+          s.runState === "cancelled"
+            ? ["done", "failed_subject", "cancelled"]
+            : ["done", "failed_subject"];
         const u = await seedUserTdm87(h.pool, s.trials.length, {
           states: s.trials.map((t) => t.state),
           comped: s.comped,
@@ -356,7 +473,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
             cost: t.cost,
           });
           computerIds.push(current);
-          if (t.state !== "done" && t.state !== "failed_subject") neverBilled.add(current);
+          if (!billedStates.includes(t.state)) neverBilled.add(current);
         }
         if (s.scoring !== undefined) {
           computerIds.push(
@@ -392,6 +509,7 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
         for (const c of compRows) {
           const d = computeDecision(
             { id: c.id, trialId: c.trial_id, status: c.status, costMicroUsd: BigInt(c.cost) },
+            s.runState,
             runTrials,
           );
           if (d.billable) {
@@ -402,6 +520,16 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
         const calls: Promise<unknown>[] = [];
         for (let k = 0; k < s.copies; k++) {
           calls.push(ledger.recordRunFee({ runId: u.runId, userId: u.userId, amount: RUN_FEE }));
+          // The run-terminal hook races the individual calls.
+          calls.push(
+            ledger
+              .recordRunCharges({
+                runId: u.runId,
+                userId: u.userId,
+                pricing: { runFeeMicroUsd: RUN_FEE, computeMarkupBps: s.markupBps },
+              })
+              .then((r) => ({ status: "hook", hook: r })),
+          );
           for (const computerId of computerIds) {
             calls.push(
               ledger.recordComputerUsage({
@@ -412,8 +540,14 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
             );
           }
         }
-        const results = (await Promise.all(calls)) as { status: string }[];
-        const recorded = results.filter((r) => r.status === "recorded").length;
+        const results = (await Promise.all(calls)) as {
+          status: string;
+          hook?: Awaited<ReturnType<Ledger["recordRunCharges"]>>;
+        }[];
+        const flat = results.flatMap((r) =>
+          r.hook ? [r.hook.runFee, ...r.hook.computers.map((c) => c.result)] : [r],
+        );
+        const recorded = flat.filter((r) => r.status === "recorded").length;
         expect(recorded).toBe(expectKeys.size);
 
         const got = await entries(u.userId);
@@ -422,6 +556,19 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
         for (const e of got) expect(["run_fee", "compute"]).toContain(e.type);
         for (const id of neverBilled) {
           expect(got.map((e) => e.idempotency_key)).not.toContain(computeIdempotencyKey(id));
+        }
+        // Nothing at all on a live run, or on a run that failed with a done or failed_infra trial.
+        const states = s.trials.map((t) => t.state);
+        if (s.runState === "running") expect(got).toEqual([]);
+        if (
+          s.runState === "failed" &&
+          (states.includes("done") || states.includes("failed_infra"))
+        ) {
+          expect(got).toEqual([]);
+        }
+        // A cancelled run never pays the fee.
+        if (s.runState === "cancelled") {
+          expect(got.filter((e) => e.type === "run_fee")).toEqual([]);
         }
         // A run fee only for delivered, or failed with no failed_infra trial.
         if (got.some((e) => e.type === "run_fee")) {
