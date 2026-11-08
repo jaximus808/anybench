@@ -20,5 +20,6 @@ export const LEGAL_LINKS: readonly NavLink[] = [
 ];
 
 export const SIGN_UP_LINK: NavLink = { href: "/signup", label: "Sign up" };
+export const RUNS_LINK: NavLink = { href: "/runs", label: "My runs" };
 export const NEW_RUN_LINK: NavLink = { href: "/runs/new", label: "New run" };
 export const SETTINGS_LINK: NavLink = { href: "/settings", label: "Settings" };

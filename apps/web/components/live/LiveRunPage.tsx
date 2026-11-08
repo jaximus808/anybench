@@ -26,6 +26,7 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
+import { CancelRun } from "./CancelRun";
 import { GoBar } from "./GoBar";
 import { ms, pctOf, span, usd } from "./format";
 import styles from "./live.module.css";
@@ -269,6 +270,10 @@ export function LiveRunView({
 
         {live.state === "awaiting_go" && status !== "ended" ? (
           <GoBar runId={live.runId} estimate={live.estimateMicroUsd} />
+        ) : null}
+
+        {status !== "ended" && !["delivered", "failed", "cancelled"].includes(live.state ?? "") ? (
+          <CancelRun runId={live.runId} />
         ) : null}
 
         <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />

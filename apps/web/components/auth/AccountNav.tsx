@@ -2,7 +2,7 @@
 // The header's account items (TDM-100): Sign in + Sign up when signed out; the user (to
 // /settings), New run and Sign out when signed in. Renders <li>s so the header owns the layout.
 import Link from "next/link";
-import { NEW_RUN_LINK, SETTINGS_LINK, SIGN_IN_LINK, SIGN_UP_LINK } from "../site/nav";
+import { NEW_RUN_LINK, RUNS_LINK, SETTINGS_LINK, SIGN_IN_LINK, SIGN_UP_LINK } from "../site/nav";
 import { signOut, useSession } from "../../lib/session";
 
 export interface AccountNavProps {
@@ -28,6 +28,11 @@ export function AccountNav({ linkClassName, primaryClassName, onNavigate }: Acco
             title={SETTINGS_LINK.label}
           >
             {session.user.github_login}
+          </Link>
+        </li>
+        <li>
+          <Link href={RUNS_LINK.href} className={linkClassName} onClick={onNavigate}>
+            {RUNS_LINK.label}
           </Link>
         </li>
         <li>
