@@ -8,7 +8,7 @@
 // different computer behind the wall, so the agent can't see them or game them. A block only moves
 // on a trial.phase event, a bay's screen flashes on each real heartbeat, and the bins count gate
 // results only (no speed or quality number before the report).
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fitProjection, iso, slabOf, type Point3, type Projection } from "../../lib/iso/kit";
 import { tileTone, type LiveRun, type LiveTrial } from "../../lib/live/model";
 import { runningView, TRIAL_STAGE, type LiveTrialCard } from "../../lib/live/phase";
@@ -170,6 +170,10 @@ interface Label {
   title: string;
   sub?: string;
   tone?: "live" | "pass" | "fail" | "muted";
+  /** Title and sub on one line (the bays' names, so rows don't collide). */
+  inline?: boolean;
+  /** A big number under the title (bin counts). */
+  count?: number;
   /** A leader line from the label to what it names. */
   leader?: [number, number, number, number];
 }
@@ -184,8 +188,8 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
   const geo = useMemo(() => {
     const stations = stationParts();
     const extent: Point3[] = [...stations.flatMap(cornersOf), P(QU, QV, 22), P(BU, 0, 24)];
-    const fit = fitProjection(extent, W - 330, H - 40, { pad: 4 });
-    const proj: Projection = { ...fit, origin: [fit.origin[0] + 190, fit.origin[1] + 34] };
+    const fit = fitProjection(extent, W - 440, H - 44, { pad: 4 });
+    const proj: Projection = { ...fit, origin: [fit.origin[0] + 318, fit.origin[1] + 36] };
     const solids = new Map(stations.map((p) => [p.id, solidOf(p, proj)]));
     const order = paintOrder(stations, proj);
     const tokens = [1, 2, 3].map((n) =>
@@ -201,6 +205,28 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
     };
     const abs = (pt: Point3) => iso(pt, proj);
     return { solids, order, tokens, at, abs };
+  }, []);
+
+  // Where the drawing lands inside its box (preserveAspectRatio "meet"), for the HTML labels.
+  const wrap = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ s: number; ox: number; oy: number } | null>(null);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const measure = () => {
+      const { width, height } = el.getBoundingClientRect();
+      if (!width || !height) {
+        setBox({ s: 1, ox: 0, oy: 0 });
+        return;
+      }
+      const s = Math.min(width / W, height / H);
+      setBox({ s, ox: (width - W * s) / 2, oy: (height - H * s) / 2 });
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   // Build in once when the phase begins.
@@ -260,7 +286,7 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
     sub: `${queued} waiting`,
   });
   // Bay names in a column on the left, each with a leader line to its computer.
-  const gutter = 178;
+  const gutter = 304;
   BAY_VS.forEach((bv, i) => {
     const c = v.live[i];
     const [x0, y0] = geo.abs(P(BAY_U - 24 * BAY_K, bv + 18 * BAY_K, 3));
@@ -271,6 +297,7 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
       title: c ? `VM ${c.computerId ? c.computerId.slice(-6) : "starting"}` : `BAY ${i + 1} · IDLE`,
       sub: c ? `${c.setup} · ${c.task} #${c.repeat + 1}` : undefined,
       tone: c ? "live" : "muted",
+      inline: true,
       leader: [gutter + 6, y0 - 5, x0 - 3, y0],
     });
   });
@@ -278,21 +305,21 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
   const wb = geo.abs(P(WALL_U, 118, 0));
   labels.push({
     id: "wall",
-    at: [wb[0] + 40, H - 22],
-    anchor: "start",
+    at: [wb[0] - 8, H - 26],
+    anchor: "end",
     title: "SEALED WALL",
     sub: "the agent never sees the hidden tests",
-    leader: [wb[0] + 36, H - 25, wb[0], wb[1] + 2],
+    leader: [wb[0] - 4, H - 29, wb[0], wb[1] + 2],
   });
   const gt = geo.abs(P(GU, 0, 38));
   labels.push({
     id: "grader",
-    at: [gt[0] + 30, 18],
-    anchor: "start",
+    at: [gt[0] - 34, 20],
+    anchor: "end",
     title: "GRADER · SEPARATE COMPUTER",
     sub: `${gateName}${grading ? ` · grading ${grading}` : ""}`,
     tone: graderLive ? "live" : "muted",
-    leader: [gt[0] + 26, 15, gt[0], gt[1] - 4],
+    leader: [gt[0] - 30, 17, gt[0], gt[1] - 4],
   });
   (Object.keys(BINS) as Bin[]).forEach((bin) => {
     const [x0, y0] = geo.abs(P(BU + 25, BINS[bin] - 25, 0));
@@ -301,89 +328,100 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
       at: [x0 + 10, y0 + 4],
       anchor: "start",
       title: bin === "pass" ? "PASSED GATE" : bin === "fail" ? "FAILED GATE" : "OURS · NOT BILLED",
-      sub: String(counts[bin]),
+      count: counts[bin],
       tone: bin === "pass" ? "pass" : bin === "fail" ? "fail" : "muted",
     });
   });
 
   return (
-    <svg
-      className={styles.fig}
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="xMidYMid meet"
-      data-testid="phase-figure"
-      data-phase={state}
-      data-active={active || undefined}
-    >
-      {geo.order.map((p, i) => {
-        const bay = bayOfPart(p.id);
-        const card = bay !== null ? v.live[bay] : undefined;
-        const clickable = card
-          ? { kind: "trial" as const, id: card.id }
-          : p.id.startsWith("grader")
-            ? { kind: "grader" as const }
-            : null;
-        const tone = toneOf(p);
-        return (
-          <g
-            key={`${p.id}:${tone}`}
-            className={clickable ? styles.hit : undefined}
-            onClick={clickable ? (e) => focus(e, clickable) : undefined}
-          >
-            <SolidG
-              s={geo.solids.get(p.id)!}
-              tone={tone}
-              beat={beatOf(p)}
-              style={{ "--i": fresh.current ? Math.min(i, 30) : 0 } as React.CSSProperties}
-            />
-          </g>
-        );
-      })}
-
-      {placed.map(({ t, spot, tone, shape }) => {
-        const [dx, dy] = geo.at(slot(spot));
-        return (
-          <g
-            key={t.id}
-            className={styles.token}
-            style={{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)` }}
-            data-at={spot.at}
-            data-testid="trial-token"
-            data-tone={tone}
-            onClick={(e) => focus(e, { kind: "trial", id: t.id })}
-          >
-            <title>{`${setupName(t)} · ${t.workload} #${t.repeat + 1}: ${t.state}`}</title>
-            {/* Remounts when the trial moves on, so it hops into its new station. */}
-            <g key={`${spot.at}:${tone}`} className={styles.hop}>
-              {geo.tokens[shape - 1]!.map(({ part, s }) => (
-                <SolidG key={part.id} s={s} tone={tone} />
-              ))}
+    <div className={styles.figWrap} ref={wrap} data-testid="phase-figure" data-phase={state}>
+      <svg
+        className={styles.fig}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        data-active={active || undefined}
+      >
+        {geo.order.map((p, i) => {
+          const bay = bayOfPart(p.id);
+          const card = bay !== null ? v.live[bay] : undefined;
+          const clickable = card
+            ? { kind: "trial" as const, id: card.id }
+            : p.id.startsWith("grader")
+              ? { kind: "grader" as const }
+              : null;
+          const tone = toneOf(p);
+          return (
+            <g
+              key={`${p.id}:${tone}`}
+              className={clickable ? styles.hit : undefined}
+              onClick={clickable ? (e) => focus(e, clickable) : undefined}
+            >
+              <SolidG
+                s={geo.solids.get(p.id)!}
+                tone={tone}
+                beat={beatOf(p)}
+                style={{ "--i": fresh.current ? Math.min(i, 30) : 0 } as React.CSSProperties}
+              />
             </g>
-          </g>
-        );
-      })}
+          );
+        })}
 
-      {labels.map((l) => (
-        <g key={l.id} className={styles.label} data-tone={l.tone}>
-          {l.leader ? (
+        {placed.map(({ t, spot, tone, shape }) => {
+          const [dx, dy] = geo.at(slot(spot));
+          return (
+            <g
+              key={t.id}
+              className={styles.token}
+              style={{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)` }}
+              data-at={spot.at}
+              data-testid="trial-token"
+              data-tone={tone}
+              onClick={(e) => focus(e, { kind: "trial", id: t.id })}
+            >
+              <title>{`${setupName(t)} · ${t.workload} #${t.repeat + 1}: ${t.state}`}</title>
+              {/* Remounts when the trial moves on, so it hops into its new station. */}
+              <g key={`${spot.at}:${tone}`} className={styles.hop}>
+                {geo.tokens[shape - 1]!.map(({ part, s }) => (
+                  <SolidG key={part.id} s={s} tone={tone} />
+                ))}
+              </g>
+            </g>
+          );
+        })}
+
+        {labels.map((l) =>
+          l.leader ? (
             <line
+              key={l.id}
               className={styles.leader}
+              data-tone={l.tone}
               x1={l.leader[0]}
               y1={l.leader[1]}
               x2={l.leader[2]}
               y2={l.leader[3]}
             />
-          ) : null}
-          <text x={l.at[0]} y={l.at[1]} textAnchor={l.anchor} className={styles.labelTitle}>
-            {l.title}
-          </text>
-          {l.sub ? (
-            <text x={l.at[0]} y={l.at[1] + 12} textAnchor={l.anchor} className={styles.labelSub}>
-              {l.sub}
-            </text>
-          ) : null}
-        </g>
-      ))}
-    </svg>
+          ) : null,
+        )}
+      </svg>
+      {/* Labels are HTML at a fixed, readable size, pinned to the drawing's coordinates. */}
+      {box
+        ? labels.map((l) => (
+            <div
+              key={l.id}
+              className={styles.callout}
+              data-tone={l.tone}
+              data-anchor={l.anchor}
+              data-inline={l.inline || undefined}
+              style={{ left: box.ox + l.at[0] * box.s, top: box.oy + l.at[1] * box.s }}
+            >
+              <span className={styles.calloutTitle}>
+                {l.title}
+                {l.count !== undefined ? <b className={styles.calloutCount}>{l.count}</b> : null}
+              </span>
+              {l.sub ? <span className={styles.calloutSub}>{l.sub}</span> : null}
+            </div>
+          ))
+        : null}
+    </div>
   );
 }
