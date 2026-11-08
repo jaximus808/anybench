@@ -6,6 +6,8 @@ out="$1" wl="$2" verdict="$3"
 tests="$(cd "$(dirname "$0")/../copy-tests" && pwd)/tests/$wl"
 ws="$AB_RUN_DIR/workspace"
 cp -R "$tests" "$ws/.hidden-tests"
+# The kit is readable by the check uid only (0640); the contender uid must read its copy.
+chmod -R a+rX "$ws/.hidden-tests"
 if (cd "$ws" && "$AB_RUN" bash .hidden-tests/run.sh </dev/null >"$out/copy-tests-fragile.txt" 2>&1); then
   printf '{"pass":true,"reason":"hidden tests pass","evidence":[]}\n' > "$verdict"
 else

@@ -43,7 +43,7 @@ describe("harness hidden-tests check.sh (TDM-51)", () => {
       encoding: "utf8",
       timeout: 60_000,
     });
-    let gate: unknown = null;
+    let gate: unknown;
     try {
       gate = JSON.parse(await readFile(verdict, "utf8"));
     } catch {

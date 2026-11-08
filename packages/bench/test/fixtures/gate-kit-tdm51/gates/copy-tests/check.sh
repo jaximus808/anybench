@@ -20,6 +20,8 @@ if [ -L "$ws" ] || [ ! -d "$ws" ]; then
 fi
 rm -rf "$ws/.hidden-tests"
 cp -R "$tests" "$ws/.hidden-tests"
+# The kit is readable by the check uid only (0640); the contender uid must read its copy.
+chmod -R a+rX "$ws/.hidden-tests"
 if (cd "$ws" && "$AB_RUN" bash .hidden-tests/run.sh </dev/null >"$out/copy-tests.txt" 2>&1); then
   printf '{"pass":true,"reason":"hidden tests pass","evidence":["copy-tests.txt"]}\n' > "$verdict"
 else

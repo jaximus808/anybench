@@ -28,6 +28,8 @@ fi
 # The contender may have shipped its own .hidden-tests (a file, a symlink, fake tests): replace it.
 rm -rf "$ws/.hidden-tests"
 cp -R "$tests" "$ws/.hidden-tests"
+# The kit is readable by the check uid only (0640); the contender uid must read its copy.
+chmod -R a+rX "$ws/.hidden-tests"
 if (cd "$ws" && "$AB_RUN" node --test ".hidden-tests/**/*.test.js" < /dev/null > "$out/hidden-tests.txt" 2>&1); then
   printf '{"pass":true,"reason":"all hidden tests pass","evidence":["hidden-tests.txt"]}\n' > "$verdict"
 else

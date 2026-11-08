@@ -159,6 +159,9 @@ Two bash traps found on the way:
   *world*-writable dirs, and these are `1775`. Copying tests in *before* running contender code
   is fine. The copy is `rm -rf` (which never follows a symlink) and then `cp -R`.
 - Run contender code only as `"$AB_RUN" <cmd>`, from a cwd under `$AB_RUN_DIR`.
+- Files copied from the kit keep its mode (0640, group abgate), so abrun can't read them. After
+  `cp -R`, run `chmod -R a+rX` on the copy. The first e2e run without it failed the *honest*
+  contender's copied tests.
 - Every path that involves the outputs must end with a verdict. A verdict-less exit counts against
   the contender anyway, and only flags `kit_suspect`.
 
