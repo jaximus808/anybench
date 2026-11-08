@@ -1,5 +1,6 @@
-// `run.advance` (TDM-67 stub). The API enqueues it after creating a run, after Go, after a kit edit
-// and after a cancel, with job key `runs:<run_id>:<step>`. The orchestrator ([5.9]) replaces `run`
+// `run.advance` (TDM-67 stub). The API enqueues it in the same transaction that creates a run,
+// passes Go, saves a kit edit or cancels (lib/job-queue.ts), with job key `runs:<run_id>:<step>`
+// (`kits:<kit_id>:1` for a kit edit), so the write and its job commit together. The orchestrator ([5.9]) replaces `run`
 // with the real state machine driver (ingest, agents, proof, trials, cleanup on cancel); until then
 // it only logs, so enqueued jobs complete and nothing is spent.
 import { z } from "zod";

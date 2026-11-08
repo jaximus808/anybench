@@ -12,6 +12,8 @@
 // they pass. The run state is not changed: the state machine has no edge from `awaiting_go` back
 // to `proof`, so the gate lives on Go.
 //
+// Body limit: 1 MiB on validate, versions and PATCH /runs/:id/kit (413 `payload_too_large`).
+//
 // Every read and write runs through scopedDb(actor): RLS hides other users' kits, so a foreign
 // kit id is a 404. Auth (TDM-66 requireScope): reads and validate need `runs:read`, new versions
 // `runs:write`; a key limited to specific runs sees only those runs' kits (403 for any other).
@@ -39,6 +41,7 @@ import { kits } from "../db/schema/kits.js";
 import { runs } from "../db/schema/runs.js";
 import { scopedDb } from "../db/scoped.js";
 import {
+  bodyLimitOf,
   decodeCursor,
   encodeCursor,
   fail,
@@ -56,6 +59,9 @@ import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js"
 import type { AppDeps } from "../types.js";
 
 const contract = apiRoutes.kits;
+
+/** Body limit for routes that carry a kit spec (validate, versions, PATCH /runs/:id/kit). */
+export const KIT_BODY_LIMIT_BYTES = 1024 * 1024;
 
 /** Run states in which a kit may be edited. */
 export const KIT_EDITABLE_STATES = ["kit_draft", "awaiting_go"] as const satisfies RunState[];
@@ -141,11 +147,13 @@ export type NewKitVersionResult =
 
 /**
  * Store `spec` as the next version of `runId`'s kit and point the run at it. Locks the run row,
- * so concurrent edits get consecutive versions. The caller enqueues the proof rerun after commit.
+ * so concurrent edits get consecutive versions, and enqueues the proof rerun (`run.advance`
+ * {reason: kit_edited}) as the last statement of the same transaction.
  */
 export async function insertKitVersion(
   tx: DbTx,
   actor: RouteActor,
+  jobs: JobQueue,
   runId: string,
   spec: KitSpec,
   filesUploadId: string | undefined,
@@ -186,22 +194,10 @@ export async function insertKitVersion(
     .update(runs)
     .set({ kitId: row!.id, updatedAt: sql`now()` })
     .where(eq(runs.id, runId));
-  return { ok: true, kit: await toKitDetail(tx, row!) };
-}
-
-/** Wake the orchestrator to rerun proof on a new kit version. Logged, never thrown. */
-export async function enqueueKitProof(
-  jobs: JobQueue,
-  c: ActorContext,
-  runId: string,
-  kitId: string,
-): Promise<void> {
-  const payload: RunAdvancePayload = { run_id: runId, reason: "kit_edited", kit_id: kitId };
-  try {
-    await jobs.add(RUN_ADVANCE_JOB, payload, { jobKey: `kits:${kitId}:1` });
-  } catch (err) {
-    c.get("log").error({ err, runId, kitId }, "could not enqueue run.advance after a kit edit");
-  }
+  const kit = await toKitDetail(tx, row!);
+  const payload: RunAdvancePayload = { run_id: runId, reason: "kit_edited", kit_id: kit.id };
+  await jobs.add(tx, RUN_ADVANCE_JOB, payload, { jobKey: `kits:${kit.id}:1` });
+  return { ok: true, kit };
 }
 
 /** `spec` lines for an invalid kit, prefixed like parseRouteRequest's (`body.spec.repeats: ...`). */
@@ -257,7 +253,7 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     });
   });
 
-  r.post("/validate", read, async (c) => {
+  r.post("/validate", bodyLimitOf(KIT_BODY_LIMIT_BYTES), read, async (c) => {
     const route = contract.validate;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -288,7 +284,7 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     return send(c, route, { kit: detail });
   });
 
-  r.post("/:id/versions", write, async (c) => {
+  r.post("/:id/versions", bodyLimitOf(KIT_BODY_LIMIT_BYTES), write, async (c) => {
     const route = contract.createVersion;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -304,11 +300,10 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
         if (!base) return { ok: false, code: "not_found", message: "kit not found" };
         if (!runAllowed(actor, base.runId))
           return { ok: false, code: "forbidden", message: "API key is not valid for this run" };
-        return insertKitVersion(tx, actor, base.runId, body.spec, body.files_upload_id);
+        return insertKitVersion(tx, actor, deps.jobs, base.runId, body.spec, body.files_upload_id);
       },
     );
     if (!result.ok) return fail(c, result.code, result.message);
-    await enqueueKitProof(deps.jobs, c, result.kit.run_id, result.kit.id);
     return send(c, route, { kit: result.kit });
   });
 

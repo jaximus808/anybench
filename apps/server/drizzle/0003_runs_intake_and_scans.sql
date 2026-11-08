@@ -17,6 +17,7 @@ CREATE TABLE "scans" (
 ALTER TABLE "runs" ADD COLUMN "intake" jsonb;--> statement-breakpoint
 ALTER TABLE "scans" ADD CONSTRAINT "scans_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "scans_owner_id_idx" ON "scans" USING btree ("owner_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "runs_owner_idempotency_key_uq" ON "runs" USING btree ("owner_id",("intake"->>'idempotency_key')) WHERE "runs"."intake" ? 'idempotency_key';--> statement-breakpoint
 -- TDM-67: scans are tenant data, same policy shape as runs (0001). Grants come from the default
 -- privileges set in 0001.
 ALTER TABLE "scans" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint

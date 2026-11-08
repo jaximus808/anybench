@@ -6,6 +6,7 @@ import {
   pgTable,
   text,
   uuid,
+  uniqueIndex,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -15,6 +16,9 @@ import { interventions } from "./interventions.js";
 import { kits } from "./kits.js";
 import { projects } from "./projects.js";
 import { users } from "./users.js";
+
+/** One run per (owner, Idempotency-Key) on POST /runs (TDM-67). */
+export const RUNS_IDEMPOTENCY_INDEX = "runs_owner_idempotency_key_uq";
 
 /**
  * One benchmark run. RLS: owner only.
@@ -55,6 +59,9 @@ export const runs = pgTable(
   (t) => [
     index("runs_owner_id_idx").on(t.ownerId),
     index("runs_state_idx").on(t.state),
+    uniqueIndex(RUNS_IDEMPOTENCY_INDEX)
+      .on(t.ownerId, sql`(${t.intake}->>'idempotency_key')`)
+      .where(sql`${t.intake} ? 'idempotency_key'`),
     check("runs_state_check", inList(t.state, RUN_STATES)),
     check("runs_budget_nonneg", sql`${t.budgetMicroUsd} >= 0`),
   ],

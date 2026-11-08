@@ -33,7 +33,7 @@ export function recordingJobsTdm67(): JobQueue & { jobs: RecordedJobTdm67[] } {
   const jobs: RecordedJobTdm67[] = [];
   return {
     jobs,
-    async add(task, payload, options) {
+    async add(_tx, task, payload, options) {
       jobs.push({ task, payload, jobKey: options.jobKey });
     },
   };

@@ -20,6 +20,7 @@ import {
   csvListSchema,
   pageOf,
 } from "./common.js";
+import { kitRoutes } from "./kits.js";
 import { defineRoute, defineRoutes } from "./route.js";
 import { UploadIdSchema } from "./uploads.js";
 
@@ -181,6 +182,19 @@ export const runRoutes = defineRoutes({
     summary: "A run with its counters, open alerts and live agent sessions.",
     params: runParams,
     response: RunDetailSchema,
+  }),
+  editKit: defineRoute({
+    id: "runs.editKit",
+    method: "PATCH",
+    path: "/runs/:id/kit",
+    auth: ["session", "apiKey:runs:write"],
+    summary:
+      "Save an edited kit for the run (version 1 if it has none yet); allowed in kit_draft or " +
+      "awaiting_go, and proof checks rerun before Go. Same body and response as kits.createVersion.",
+    params: runParams,
+    body: kitRoutes.createVersion.body,
+    status: 201,
+    response: kitRoutes.createVersion.response,
   }),
   go: defineRoute({
     id: "runs.go",

@@ -24,9 +24,9 @@ import { authRoutes } from "./auth.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 import { kitsRoutes } from "./kits.js";
+import { runnerRoutes } from "./runner.js";
 import { runsRoutes } from "./runs.js";
 import { scanRoutes } from "./scan.js";
-import { runnerRoutes } from "./runner.js";
 
 export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // TDM-65/TDM-66: tenant routes take a Bearer API key or the session cookie unless the caller
@@ -41,7 +41,7 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   const tenant = {
     ...deps,
     billingGate: deps.billingGate ?? defaultBillingGate(deps.config),
-    jobs: deps.jobs ?? graphileJobQueue(deps.db),
+    jobs: deps.jobs ?? graphileJobQueue(),
   };
   // TDM-65: CORS and CSRF must run before every route, so this line stays first.
   app.use(corsMiddleware(deps.config), csrfMiddleware(deps.config));

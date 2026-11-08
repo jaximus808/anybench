@@ -1,5 +1,5 @@
 {
-  "id": "d2a69c40-b817-4e14-9c4b-4326bf0d0ab1",
+  "id": "78765ca0-140b-4cca-b781-2614d3048251",
   "prevId": "9f25e307-e758-458e-acd4-bdea0e5d238e",
   "version": "7",
   "dialect": "postgresql",
@@ -3200,6 +3200,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "runs_owner_idempotency_key_uq": {
+          "name": "runs_owner_idempotency_key_uq",
+          "columns": [
+            {
+              "expression": "owner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"intake\"->>'idempotency_key')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"runs\".\"intake\" ? 'idempotency_key'",
           "concurrently": false,
           "method": "btree",
           "with": {}

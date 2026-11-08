@@ -3,13 +3,20 @@
 //   POST  /runs              create a project + a run at `intake`, write `run.state_changed`
 //                            {from: null, to: intake} in the same transaction, enqueue run.advance
 //   GET   /runs/:id          run + counters + open alerts + agent sessions
-//   PATCH /runs/:id/kit      edit the run's kit (ticket alias of kits.createVersion; see kits.ts)
+//   PATCH /runs/:id/kit      runs.editKit: edit the run's kit (same as kits.createVersion; see kits.ts)
 //   POST  /runs/:id/go       leave awaiting_go: proven kit, estimate within budget, billing gate
 //   POST  /runs/:id/cancel   set cancel_requested_at, move to cancelled, write the event
 //
 // The API never runs ingest or agents: it persists and enqueues `run.advance` (job key
-// `runs:<id>:<step>`) after the write commits; the orchestrator ([5.9]) does the work. An enqueue
-// failure is logged and does not fail the request (the row is the source of truth).
+// `runs:<id>:<step>`) in the SAME transaction as the write (lib/job-queue.ts), so a run is never
+// created or moved without its job; the orchestrator ([5.9]) does the work.
+//
+// Idempotency-Key: stored in runs.intake and unique per owner (runs_owner_idempotency_key_uq,
+// migration 0003). A retry finds the prior run; two concurrent creates race on the index and the
+// loser re-reads the winner's run. Either way the response is the run the key first created.
+//
+// Body limits (hono/body-limit, 413 ApiErrorBody `payload_too_large`): POST /runs 256 KiB,
+// PATCH /runs/:id/kit 1 MiB.
 //
 // Tenancy: every read and write goes through scopedDb(actor), so RLS limits a user to their own
 // runs and a foreign or unknown run id is a 404 (no existence leak).
@@ -44,6 +51,7 @@ import {
 import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 import type { DbTx } from "../db/client.js";
+import { RUNS_IDEMPOTENCY_INDEX } from "../db/schema/runs.js";
 import { agentSessions } from "../db/schema/agent_sessions.js";
 import { alerts } from "../db/schema/alerts.js";
 import { contenders } from "../db/schema/contenders.js";
@@ -55,13 +63,14 @@ import { scopedDb } from "../db/scoped.js";
 import {
   decodeCursor,
   encodeCursor,
+  bodyLimitOf,
   fail,
+  isUniqueViolation,
   iso,
   isoOrNull,
   parseOrFail,
   send,
   runLimited,
-  type ActorContext,
   type ActorEnv,
   type RouteActor,
 } from "../lib/api-route.js";
@@ -72,13 +81,16 @@ import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
 import type { AppDeps } from "../types.js";
 import {
-  enqueueKitProof,
   insertKitVersion,
   isProven,
+  KIT_BODY_LIMIT_BYTES,
   kitSpecHash,
   kitSpecIssues,
   type NewKitVersionResult,
 } from "./kits.js";
+
+/** POST /runs body limit. */
+export const CREATE_RUN_BODY_LIMIT_BYTES = 256 * 1024;
 
 const contract = apiRoutes.runs;
 
@@ -125,17 +137,14 @@ function stateChanged(
   };
 }
 
+/** Enqueue run.advance in `tx` (the last statement of the write it belongs to). */
 async function enqueueAdvance(
   deps: RunsRouteDeps,
-  c: ActorContext,
+  tx: DbTx,
   payload: RunAdvancePayload,
   step: string,
 ): Promise<void> {
-  try {
-    await deps.jobs.add(RUN_ADVANCE_JOB, payload, { jobKey: `runs:${payload.run_id}:${step}` });
-  } catch (err) {
-    c.get("log").error({ err, runId: payload.run_id, step }, "could not enqueue run.advance");
-  }
+  await deps.jobs.add(tx, RUN_ADVANCE_JOB, payload, { jobKey: `runs:${payload.run_id}:${step}` });
 }
 
 async function lockRun(tx: DbTx, id: string): Promise<RunRow | undefined> {
@@ -351,7 +360,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     });
   });
 
-  r.post("/", write, async (c) => {
+  r.post("/", bodyLimitOf(CREATE_RUN_BODY_LIMIT_BYTES), write, async (c) => {
     const route = contract.create;
     if (runLimited(c.get("actor")))
       return fail(c, "forbidden", "an API key limited to specific runs cannot create runs");
@@ -363,107 +372,121 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     const actor = c.get("actor");
     const idempotencyKey = headers["idempotency-key"];
 
-    type Created = { run: RunRow; replay: boolean } | { notFound: string };
-    const created = await scopedDb(actor, deps.db).transaction(async (tx): Promise<Created> => {
-      if (idempotencyKey) {
-        // Best effort: a retried create with the same key returns the run it made.
-        const [prior] = await tx
-          .select()
-          .from(runs)
-          .where(sql`${runs.intake}->>'idempotency_key' = ${idempotencyKey}`)
-          .limit(1);
-        if (prior) return { run: prior, replay: true };
-      }
+    const scoped = scopedDb(actor, deps.db);
+    const priorRun = (tx: DbTx, key: string) =>
+      tx
+        .select()
+        .from(runs)
+        .where(sql`${runs.intake}->>'idempotency_key' = ${key}`)
+        .limit(1);
 
-      const runId = newId(RunIdSchema);
-      let projectId: string | null;
-      let rerun: { kitId: string; spec: unknown; filesUrl: string | null } | undefined;
-      if (body.source.kind === "kit") {
-        // Rerun a saved kit: same project, the kit copied as version 1 of the new run.
-        const [k] = await tx
-          .select({ spec: kits.spec, filesUrl: kits.filesUrl, projectId: runs.projectId })
-          .from(kits)
-          .innerJoin(runs, eq(runs.id, kits.runId))
-          .where(eq(kits.id, body.source.kit_id))
-          .limit(1);
-        if (!k) return { notFound: "kit not found" };
-        projectId = k.projectId;
-        rerun = { kitId: body.source.kit_id, spec: k.spec, filesUrl: k.filesUrl };
-      } else {
-        projectId = newId(ProjectIdSchema);
-        await tx
-          .insert(projects)
-          .values({ id: projectId, ownerId: actor.userId, ...projectOf(body.source) });
-      }
+    type Created = { run: RunRow } | { notFound: string };
+    const create = () =>
+      scoped.transaction(async (tx): Promise<Created> => {
+        if (idempotencyKey) {
+          // A retried create with the same key returns the run it made (RLS: this owner's runs).
+          const [prior] = await priorRun(tx, idempotencyKey);
+          if (prior) return { run: prior };
+        }
 
-      const intake = {
-        source: body.source,
-        contenders: body.contenders,
-        auto_go: body.auto_go,
-        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
-      };
-      const [run] = await tx
-        .insert(runs)
-        .values({
-          id: runId,
-          ownerId: actor.userId,
-          projectId,
-          question: body.question,
-          state: "intake",
-          budgetMicroUsd: body.budget_micro_usd,
-          intake: toJsonValue(intake),
-        })
-        .returning();
-      let row = run!;
+        const runId = newId(RunIdSchema);
+        let projectId: string | null;
+        let rerun: { kitId: string; spec: unknown; filesUrl: string | null } | undefined;
+        if (body.source.kind === "kit") {
+          // Rerun a saved kit: same project, the kit copied as version 1 of the new run.
+          const [k] = await tx
+            .select({ spec: kits.spec, filesUrl: kits.filesUrl, projectId: runs.projectId })
+            .from(kits)
+            .innerJoin(runs, eq(runs.id, kits.runId))
+            .where(eq(kits.id, body.source.kit_id))
+            .limit(1);
+          if (!k) return { notFound: "kit not found" };
+          projectId = k.projectId;
+          rerun = { kitId: body.source.kit_id, spec: k.spec, filesUrl: k.filesUrl };
+        } else {
+          projectId = newId(ProjectIdSchema);
+          await tx
+            .insert(projects)
+            .values({ id: projectId, ownerId: actor.userId, ...projectOf(body.source) });
+        }
 
-      if (rerun) {
-        const spec = kitSpecIssues(rerun.spec);
-        if (!spec.ok) throw new Error(`stored kit ${rerun.kitId} no longer validates`);
-        const [kit] = await tx
-          .insert(kits)
+        const intake = {
+          source: body.source,
+          contenders: body.contenders,
+          auto_go: body.auto_go,
+          ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+        };
+        const [run] = await tx
+          .insert(runs)
           .values({
-            id: newId(KitIdSchema),
+            id: runId,
             ownerId: actor.userId,
-            runId,
-            version: 1,
-            spec: spec.spec,
-            filesUrl: rerun.filesUrl,
-            proof: null,
-            hash: kitSpecHash(spec.spec),
+            projectId,
+            question: body.question,
+            state: "intake",
+            budgetMicroUsd: body.budget_micro_usd,
+            intake: toJsonValue(intake),
           })
-          .returning({ id: kits.id });
-        const [withKit] = await tx
-          .update(runs)
-          .set({ kitId: kit!.id })
-          .where(eq(runs.id, runId))
           .returning();
-        row = withKit!;
-      }
+        let row = run!;
 
-      if (body.contenders.length > 0) {
-        await tx.insert(contenders).values(
-          body.contenders.map((ct) => ({
-            runId,
-            // The kit Contender as given; the intake agent turns it into an adapter.
-            source: JSON.stringify(ct),
-            role: ct.role,
-            status: "kept" as const,
-            foundBy: "user",
-          })),
-        );
-      }
+        if (rerun) {
+          const spec = kitSpecIssues(rerun.spec);
+          if (!spec.ok) throw new Error(`stored kit ${rerun.kitId} no longer validates`);
+          const [kit] = await tx
+            .insert(kits)
+            .values({
+              id: newId(KitIdSchema),
+              ownerId: actor.userId,
+              runId,
+              version: 1,
+              spec: spec.spec,
+              filesUrl: rerun.filesUrl,
+              proof: null,
+              hash: kitSpecHash(spec.spec),
+            })
+            .returning({ id: kits.id });
+          const [withKit] = await tx
+            .update(runs)
+            .set({ kitId: kit!.id })
+            .where(eq(runs.id, runId))
+            .returning();
+          row = withKit!;
+        }
 
-      // Creation is the one edge with no prior state: {from: null, to: intake}.
-      const { lastSeq } = await appendEvents(tx, row.id as Run["id"], [
-        stateChanged(row.id, actor, null, "intake", { reason: "created" }),
-      ]);
-      return { run: { ...row, nextSeq: lastSeq + 1 }, replay: false };
-    });
+        if (body.contenders.length > 0) {
+          // runs.intake.contenders is the canonical copy of what the user asked for; these rows
+          // only list the candidates for the test plan screen, and `source` is never parsed back.
+          await tx.insert(contenders).values(
+            body.contenders.map((ct) => ({
+              runId,
+              source: JSON.stringify(ct),
+              role: ct.role,
+              status: "kept" as const,
+              foundBy: "user",
+            })),
+          );
+        }
 
-    if ("notFound" in created) return fail(c, "not_found", created.notFound);
-    if (!created.replay) {
-      await enqueueAdvance(deps, c, { run_id: created.run.id, reason: "created" }, "created");
+        // Creation is the one edge with no prior state: {from: null, to: intake}.
+        const { lastSeq } = await appendEvents(tx, row.id as Run["id"], [
+          stateChanged(row.id, actor, null, "intake", { reason: "created" }),
+        ]);
+        await enqueueAdvance(deps, tx, { run_id: row.id, reason: "created" }, "created");
+        return { run: { ...row, nextSeq: lastSeq + 1 } };
+      });
+
+    let created: Created;
+    try {
+      created = await create();
+    } catch (err) {
+      // A concurrent create with the same key won the unique index: return its run.
+      if (!idempotencyKey || !isUniqueViolation(err, RUNS_IDEMPOTENCY_INDEX)) throw err;
+      const [prior] = await scoped.transaction((tx) => priorRun(tx, idempotencyKey));
+      if (!prior) throw err;
+      created = { run: prior };
     }
+    if ("notFound" in created) return fail(c, "not_found", created.notFound);
     return send(c, route, { run: toRun(created.run) });
   });
 
@@ -483,36 +506,19 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     return send(c, route, detail);
   });
 
-  // Ticket alias (TDM-67) for editing the run's current kit. The registry route is
-  // kits.createVersion (POST /kits/:id/versions); this one also works before a kit exists
-  // (creates version 1). Same body and response as kits.createVersion.
-  r.patch("/:id/kit", writeRun, async (c) => {
-    const kitRoute = apiRoutes.kits.createVersion;
-    const idOk = RunIdSchema.safeParse(c.req.param("id"));
-    if (!idOk.success)
-      return fail(c, "validation_failed", "invalid run id", ["params.id: expected a UUID"]);
-    let raw: unknown;
-    try {
-      raw = await c.req.json();
-    } catch {
-      return fail(c, "bad_request", "request body is not valid JSON");
-    }
-    const spec = kitSpecIssues((raw as { spec?: unknown } | null)?.spec);
-    if (!spec.ok) return fail(c, "validation_failed", "invalid kit spec", spec.issues);
-    const upload = kitRoute.body.shape.files_upload_id.safeParse(
-      (raw as { files_upload_id?: unknown }).files_upload_id,
-    );
-    if (!upload.success)
-      return fail(c, "validation_failed", "invalid files_upload_id", [
-        "body.files_upload_id: expected a UUID",
-      ]);
+  // runs.editKit: kits.createVersion addressed by run, which also works before the run has a kit
+  // (it creates version 1). Same body, response and rules (see kits.ts).
+  r.patch("/:id/kit", bodyLimitOf(KIT_BODY_LIMIT_BYTES), writeRun, async (c) => {
+    const route = contract.editKit;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const { params, body } = parsed.request;
     const actor = c.get("actor");
     const result: NewKitVersionResult = await scopedDb(actor, deps.db).transaction((tx) =>
-      insertKitVersion(tx, actor, idOk.data, spec.spec, upload.data),
+      insertKitVersion(tx, actor, deps.jobs, params.id, body.spec, body.files_upload_id),
     );
     if (!result.ok) return fail(c, result.code, result.message);
-    await enqueueKitProof(deps.jobs, c, result.kit.run_id, result.kit.id);
-    return send(c, kitRoute, { kit: result.kit });
+    return send(c, route, { kit: result.kit });
   });
 
   r.post("/:id/go", writeRun, async (c) => {
@@ -554,10 +560,10 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
       const { lastSeq } = await appendEvents(tx, id, [
         stateChanged(id, actor, t.from, t.to, { command: "go" }),
       ]);
+      await enqueueAdvance(deps, tx, { run_id: id, reason: "go" }, "go");
       return { ok: true as const, run: { ...updated!, nextSeq: lastSeq + 1 } };
     });
     if (!moved.ok) return fail(c, moved.status === 404 ? "not_found" : "conflict", moved.message);
-    await enqueueAdvance(deps, c, { run_id: id, reason: "go" }, "go");
     return send(c, route, { run: toRun(moved.run) });
   });
 
@@ -567,13 +573,11 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     if (!parsed.ok) return parsed.response;
     const { params, body } = parsed.request;
     const actor = c.get("actor");
-    type Cancelled =
-      | { ok: true; run: RunRow; changed: boolean }
-      | { ok: false; status: 404 | 409; message: string };
+    type Cancelled = { ok: true; run: RunRow } | { ok: false; status: 404 | 409; message: string };
     const result = await scopedDb(actor, deps.db).transaction(async (tx): Promise<Cancelled> => {
       const row = await lockRun(tx, params.id);
       if (!row) return { ok: false, status: 404, message: "run not found" };
-      if (row.state === "cancelled") return { ok: true, run: row, changed: false }; // idempotent
+      if (row.state === "cancelled") return { ok: true, run: row }; // idempotent
       const t = transitionRun(row.state, {
         type: "cancel",
         ...(body.reason ? { reason: body.reason } : {}),
@@ -594,13 +598,12 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
           ...(body.reason ? { reason: body.reason } : {}),
         }),
       ]);
-      return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 }, changed: true };
+      // The worker stops live Naïve sessions and trial computers ([5.9]).
+      await enqueueAdvance(deps, tx, { run_id: params.id, reason: "cancelled" }, "cancelled");
+      return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 } };
     });
     if (!result.ok)
       return fail(c, result.status === 404 ? "not_found" : "conflict", result.message);
-    // The worker stops live Naïve sessions and trial computers ([5.9]).
-    if (result.changed)
-      await enqueueAdvance(deps, c, { run_id: params.id, reason: "cancelled" }, "cancelled");
     return send(c, route, { run: toRun(result.run) });
   });
 

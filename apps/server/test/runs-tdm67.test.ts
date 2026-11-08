@@ -15,8 +15,10 @@ import { runMigrations as runGraphileMigrations } from "graphile-worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createDb } from "../src/db/client.js";
+import { scopedDb } from "../src/db/scoped.js";
 import { contenders, events, kits, projects, runs } from "../src/db/schema/index.js";
 import { readEvents } from "../src/lib/events.js";
+import { graphileJobQueue } from "../src/lib/job-queue.js";
 import { createSession } from "../src/lib/session.js";
 import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./helpers/pg-tdm11.js";
 import {
@@ -577,6 +579,100 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     } finally {
       await dbh.close();
     }
+  });
+
+  it("the real queue enqueues inside the tenant transaction: rolls back with it, keeps RLS on", async () => {
+    await runGraphileMigrations({ connectionString: db.url });
+    const queue = graphileJobQueue();
+    const scoped = scopedDb({ kind: "user", userId: alice }, db.db);
+    // Rolled back with the transaction that enqueued it.
+    await expect(
+      scoped.transaction(async (tx) => {
+        await queue.add(
+          tx,
+          "run.advance",
+          { run_id: alice, reason: "created" },
+          { jobKey: "tdm67:rollback" },
+        );
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    // Committed with it, and the tenant role is back afterwards (RLS still applies).
+    const role = await scoped.transaction(async (tx) => {
+      await queue.add(
+        tx,
+        "run.advance",
+        { run_id: alice, reason: "created" },
+        { jobKey: "tdm67:commit" },
+      );
+      const r = await tx.execute(sql`select current_user as u`);
+      return (r as unknown as { rows: { u: string }[] }).rows[0]!.u;
+    });
+    expect(role).toBe("anybench_app");
+    const keys = await db.db.execute(
+      sql`select key from graphile_worker._private_jobs where key like 'tdm67:%' order by key`,
+    );
+    expect((keys as unknown as { rows: { key: string }[] }).rows.map((r) => r.key)).toEqual([
+      "tdm67:commit",
+    ]);
+  });
+
+  it("PATCH /runs/:id/kit is the typed runs.editKit route", async () => {
+    const run = await newRun();
+    await forceRunStateTdm67(db.db, run.id, "kit_draft");
+    const out = await a.runs.editKit({ params: { id: run.id }, body: { spec: kitSpecTdm67() } });
+    expect(out.kit).toMatchObject({ run_id: run.id, version: 1, proven: false });
+    await expectApiError(
+      b.runs.editKit({ params: { id: run.id }, body: { spec: kitSpecTdm67() } }),
+      404,
+    );
+  });
+
+  it("oversized bodies get a 413 ApiErrorBody", async () => {
+    const run = await newRun();
+    await forceRunStateTdm67(db.db, run.id, "kit_draft");
+    const big = (bytes: number) => "x".repeat(bytes);
+    const cases: [string, string, unknown][] = [
+      ["POST", "/runs", { ...githubBody, budget_micro_usd: "1", question: big(300 * 1024) }],
+      ["PATCH", `/runs/${run.id}/kit`, { spec: { pad: big(1100 * 1024) } }],
+      ["POST", "/kits/validate", { spec: { pad: big(1100 * 1024) } }],
+    ];
+    for (const [method, path, body] of cases) {
+      const r = await raw(h, alice, method, path, body);
+      expect(r.status, `${method} ${path}`).toBe(413);
+      expect(ApiErrorBodySchema.parse(r.json).error.code).toBe("payload_too_large");
+    }
+    // Under the limit still works (and is validated as usual).
+    const ok = await raw(h, alice, "POST", "/kits/validate", { spec: kitSpecTdm67() });
+    expect(ok.status).toBe(200);
+  });
+
+  it("Idempotency-Key: parallel creates with one key make one run; keys are per owner", async () => {
+    const key = "tdm67-parallel-key";
+    const headers = { "idempotency-key": key };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => a.runs.create({ body: githubBody, headers })),
+    );
+    expect(new Set(results.map((r) => r.run.id)).size).toBe(1);
+    const rows = await db.db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(sql`${runs.intake}->>'idempotency_key' = ${key}`);
+    expect(rows).toHaveLength(1);
+    const evs = await readEvents(db.db, results[0]!.run.id as RunId);
+    expect(evs).toHaveLength(1);
+
+    const mine = await a.runs.create({
+      body: githubBody,
+      headers: { "idempotency-key": "tdm67-shared" },
+    });
+    const theirs = await b.runs.create({
+      body: githubBody,
+      headers: { "idempotency-key": "tdm67-shared" },
+    });
+    expect(theirs.run.id).not.toBe(mine.run.id);
+    expect((await b.runs.get({ params: { id: theirs.run.id } })).run.id).toBe(theirs.run.id);
+    await expectApiError(b.runs.get({ params: { id: mine.run.id } }), 404);
   });
 
   it("API key scopes: run-scoped keys see only their runs; runs:read keys cannot write", async () => {

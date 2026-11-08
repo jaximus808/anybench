@@ -18,7 +18,8 @@ import {
   type RouteResult,
   type RouteSpec,
 } from "@anybench/core";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AppEnv } from "../types.js";
 import { actorCanAccessRun, type ActorEnv, type AuthActor } from "./auth-key.js";
@@ -52,6 +53,30 @@ export function fail(
     }),
     API_ERROR_STATUS[code] as ContentfulStatusCode,
   );
+}
+
+/** hono/body-limit with a 413 ApiErrorBody (`payload_too_large`). Put it before the auth guard. */
+export function bodyLimitOf(maxBytes: number): MiddlewareHandler<ActorEnv> {
+  return bodyLimit({
+    maxSize: maxBytes,
+    onError: (c) =>
+      fail(
+        c as ActorContext,
+        "payload_too_large",
+        `request body is over the ${maxBytes} byte limit`,
+      ),
+  });
+}
+
+/** A Postgres unique violation (23505) on `constraint`, looking through Drizzle's error wrapper. */
+export function isUniqueViolation(err: unknown, constraint: string): boolean {
+  let e: unknown = err;
+  for (let i = 0; i < 5 && e && typeof e === "object"; i++) {
+    const rec = e as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (rec.code === "23505") return rec.constraint === constraint;
+    e = rec.cause;
+  }
+  return false;
 }
 
 /** The request body as JSON: undefined when empty, a 400 marker when it is not JSON. */
