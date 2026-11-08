@@ -58,7 +58,8 @@ import {
   type DownloadTicket,
 } from "@anybench/envs";
 import type { ProxySpendSource } from "@anybench/naive";
-import type { ComputeProvider } from "@anybench/providers";
+import { isProviderOutageError, type ComputeProvider } from "@anybench/providers";
+import type { LaunchBreaker } from "@anybench/bench";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
@@ -77,6 +78,8 @@ import {
 } from "../lib/compute.js";
 import { attemptProxySpend, trialMetrics, trialPhaseEdges } from "../orchestrator/trial-metrics.js";
 import { defineJob, type JobContext } from "./types.js";
+import { defaultLaunchBreaker } from "./trial-execute.js";
+import { OUTAGE_PAUSE_RETRY_MS } from "@anybench/bench";
 
 export { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey };
 
@@ -86,6 +89,19 @@ export { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey };
  * scoring computers one trial can cost.
  */
 export const GATE_INFRA_MAX_ATTEMPTS = 3;
+/**
+ * worker-hardening: provider outage errors (5xx / 429) a trial's gate may absorb without using up
+ * GATE_INFRA_MAX_ATTEMPTS: each one re-enqueues the gate as a fresh job (payload.outage_pauses + 1).
+ */
+export const GATE_MAX_OUTAGE_PAUSES = 12;
+
+/** A GateInfraError caused by the provider's outage (5xx / 429): retried later, never counted. */
+export class GateOutageError extends Error {
+  constructor(readonly inner: unknown) {
+    super(inner instanceof Error ? inner.message : String(inner), { cause: inner });
+    this.name = "GateOutageError";
+  }
+}
 export type TrialGatePayload = z.infer<typeof TrialGatePayloadSchema>;
 
 // ---------------------------------------------------------------------------------------------
@@ -187,6 +203,11 @@ export interface GateTrialDeps {
    * trial that had a proxy key records `proxy_cost_missing` and its cost stays unscored.
    */
   proxySpend?: ProxySpendSource | null;
+  /**
+   * worker-hardening: throw GateOutageError for a provider outage error instead of counting it
+   * against maxInfraAttempts (the job re-enqueues the gate once the provider is back).
+   */
+  deferOutage?: boolean;
 }
 
 export type GateTrialReport =
@@ -377,6 +398,9 @@ export async function gateTrial(
     );
   } catch (err) {
     if (err instanceof GateKitError) return failInfra("kit", err.message, null);
+    if (err instanceof GateInfraError && deps.deferOutage && isProviderOutageError(err)) {
+      throw new GateOutageError(err);
+    }
     if (err instanceof GateInfraError) {
       const tries = deps.infraAttempt ?? 1;
       const max = deps.maxInfraAttempts ?? GATE_INFRA_MAX_ATTEMPTS;
@@ -502,6 +526,8 @@ export interface TrialGateJobOptions {
   runGates?: typeof runGates;
   /** The attempt's proxy-key spend (production: the Naïve credits ledger). */
   proxySpend?: (ctx: JobContext) => ProxySpendSource | null;
+  /** worker-hardening: the provider-outage breaker (default: the shared Postgres one; null = none). */
+  breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
 }
 
 export function createTrialGateJob(options: TrialGateJobOptions = {}) {
@@ -523,23 +549,61 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
         pricing: { pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD },
       });
       const profile = options.profile?.(ctx);
-      const report = await gateTrial(
-        {
-          db: ctx.db,
-          registry,
-          frozen: artifactFrozenOutputs(artifacts),
-          kitFiles: options.kitFiles ?? localKitFiles,
-          ...(profile ? { profile } : {}),
-          ...(options.sandbox ? { sandbox: options.sandbox } : {}),
-          ...(options.gateOptions ? { gateOptions: options.gateOptions } : {}),
-          ...(options.runGates ? { runGates: options.runGates } : {}),
-          proxySpend: options.proxySpend?.(ctx) ?? null,
-          logger: ctx.logger,
-          workerId: ctx.workerId,
-          infraAttempt: helpers.job.attempts,
-        },
-        payload,
-      );
+      const breaker =
+        options.breaker === undefined
+          ? defaultLaunchBreaker(ctx, provider)
+          : options.breaker(ctx, provider);
+      const log = ctx.logger.child({ job: TRIAL_GATE_JOB, trialId: payload.trial_id });
+      const pauses = payload.outage_pauses ?? 0;
+      // A fresh job under the same key (graphile hands a locked job's key to a new job), so the
+      // outage never uses up this gate's GATE_INFRA_MAX_ATTEMPTS.
+      const later = (at: number, outagePauses: number) =>
+        helpers.addJob(
+          TRIAL_GATE_JOB,
+          { ...payload, outage_pauses: outagePauses },
+          { jobKey: trialGateJobKey(payload.trial_id, payload.attempt), runAt: new Date(at) },
+        );
+      const blocked = breaker ? await breaker.blockedUntil() : null;
+      if (blocked !== null) {
+        await later(blocked, pauses);
+        log.info({ until: new Date(blocked).toISOString() }, "provider outage: gate waits");
+        return;
+      }
+      let report: GateTrialReport;
+      try {
+        report = await gateTrial(
+          {
+            db: ctx.db,
+            registry,
+            frozen: artifactFrozenOutputs(artifacts),
+            kitFiles: options.kitFiles ?? localKitFiles,
+            ...(profile ? { profile } : {}),
+            ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+            ...(options.gateOptions ? { gateOptions: options.gateOptions } : {}),
+            ...(options.runGates ? { runGates: options.runGates } : {}),
+            proxySpend: options.proxySpend?.(ctx) ?? null,
+            logger: ctx.logger,
+            workerId: ctx.workerId,
+            infraAttempt: helpers.job.attempts,
+            deferOutage: pauses < GATE_MAX_OUTAGE_PAUSES,
+          },
+          payload,
+        );
+      } catch (err) {
+        if (!(err instanceof GateOutageError)) throw err;
+        const after = await breaker?.recordFailure("gate", err.inner).catch(() => null);
+        const at =
+          after?.status === "open" && after.nextProbeAt !== null
+            ? after.nextProbeAt
+            : Date.now() + OUTAGE_PAUSE_RETRY_MS;
+        await later(at, pauses + 1);
+        log.warn(
+          { err: err.message, outagePauses: pauses + 1, until: new Date(at).toISOString() },
+          "provider outage while scoring: gate paused (attempt not spent)",
+        );
+        return;
+      }
+      if (report.outcome === "scored") await breaker?.recordSuccess("gate").catch(() => undefined);
       if (report.outcome === "skipped") {
         ctx.logger.info({ job: TRIAL_GATE_JOB, ...payload, reason: report.reason }, "skipped");
       }

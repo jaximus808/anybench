@@ -96,6 +96,23 @@ export const EnvSchema = z.object({
     z.coerce.number().int().min(1).max(64).default(5),
   ),
   /**
+   * worker-hardening: the provider-outage breaker (lib/provider-breaker.ts) opens after this many
+   * consecutive provider 5xx / 429 on create, fork or mint within PROVIDER_BREAKER_WINDOW_MS, and
+   * while open probes the provider every PROVIDER_BREAKER_PROBE_MS.
+   */
+  PROVIDER_BREAKER_THRESHOLD: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(100).default(3),
+  ),
+  PROVIDER_BREAKER_WINDOW_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1_000).max(3_600_000).default(120_000),
+  ),
+  PROVIDER_BREAKER_PROBE_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1_000).max(3_600_000).default(30_000),
+  ),
+  /**
    * `GET /runs/:id/stream` (TDM-72): `poll` re-reads events every EVENTS_POLL_INTERVAL_MS and ends
    * the response after EVENTS_STREAM_MAX_DURATION_MS (required on Vercel Functions); `listen` wakes
    * streams from one shared LISTEN connection on DATABASE_URL_DIRECT (long-lived Node only).

@@ -90,6 +90,7 @@ import {
 import {
   decodeText,
   isProviderError,
+  isProviderOutageError,
   shellQuote,
   trialTag,
   type ComputerInfo,
@@ -109,6 +110,7 @@ import {
 } from "@anybench/runner";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import type { BreakerOp, LaunchBreaker } from "./breaker.js";
 
 // ---------- constants ----------
 
@@ -125,6 +127,17 @@ export const DB_MAX_TRIAL_ATTEMPTS = 3;
  * trial is retried at most twice today; see the header.
  */
 export const TRIAL_MAX_ATTEMPTS = Math.min(1 + TRIAL_MAX_INFRA_RETRIES, DB_MAX_TRIAL_ATTEMPTS);
+/**
+ * worker-hardening: provider outage errors (5xx / 429 on create, fork or mint) a trial may absorb
+ * WITHOUT spending an attempt: the attempt is parked and resumed once the provider is back. Past
+ * this many, an outage error counts as an ordinary infra failure again (a provider that 500s on
+ * one trial forever must not keep it alive forever).
+ */
+export const TRIAL_MAX_OUTAGE_PAUSES = 12;
+/** When a parked trial looks again if the breaker gave no time (it is still closed). */
+export const OUTAGE_PAUSE_RETRY_MS = 30_000;
+/** failure_class of an outage error a trial absorbed (recorded on its trial.phase event only). */
+export const PROVIDER_OUTAGE_FAILURE_CLASS = "provider_outage";
 /** Separator in `lease_owner`: `<worker id>~<worker started ms>~<execution nonce>`. */
 export const LEASE_OWNER_SEPARATOR = "~";
 
@@ -149,6 +162,8 @@ export interface ExecTrial {
   machine: unknown;
   cost_micro_usd: MicroUsd;
   log_offset: number;
+  /** worker-hardening: outage errors this trial absorbed without spending an attempt. */
+  outage_pauses?: number;
 }
 
 /** Columns the executor writes besides state. */
@@ -166,6 +181,7 @@ export type TrialPatch = Partial<
     | "machine"
     | "cost_micro_usd"
     | "log_offset"
+    | "outage_pauses"
   >
 >;
 
@@ -365,6 +381,11 @@ export interface ExecutorDeps {
    * so the worker can record them on the trial. A failure is logged, never fatal.
    */
   onProxyKeyMinted?: (trial: ExecTrial, key: { keyId: string; createdAt: string }) => Promise<void>;
+  /**
+   * worker-hardening: the shared provider-outage breaker. Checked before every create, fork and
+   * proxy-key mint; while it is open the trial is parked (`paused`) instead of failing.
+   */
+  breaker?: LaunchBreaker;
   actor?: EventActor;
   logger?: ExecLogger;
   now?: () => number;
@@ -416,6 +437,12 @@ export type ExecuteOutcome =
       delay_ms: number;
       next_attempt: number;
     }
+  /**
+   * worker-hardening: the provider is having an outage (the breaker is open, or a create / fork /
+   * mint failed with a 5xx / 429). Nothing was spent: same state, same attempt, no computer, not
+   * billed. Run the trial again at `retry_at` (epoch ms).
+   */
+  | { kind: "paused"; trial: ExecTrial; retry_at: number; reason: string }
   /** Another live execution holds the lease. */
   | { kind: "busy"; trial: ExecTrial | null }
   /** We lost the lease mid-flight (someone took it over); we stopped without touching anything. */
@@ -684,6 +711,17 @@ class InfraFailure extends Error {
   }
 }
 
+/** The breaker is open: park the trial until `retryAt`. */
+class OutagePause extends Error {
+  constructor(
+    message: string,
+    readonly retryAt: number | null,
+  ) {
+    super(message);
+    this.name = "OutagePause";
+  }
+}
+
 class Stop extends Error {
   constructor(readonly kind: "aborted" | "lease_lost") {
     super(kind);
@@ -889,6 +927,7 @@ class TrialExecution {
         }
       } catch (err) {
         if (err instanceof Stop) throw err;
+        if (err instanceof OutagePause) return this.pause(err.message, err.retryAt, false);
         const failure =
           err instanceof InfraFailure
             ? err
@@ -1007,11 +1046,15 @@ class TrialExecution {
 
     const prepared = await this.prepare();
     this.checkStop();
-    const created = await registry.create({
-      runId: t.run_id,
-      trialId: t.id,
-      spec: prepared.computer,
-    });
+    const op: BreakerOp =
+      (prepared.computer as { snapshotId?: unknown }).snapshotId !== undefined ? "fork" : "create";
+    const created = await this.guarded(op, () =>
+      registry.create({
+        runId: t.run_id,
+        trialId: t.id,
+        spec: prepared.computer,
+      }),
+    );
     // The registry's store already linked computer_id at insert time when it can (server); make
     // sure either way, before anything is installed.
     await this.patch({ computer_id: created.computerId, provider: registry.provider.name });
@@ -1216,9 +1259,11 @@ class TrialExecution {
     // TDM-39: the proxy key first, so its secret joins the runner's redaction list below.
     let proxySecret: string | undefined;
     try {
-      proxySecret = await this.provisionProxyKey(prepared);
+      proxySecret = prepared.naive_proxy
+        ? await this.guarded("mint", () => this.provisionProxyKey(prepared))
+        : await this.provisionProxyKey(prepared);
     } catch (err) {
-      if (err instanceof InfraFailure) throw err;
+      if (err instanceof InfraFailure || err instanceof OutagePause) throw err;
       throw new InfraFailure(`could not mint the Naïve proxy key: ${errMessage(err)}`, "prepare");
     }
     const secrets =
@@ -1576,7 +1621,72 @@ class TrialExecution {
 
   // ----- failures, retries, cancel -----
 
+  /**
+   * worker-hardening: a create / fork / mint through the outage breaker. Open → OutagePause
+   * before the call. A 5xx / 429 is recorded and parks the trial (`provider_outage`) instead of
+   * failing it; anything else propagates as before.
+   */
+  private async guarded<T>(op: BreakerOp, call: () => Promise<T>): Promise<T> {
+    const breaker = this.deps.breaker;
+    if (breaker) {
+      const until = await breaker.blockedUntil();
+      if (until !== null) {
+        throw new OutagePause(`${this.deps.registry.provider.name} outage: launches paused`, until);
+      }
+    }
+    try {
+      const out = await call();
+      await breaker?.recordSuccess(op).catch(() => undefined);
+      return out;
+    } catch (err) {
+      if (err instanceof Stop || err instanceof OutagePause || !isProviderOutageError(err))
+        throw err;
+      const state = await breaker?.recordFailure(op, err).catch(() => null);
+      throw new InfraFailure(
+        `${op} failed on the provider's side: ${errMessage(err)}${state?.status === "open" ? " (outage: launches paused)" : ""}`,
+        PROVIDER_OUTAGE_FAILURE_CLASS,
+      );
+    }
+  }
+
+  /**
+   * Park the trial: no computer, same state, same attempt, nothing billed. `absorbed` = an outage
+   * error happened on this attempt (counted in outage_pauses); false = the breaker was already
+   * open, nothing was even tried.
+   */
+  private async pause(
+    reason: string,
+    retryAt: number | null,
+    absorbed: boolean,
+  ): Promise<ExecuteOutcome> {
+    if (this.computer) {
+      await this.destroyComputer(`paused: ${reason}`, true);
+    } else if (this.t.state === "forking") {
+      // The create failed: the registry closed its row (status error; the server's store linked
+      // it to the trial at insert) and the provider has nothing we know of. Unlink it so the
+      // next try creates a fresh one.
+      const linked = this.t.computer_id ?? (await this.deps.store.get(this.trialId))?.computer_id;
+      if (linked) await this.patch({ computer_id: null });
+    }
+    if (absorbed) await this.patch({ outage_pauses: (this.t.outage_pauses ?? 0) + 1 });
+    const at = retryAt ?? this.now() + OUTAGE_PAUSE_RETRY_MS;
+    this.deps.logger?.warn(
+      { trialId: this.trialId, attempt: this.t.attempt, state: this.t.state, reason },
+      "trial paused for a provider outage (attempt not spent)",
+    );
+    return { kind: "paused", trial: this.t, retry_at: Math.max(at, this.now()), reason };
+  }
+
   private async infraFailure(failure: InfraFailure): Promise<ExecuteOutcome> {
+    if (
+      failure.failureClass === PROVIDER_OUTAGE_FAILURE_CLASS &&
+      this.t.state !== "failed_infra" &&
+      !isTerminalTrialState(this.t.state) &&
+      (this.t.outage_pauses ?? 0) < TRIAL_MAX_OUTAGE_PAUSES
+    ) {
+      const until = (await this.deps.breaker?.blockedUntil().catch(() => null)) ?? null;
+      return this.pause(failure.message, until, true);
+    }
     if (this.t.state !== "failed_infra" && !isTerminalTrialState(this.t.state)) {
       await this.move(
         { type: "fail_infra", reason: failure.message, failure_class: failure.failureClass },
@@ -1756,6 +1866,10 @@ export function createTrialLauncher(deps: ExecutorDeps, options: TrialLauncherOp
             blocks.delete(ctx.computer_key);
             await sleep(out.delay_ms);
             retryNow = true;
+            break;
+          case "paused":
+            blocks.delete(ctx.computer_key);
+            await sleep(Math.max(0, out.retry_at - (deps.now ?? Date.now)()));
             break;
           default:
             throw new Error(`trial ${plan.trial_id}: ${out.kind}`);

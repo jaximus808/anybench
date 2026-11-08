@@ -6,8 +6,11 @@ import { workerHeartbeats } from "../db/schema/worker_heartbeats.js";
 import { WORKER_TICK_INTERVAL_MS } from "../lib/worker-health.js";
 import { defineJob, type JobContext } from "./types.js";
 
-export async function writeHeartbeat(ctx: JobContext): Promise<void> {
+export async function writeHeartbeat(
+  ctx: Pick<JobContext, "db" | "workerId" | "workerStartedAt" | "graphileWorkerIds">,
+): Promise<void> {
   const [host = ctx.workerId] = ctx.workerId.split(":");
+  const ids = ctx.graphileWorkerIds ? [...ctx.graphileWorkerIds] : undefined;
   await ctx.db
     .insert(workerHeartbeats)
     .values({
@@ -17,6 +20,7 @@ export async function writeHeartbeat(ctx: JobContext): Promise<void> {
       startedAt: ctx.workerStartedAt,
       lastTickAt: sql`now()`,
       ticks: 1,
+      ...(ids ? { graphileWorkerIds: ids } : {}),
     })
     .onConflictDoUpdate({
       target: workerHeartbeats.workerId,
@@ -24,6 +28,7 @@ export async function writeHeartbeat(ctx: JobContext): Promise<void> {
         lastTickAt: sql`now()`,
         pid: process.pid,
         startedAt: ctx.workerStartedAt,
+        ...(ids ? { graphileWorkerIds: ids } : {}),
         // Reset the counter when a new process reuses the id (e.g. WORKER_ID set on the VM).
         ticks: sql`case when ${workerHeartbeats.startedAt} = ${ctx.workerStartedAt.toISOString()}::timestamptz then ${workerHeartbeats.ticks} + 1 else 1 end`,
       },

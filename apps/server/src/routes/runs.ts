@@ -85,6 +85,7 @@ import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
 import { proofAccepted } from "../orchestrator/proof-score.js";
+import { settleRun } from "../orchestrator/settle.js";
 import type { AppDeps } from "../types.js";
 import {
   insertKitVersion,
@@ -646,6 +647,37 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     if (!result.ok)
       return fail(c, result.status === 404 ? "not_found" : "conflict", result.message);
     return send(c, route, { run: toRun(result.run) });
+  });
+
+  // worker-hardening: operator settle (orchestrator/settle.ts). The owner settles their own run
+  // (RLS decides: a foreign run is a 404); an admin may settle any run.
+  r.post("/:id/settle", writeRun, async (c) => {
+    const route = contract.settle;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const { params, body } = parsed.request;
+    const actor = c.get("actor");
+    const admin =
+      actor.isAdmin === true && (!actor.apiKey || actor.apiKey.scopes.includes("admin"));
+    if (!admin) {
+      const [own] = await scopedDb(actor, deps.db).transaction((tx) =>
+        tx.select({ id: runs.id }).from(runs).where(eq(runs.id, params.id)).limit(1),
+      );
+      if (!own) return fail(c, "not_found", "run not found");
+    }
+    const out = await settleRun(deps.db, params.id, {
+      actor: actor.apiKey
+        ? { kind: "api_key", id: actor.apiKey.id }
+        : { kind: "user", id: actor.userId },
+      ...(body.reason ? { reason: body.reason } : {}),
+      jobs: deps.jobs,
+    });
+    if (!out.ok) return fail(c, "not_found", out.message);
+    const [row] = await deps.db.select().from(runs).where(eq(runs.id, params.id)).limit(1);
+    return send(c, route, {
+      run: toRun({ ...(row ?? out.run) }),
+      settled: out.settled,
+    });
   });
 
   // contenders and agent_sessions carry no owner_id: the run is read under RLS first, so a

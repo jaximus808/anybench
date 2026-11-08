@@ -63,6 +63,7 @@ export const EVENT_TYPES = [
   "alert.resolved",
   "billing.payment_failed",
   "publish.version_created",
+  "provider.outage",
 ] as const;
 export const AnybenchEventTypeSchema = z.enum(EVENT_TYPES);
 export type AnybenchEventType = z.infer<typeof AnybenchEventTypeSchema>;
@@ -87,6 +88,7 @@ export const EVENT_SOURCE_BY_TYPE = {
   "alert.resolved": "alert",
   "billing.payment_failed": "billing",
   "publish.version_created": "publish",
+  "provider.outage": "system",
 } as const satisfies Record<AnybenchEventType, EventSource>;
 
 const id = z.string().min(1);
@@ -336,6 +338,20 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
   eventOf(
     "publish.version_created",
     z.object({ benchmark_id: id, slug: id, version: z.int().positive(), key_id: id.optional() }),
+  ),
+  /**
+   * worker-hardening: the compute provider's outage breaker opened (launches paused, nothing
+   * billed) or closed again. Written to every run with unfinished trials, for the live page.
+   */
+  eventOf(
+    "provider.outage",
+    z.object({
+      provider: id,
+      status: z.enum(["open", "closed"]),
+      message: z.string(),
+      last_error: z.string().nullable().optional(),
+      next_probe_at: datetime.nullable().optional(),
+    }),
   ),
 ]);
 

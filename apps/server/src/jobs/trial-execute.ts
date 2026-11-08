@@ -42,6 +42,7 @@ import {
   type ExecutorDeps,
   type ExecutorTiming,
   type IngestPort,
+  type LaunchBreaker,
   type OrphanedTrial,
   type RunnerEdge,
   type TransitionOutcome,
@@ -66,6 +67,7 @@ import {
   proxyDepsFromConfig,
 } from "../lib/compute.js";
 import { drizzleComputerStore } from "../lib/computer-store.js";
+import { breakerConfigFrom, dbLaunchBreaker } from "../lib/provider-breaker.js";
 import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
@@ -103,6 +105,8 @@ export type TrialExecutePayload = z.infer<typeof TrialExecutePayloadSchema>;
 export const TrialGatePayloadSchema = z.object({
   trial_id: z.uuid(),
   attempt: z.int().positive(),
+  /** worker-hardening: provider outage errors this gate absorbed (trial-gate.ts). */
+  outage_pauses: z.int().nonnegative().optional(),
 });
 
 // ---------- the Postgres store ----------
@@ -128,6 +132,7 @@ function toExec(r: TrialRow): ExecTrial {
     machine: r.machine,
     cost_micro_usd: r.costMicroUsd,
     log_offset: r.logOffset,
+    outage_pauses: r.outagePauses,
   };
 }
 
@@ -144,6 +149,7 @@ function toColumns(p: TrialPatch): Partial<typeof trials.$inferInsert> {
   if (p.machine !== undefined) c.machine = p.machine;
   if (p.cost_micro_usd !== undefined) c.costMicroUsd = p.cost_micro_usd;
   if (p.log_offset !== undefined) c.logOffset = p.log_offset;
+  if (p.outage_pauses !== undefined) c.outagePauses = p.outage_pauses;
   return c;
 }
 
@@ -374,6 +380,19 @@ export interface TrialExecuteJobOptions {
   runnerBin?: ExecutorDeps["runnerBin"];
   /** Per-trial Naïve proxy keys (TDM-16/TDM-39): liveProxyKeys + liveLedgerSpend in production. */
   naiveProxy?: (ctx: JobContext) => ExecutorDeps["naiveProxy"] | null;
+  /**
+   * worker-hardening: the provider-outage breaker. Default: the shared Postgres one for the
+   * provider (lib/provider-breaker.ts). Return null to run without one.
+   */
+  breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
+}
+
+/** The shared breaker for `provider` (production default). */
+export function defaultLaunchBreaker(ctx: JobContext, provider: ComputeProvider): LaunchBreaker {
+  return dbLaunchBreaker(ctx.db, provider.name, {
+    config: breakerConfigFrom(ctx.config),
+    logger: ctx.logger,
+  });
 }
 
 /** Record the attempt's proxy key id and creation time on the trial (never the secret). */
@@ -412,7 +431,18 @@ export function ingestFromConfig(config: Config): IngestPort | null {
 export async function enqueueFollowUp(
   addJob: JobHelpers["addJob"],
   outcome: ExecuteOutcome,
+  payload?: TrialExecutePayload,
 ): Promise<void> {
+  if (outcome.kind === "paused") {
+    // Same attempt, same job key: graphile gives a key held by this (locked) job to a new job.
+    const t = outcome.trial;
+    await addJob(
+      TRIAL_EXECUTE_JOB,
+      { ...(payload ?? { trial_id: t.id }), trial_id: t.id, retry: false },
+      { jobKey: trialExecuteJobKey(t.id, t.attempt), runAt: new Date(outcome.retry_at) },
+    );
+    return;
+  }
   if (outcome.kind === "collected") {
     const t = outcome.trial;
     await addJob(
@@ -458,6 +488,25 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
       // Our liveness row must exist before we hold a lease, or a sweep would think us dead.
       await writeHeartbeat(ctx);
       const store = drizzleTrialExecStore(ctx.db, { paused: ctx.config.ANYBENCH_PAUSE });
+      const breaker =
+        options.breaker === undefined
+          ? defaultLaunchBreaker(ctx, provider)
+          : options.breaker(ctx, provider);
+      // worker-hardening: a provider outage parks trials that have not started yet right here
+      // (still `queued`, attempt untouched); the executor checks again before every create / mint.
+      const blocked = breaker ? await breaker.blockedUntil() : null;
+      if (blocked !== null) {
+        const t = await store.get(payload.trial_id);
+        if (t && t.state === "queued" && !t.lease_owner) {
+          await helpers.addJob(
+            TRIAL_EXECUTE_JOB,
+            { ...payload, retry: false },
+            { jobKey: trialExecuteJobKey(t.id, t.attempt), runAt: new Date(blocked) },
+          );
+          log.info({ until: new Date(blocked).toISOString() }, "provider outage: trial waits");
+          return;
+        }
+      }
       const registry = createComputerRegistry({
         provider,
         store: trialLinkedComputerStore(ctx.db),
@@ -480,13 +529,14 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
         ...(options.runnerBin ? { runnerBin: options.runnerBin } : {}),
         ...(fallbackUpload ? { fallbackUpload } : {}),
         ...(naiveProxy ? { naiveProxy, onProxyKeyMinted: recordProxyKey(ctx.db) } : {}),
+        ...(breaker ? { breaker } : {}),
       };
       const outcome = await executeTrial(deps, payload.trial_id, {
         retryNow: payload.retry,
         keepComputer: payload.keep_computer,
         ...(payload.reuse_computer_id ? { reuseComputerId: payload.reuse_computer_id } : {}),
         signal: helpers.abortSignal,
-        beforeRelease: (o) => enqueueFollowUp(helpers.addJob, o),
+        beforeRelease: (o) => enqueueFollowUp(helpers.addJob, o, payload),
       });
       if (outcome.kind === "final" && outcome.state === "failed_subject") {
         await recordFailedSubjectMetrics(ctx.db, payload.trial_id, naiveProxy?.spend ?? null).catch(
@@ -496,13 +546,15 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
       const summary =
         outcome.kind === "final"
           ? { kind: outcome.kind, state: outcome.state }
-          : outcome.kind === "retry"
-            ? {
-                kind: outcome.kind,
-                nextAttempt: outcome.next_attempt,
-                retryAt: new Date(outcome.retry_at).toISOString(),
-              }
-            : { kind: outcome.kind };
+          : outcome.kind === "paused"
+            ? { kind: outcome.kind, resumeAt: new Date(outcome.retry_at).toISOString() }
+            : outcome.kind === "retry"
+              ? {
+                  kind: outcome.kind,
+                  nextAttempt: outcome.next_attempt,
+                  retryAt: new Date(outcome.retry_at).toISOString(),
+                }
+              : { kind: outcome.kind };
       log.info(summary, "trial.execute finished");
     },
   });

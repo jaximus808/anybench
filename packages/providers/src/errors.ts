@@ -26,6 +26,8 @@ export interface ProviderErrorOptions {
   provider?: string;
   /** Computer, snapshot or path the error is about. */
   resource?: string;
+  /** The provider's HTTP status, when it answered with one (e.g. Naïve 500, 429). */
+  status?: number;
   cause?: unknown;
 }
 
@@ -33,6 +35,8 @@ export class ProviderError extends Error {
   readonly code: ProviderErrorCode;
   readonly provider: string | undefined;
   readonly resource: string | undefined;
+  /** The provider's HTTP status, when there was one. */
+  readonly status: number | undefined;
   /** True when the same call can succeed later without changing it. */
   readonly retryable: boolean;
 
@@ -42,6 +46,7 @@ export class ProviderError extends Error {
     this.code = code;
     this.provider = opts.provider;
     this.resource = opts.resource;
+    this.status = opts.status;
     this.retryable = code === "capacity" || code === "timeout" || code === "unavailable";
   }
 }
@@ -104,4 +109,26 @@ export class ProviderValidationError extends ProviderError {
 
 export function isProviderError(err: unknown, code?: ProviderErrorCode): err is ProviderError {
   return err instanceof ProviderError && (code === undefined || err.code === code);
+}
+
+/**
+ * True when `err` (or anything on its `cause` chain) is the provider failing on its side: an HTTP
+ * 5xx or a 429. Those say nothing about the trial and should trip the outage circuit breaker
+ * (packages/bench breaker.ts) instead of spending the trial's attempts. Errors without a status
+ * (network drops, our own validation) are not outages here.
+ */
+export function isProviderOutageError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 8 && cur !== null && cur !== undefined; depth++) {
+    if (typeof cur === "object") {
+      const status = (cur as { status?: unknown }).status;
+      if (typeof status === "number" && (status === 429 || (status >= 500 && status <= 599))) {
+        return true;
+      }
+      cur = (cur as { cause?: unknown }).cause;
+    } else {
+      return false;
+    }
+  }
+  return false;
 }

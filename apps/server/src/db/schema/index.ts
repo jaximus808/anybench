@@ -24,6 +24,7 @@ export * from "./leads.js";
 export * from "./outreach_messages.js";
 export * from "./outreach_replies.js";
 export * from "./projects.js";
+export * from "./provider_breakers.js";
 export * from "./publish_versions.js";
 export * from "./published_benchmarks.js";
 export * from "./reports.js";

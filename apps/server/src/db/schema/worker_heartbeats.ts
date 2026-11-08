@@ -14,4 +14,9 @@ export const workerHeartbeats = pgTable("worker_heartbeats", {
   lastTickAt: tstz("last_tick_at").notNull().defaultNow(),
   /** Ticks written by this process since it started. */
   ticks: integer("ticks").notNull().default(0),
+  /**
+   * worker-hardening: the graphile-worker worker ids this process runs (graphile picks them at
+   * random). A lock held by an id no live process claims is stale (jobs/stale-locks.ts).
+   */
+  graphileWorkerIds: text("graphile_worker_ids").array(),
 });

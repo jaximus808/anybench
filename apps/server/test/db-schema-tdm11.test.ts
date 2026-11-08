@@ -35,6 +35,7 @@ const PLAN_TABLES = [
   "kill_switches",
   "webhook_inbox",
   "worker_heartbeats", // TDM-14: worker liveness for /health/worker
+  "provider_breakers", // worker-hardening: the shared provider-outage circuit breaker
   // billing
   "billing_accounts",
   "usage_entries",

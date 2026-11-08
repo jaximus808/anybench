@@ -14,6 +14,11 @@ export interface JobContext {
   sentry: SentryHandle;
   workerId: string;
   workerStartedAt: Date;
+  /**
+   * worker-hardening: the graphile-worker worker ids this process runs (filled as graphile starts
+   * them), written to worker_heartbeats so a restart can tell their locks from a live process's.
+   */
+  graphileWorkerIds?: string[];
 }
 
 export interface JobDef<P extends z.ZodType = z.ZodType> {

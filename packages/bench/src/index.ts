@@ -8,3 +8,4 @@ export * from "./collectors/index.js";
 export * from "./kit-adapter.js";
 export * from "./executor.js";
 export * from "./gate.js";
+export * from "./breaker.js";

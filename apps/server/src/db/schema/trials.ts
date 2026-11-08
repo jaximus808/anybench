@@ -59,6 +59,11 @@ export const trials = pgTable(
     proxyKeyCreatedAt: tstz("proxy_key_created_at"),
     /** Which attempt the key belongs to (a re-attach reuses it, a retry mints a new one). */
     proxyKeyAttempt: integer("proxy_key_attempt"),
+    /**
+     * worker-hardening: provider outage errors (5xx / 429 on create, fork, mint) this trial
+     * absorbed without spending an attempt (packages/bench TRIAL_MAX_OUTAGE_PAUSES).
+     */
+    outagePauses: integer("outage_pauses").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

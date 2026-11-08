@@ -64,6 +64,13 @@
       "when": 1794113518985,
       "tag": "0008_outreach_replies",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794127079052,
+      "tag": "0009_worker_hardening",
+      "breakpoints": true
     }
   ]
 }

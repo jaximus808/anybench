@@ -148,12 +148,23 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     version: 2,
     key_id: "k1",
   }),
+  "provider.outage": tdm8Event(
+    "provider.outage",
+    {
+      provider: "naive",
+      status: "open",
+      message: "Naïve is having an outage; trials paused, nothing billed",
+      last_error: "naive internal (500): the sandbox request failed",
+      next_probe_at: "2026-11-07T07:19:00.000Z",
+    },
+    { source: "system", source_id: null, severity: "warn" },
+  ),
 };
 
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(19);
+    expect(EVENT_TYPES).toHaveLength(20);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

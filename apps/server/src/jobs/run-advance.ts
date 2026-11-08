@@ -73,7 +73,7 @@ const SWEEP_MAX_ATTEMPTS = 5;
 export const RunAdvancePayloadSchema = z.object({
   run_id: z.uuid(),
   /** Why the orchestrator was woken. */
-  reason: z.enum(["created", "go", "kit_edited", "cancelled", "poll", "busy", "sweep"]),
+  reason: z.enum(["created", "go", "kit_edited", "cancelled", "poll", "busy", "sweep", "settled"]),
   kit_id: z.uuid().optional(),
 });
 export type RunAdvancePayload = z.infer<typeof RunAdvancePayloadSchema>;

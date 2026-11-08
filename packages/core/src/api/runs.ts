@@ -11,6 +11,7 @@ import {
 import { MicroUsdSchema, NonNegativeMicroUsdSchema } from "../money.js";
 import { ContenderRoleSchema, ContenderSchema, GithubSourceSchema } from "../schemas/contender.js";
 import { RunStateSchema } from "../state/run.js";
+import { TrialStateSchema } from "../state/trial.js";
 import { AlertSchema } from "./alerts.js";
 import {
   IsoDateTimeSchema,
@@ -274,6 +275,20 @@ export const runRoutes = defineRoutes({
     params: runParams,
     body: z.object({ reason: z.string().trim().min(1).max(2000).optional() }),
     response: runResponse,
+  }),
+  settle: defineRoute({
+    id: "runs.settle",
+    method: "POST",
+    path: "/runs/:id/settle",
+    auth: ["session", "apiKey:runs:write"],
+    summary:
+      "Operator settle (the run owner, or an admin for any run): every unfinished trial becomes `cancelled` (operator-stopped, never billed), its computer is destroyed, and the run scores with the trials it has.",
+    params: runParams,
+    body: z.object({ reason: z.string().trim().min(1).max(2000).optional() }),
+    response: z.object({
+      run: RunSchema,
+      settled: z.array(z.object({ trial_id: z.string().min(1), from: TrialStateSchema })),
+    }),
   }),
   resume: defineRoute({
     id: "runs.resume",

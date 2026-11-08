@@ -509,6 +509,8 @@ export function describeEvent(live: LiveRun, ev: AnybenchEvent): string {
       return "Payment failed";
     case "publish.version_created":
       return `Published ${ev.payload.slug} v${ev.payload.version}`;
+    case "provider.outage":
+      return ev.payload.message;
     default: {
       void agent;
       return (ev as { type: string }).type;

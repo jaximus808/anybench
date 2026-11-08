@@ -1,6 +1,7 @@
 // graphile-worker runner (TDM-14): builds the task list and crontab from JOBS, connects on
 // DATABASE_URL_DIRECT (graphile-worker uses LISTEN/NOTIFY, which PgBouncer would break), and
 // drives the sub-minute `everyMs` schedules.
+import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
 import pg from "pg";
 import {
@@ -10,12 +11,16 @@ import {
   type Runner,
   type Task,
   type TaskList,
+  type WorkerEvents,
 } from "graphile-worker";
 import type { Config } from "../config.js";
 import { createDb, guardPgPool, type DbHandle, type PgErrorSink } from "../db/client.js";
 import type { Logger } from "../lib/logger.js";
 import type { SentryHandle } from "../lib/sentry.js";
+import { WORKER_TICK_INTERVAL_MS } from "../lib/worker-health.js";
+import { writeHeartbeat } from "./heartbeat.js";
 import { JOBS } from "./index.js";
+import { STALE_LOCK_SWEEP_INTERVAL_MS, unlockStaleGraphileJobs } from "./stale-locks.js";
 import type { JobContext, JobDef } from "./types.js";
 
 /** Jobs that hold a slot for a whole trial: they get WORKER_CONCURRENCY slots of their own. */
@@ -100,7 +105,9 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
     sentry,
     workerId,
     workerStartedAt: new Date(),
+    graphileWorkerIds: [],
   };
+  const graphileIds = ctx.graphileWorkerIds!;
 
   // Our own pool for graphile-worker: runner.stop() calls pgPool.end() without awaiting it when
   // graphile owns the pool, so its connections could outlive stop() and a later
@@ -119,6 +126,40 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   // with one shared pool of WORKER_CONCURRENCY slots the gates, run.advance, heartbeats and the
   // reaper queued behind every waiting trial: nothing was graded until almost every trial had run.
   // Trials get WORKER_CONCURRENCY slots; everything else gets its own CONTROL_CONCURRENCY.
+  // worker-hardening: free the jobs a killed worker left locked (graphile would wait 4 h), before
+  // this process's own heartbeat overwrites an earlier run of the same WORKER_ID.
+  const sweepLocks = async (when: "start" | "sweep") => {
+    try {
+      const r = await unlockStaleGraphileJobs(dbh.db, {
+        workerId,
+        workerStartedAt: ctx.workerStartedAt,
+        ownGraphileIds: graphileIds,
+      });
+      if (r.unlocked.length > 0) {
+        logger.warn(
+          { when, unlocked: r.unlocked, jobs: r.jobs, deadWorkers: r.deadWorkers },
+          "released graphile locks held by dead workers",
+        );
+      }
+      if (r.skippedUnknown.length > 0) {
+        logger.warn(
+          { when, lockedBy: r.skippedUnknown },
+          "old graphile locks left alone: a live worker predates graphile_worker_ids",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, when }, "stale graphile lock sweep failed");
+    }
+  };
+  await sweepLocks("start");
+
+  // Collect the graphile worker ids as graphile creates them (random; concurrency > 1 forbids
+  // choosing them), so our heartbeat claims their locks.
+  const events: WorkerEvents = new EventEmitter() as WorkerEvents;
+  events.on("worker:create", ({ worker }) => {
+    graphileIds.push(worker.workerId);
+  });
+
   const allTasks = buildTaskList(jobs, ctx);
   const pick = (keep: (name: string) => boolean) =>
     Object.fromEntries(Object.entries(allTasks).filter(([name]) => keep(name)));
@@ -132,6 +173,7 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
       concurrency: CONTROL_CONCURRENCY,
       noHandleSignals: true,
       pollInterval: options.pollIntervalMs ?? 2000,
+      events,
       taskList: controlTasks,
       // parsedCronItems (not `crontab`): an empty crontab string makes graphile read ./crontab.
       parsedCronItems: parseCrontab(buildCrontab(jobs)),
@@ -145,6 +187,7 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
         concurrency: config.WORKER_CONCURRENCY,
         noHandleSignals: true,
         pollInterval: options.pollIntervalMs ?? 2000,
+        events,
         taskList: trialTasks,
         parsedCronItems: [],
         logger: graphileLogger(logger),
@@ -165,6 +208,13 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   }
 
   const timers: NodeJS.Timeout[] = [];
+  // Liveness from a plain timer as well as the worker.heartbeat job: a control runner whose slots
+  // are all held by long gates must not make this process (its leases and locks) look dead.
+  const beat = () =>
+    writeHeartbeat(ctx).catch((err: unknown) => logger.warn({ err }, "heartbeat write failed"));
+  await beat();
+  timers.push(setInterval(beat, WORKER_TICK_INTERVAL_MS));
+  timers.push(setInterval(() => void sweepLocks("sweep"), STALE_LOCK_SWEEP_INTERVAL_MS));
   for (const job of jobs.filter((j) => j.everyMs)) {
     const enqueue = () =>
       runner

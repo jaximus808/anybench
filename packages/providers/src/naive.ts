@@ -42,6 +42,7 @@ import {
   ProviderUnavailableError,
   ProviderValidationError,
   isProviderError,
+  type ProviderErrorOptions,
 } from "./errors.js";
 import {
   buildDetachedCommand,
@@ -179,7 +180,7 @@ const BILLING_CODES = new Set(["insufficient_credits", "subscription_required", 
 /** Any Naïve failure as the ProviderError a caller branches on. */
 export function providerErrorFromNaive(err: unknown, resource?: string): ProviderError {
   if (err instanceof ProviderError) return err;
-  const opts = { provider: NAIVE_PROVIDER_NAME, resource, cause: err };
+  const opts: ProviderErrorOptions = { provider: NAIVE_PROVIDER_NAME, resource, cause: err };
   if (!(err instanceof NaiveError)) {
     return new ProviderError(
       "provider",
@@ -188,6 +189,7 @@ export function providerErrorFromNaive(err: unknown, resource?: string): Provide
     );
   }
   const { status, code } = err;
+  if (status !== undefined) opts.status = status;
   const msg = `naive ${code}${status === undefined ? "" : ` (${status})`}: ${err.message}`;
   if (status === 402 || BILLING_CODES.has(code)) return new ProviderBillingError(msg, opts);
   if (status === 404 || code === "not_found") return new ProviderNotFoundError(msg, opts);
