@@ -4,8 +4,10 @@
 //   research    pass-through: no new baselines (the curated kit names its own), with an event.
 //   designKit   github.com/jaximus808/tandem (any case, with or without .git) → the curated kit
 //               `kits/tandem-vs-claude-code` from this repo's kits/ directory, validated by
-//               packages/kit loadKit, cut to the SMOKE profile (todo-api, 1 repeat, no warm-up,
-//               TANDEM_WORKERS 3: 3 trials) unless the question asks for a "full benchmark".
+//               packages/kit loadKit, then cut by the question: "null pilot" → the A/A null
+//               pilot (E18 18.1: Claude Code solo vs an identical copy of itself, repeats from
+//               the power plan); "full benchmark" → the whole kit; "smoke" → the 3-trial cut
+//               (todo-api, 1 repeat, no warm-up, TANDEM_WORKERS 3); otherwise head-to-head.
 //               Any other repo → needs_human with CURATED_KIT_UNAVAILABLE.
 //               TODO([6.6] TDM-60 kit designer): design kits for any repo on Naïve.
 //   analyze     the Tandem repo: the deterministic summary (proof-score.ts summaryAnalyst, no LLM)
@@ -16,7 +18,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTrials, expandTrialsInputFromKit } from "@anybench/bench";
+import { expandTrials, expandTrialsInputFromKit, powerPlanForKit } from "@anybench/bench";
 import { formatSchemaIssues, safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { KitLoadError, loadKit, type LoadedKit } from "@anybench/kit";
 import {
@@ -111,6 +113,73 @@ export function headToHeadProfile(
     return {
       ok: false,
       reason: `the head-to-head profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
+    };
+  }
+  return { ok: true, spec: r.data };
+}
+
+/** The A/A null pilot when the question says "null pilot" (any case). */
+export function wantsNullPilot(question: string): boolean {
+  return /\bnull[\s-]+pilot\b/i.test(question);
+}
+
+/** The null pilot's two arms: Claude Code solo (the baseline) and its identical copy. */
+export const NULL_PILOT_BASELINE = "claude-code-solo";
+export const NULL_PILOT_TWIN = "claude-code-solo-twin";
+export const NULL_PILOT_TWIN_NAME = "A′ · Claude Code solo (identical copy)";
+
+/**
+ * The null pilot (E18 18.1, plan.md 17.2 rule 9 "an A-vs-A null run"): Claude Code solo against
+ * an identical copy of itself on all three tasks, no warm-up, through the normal pipeline. The
+ * copy differs only in id, name and role (the kit schema needs one `subject`); source, install,
+ * driver, model, env, caps and versions are the same objects. Tandem and the subagents setup
+ * are dropped, and with them `vary` (TANDEM_WORKERS expands only the Tandem driver). The proof
+ * overlays that named Tandem (oracle, do-nothing) point at the baseline instead: they replace
+ * the driver, so the contender only says which computer they run on, and the gates and tasks
+ * they proved are unchanged.
+ *
+ * Repeats come from the power plan (packages/bench powerPlanForKit), so the pilot runs what the
+ * test plan recommends for this shape: 10 per arm × task for a harness kit, 60 trials. The
+ * verdicts must all be "no detectable difference": a better/worse here means the eval is broken.
+ * Re-validated after the cut.
+ */
+export function nullPilotProfile(
+  spec: KitSpec,
+): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
+  const solo = spec.contenders.find((c) => c.id === NULL_PILOT_BASELINE);
+  if (!solo) {
+    return { ok: false, reason: `the curated Tandem kit has no ${NULL_PILOT_BASELINE} contender` };
+  }
+  const baseline = { ...solo, role: "baseline" as const };
+  const twin = {
+    ...solo,
+    id: NULL_PILOT_TWIN,
+    name: NULL_PILOT_TWIN_NAME,
+    role: "subject" as const,
+    found_by: `null pilot: an identical copy of ${NULL_PILOT_BASELINE} (A/A test)`,
+  };
+  const overlay = <T extends { contender?: string | undefined }>(o: T): T =>
+    o.contender === undefined || o.contender === NULL_PILOT_BASELINE
+      ? o
+      : { ...o, contender: NULL_PILOT_BASELINE };
+  const shaped = {
+    ...spec,
+    contenders: [baseline, twin],
+    vary: {},
+    schedule: { ...spec.schedule, warmups: 0 },
+    proof: {
+      ...spec.proof,
+      ...(spec.proof.oracle ? { oracle: overlay(spec.proof.oracle) } : {}),
+      do_less: spec.proof.do_less.map(overlay),
+      ...(spec.proof.regression ? { regression: overlay(spec.proof.regression) } : {}),
+    },
+  };
+  const cut = { ...shaped, repeats: powerPlanForKit(shaped).recommendedRepeats };
+  const r = safeParseKitSpec(cut);
+  if (!r.success) {
+    return {
+      ok: false,
+      reason: `the null pilot profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
     };
   }
   return { ok: true, spec: r.data };
@@ -225,6 +294,16 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       // The kit's files on disk (contract C1): kits.files_url = file://<dir> for env_build/proof.
       const files_dir = kit.dir;
       await say(ctx, "kit_designer", `using the curated Tandem kit (${CURATED_TANDEM_KIT})`);
+      if (wantsNullPilot(ctx.run.question)) {
+        const pilot = nullPilotProfile(kit.spec);
+        if (!pilot.ok) return stageHold(pilot.reason);
+        await say(
+          ctx,
+          "kit_designer",
+          `null pilot profile: ${trialCount(pilot.spec)} trials (Claude Code solo vs an identical copy of itself, ${pilot.spec.workloads.length} tasks × ${pilot.spec.repeats} repeats from the power plan, no warm-up); every verdict must be "no detectable difference", a winner means the eval is broken`,
+        );
+        return stageOk({ spec: pilot.spec, files_dir });
+      }
       if (wantsFullBenchmark(ctx.run.question)) {
         await say(ctx, "kit_designer", `full profile: ${trialCount(kit.spec)} trials`);
         return stageOk({ spec: kit.spec, files_dir });

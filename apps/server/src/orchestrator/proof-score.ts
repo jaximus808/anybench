@@ -1,9 +1,10 @@
 // Proof, scoring and the factual summary for the founder's live test (TDM-54 follow-up), until the
 // proof suite ([4.12]) and the analyst ([6.8]) land. Verdicts come from scoreKit (TDM-175 [16.4]).
 //
-//   curatedProof    PipelinePort.prove. The curated Tandem kit (full or smoke profile) gets its
-//                   committed, signed-off offline proof (kits/<slug>/PROOF.md, pinned here by
-//                   commit and sha256) as the proof record, labelled
+//   curatedProof    PipelinePort.prove. The curated Tandem kit (the full kit, or its smoke,
+//                   head-to-head or null-pilot cut) gets its committed, signed-off offline proof
+//                   (kits/<slug>/PROOF.md, pinned here by commit and sha256) as the proof record,
+//                   labelled
 //                   `proof: curated (verified offline at <commit>)`. Only the checks that offline
 //                   run verified pass; the other four are recorded `pass: false`, "not run".
 //                   Any other kit → needs_human "proof suite not available yet".
@@ -47,6 +48,7 @@ import {
   CURATED_TANDEM_KIT,
   defaultKitsDir,
   headToHeadProfile,
+  nullPilotProfile,
   smokeProfile,
 } from "./curated.js";
 import {
@@ -113,9 +115,11 @@ export function curatedProof(opts: { kitsDir?: string } = {}): PipelinePort["pro
       if (!(err instanceof KitLoadError)) throw err;
       return hold(PROOF_SUITE_UNAVAILABLE);
     }
-    // Only the kit that was proven offline (or its smoke / head-to-head cut): an edited kit is a
-    // different kit. The cuts drop setups, tasks or repeats; every task and check they keep is proven.
-    const cuts = [smokeProfile(curated), headToHeadProfile(curated)];
+    // Only the kit that was proven offline (or its smoke / head-to-head / null-pilot cut): an
+    // edited kit is a different kit. The cuts drop setups, tasks or repeats (the null pilot also
+    // copies setup A and points the driver-replacing proof overlays at it); every task, gate and
+    // check they keep is proven.
+    const cuts = [smokeProfile(curated), headToHeadProfile(curated), nullPilotProfile(curated)];
     const hashes = new Set([
       kitSpecHash(curated),
       ...cuts.flatMap((c) => (c.ok ? [kitSpecHash(c.spec)] : [])),

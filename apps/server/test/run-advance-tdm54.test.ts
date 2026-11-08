@@ -656,6 +656,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     for (const [question, expected] of [
       ["smoke: does Tandem run?", "smoke profile: 3 trials"],
       ["Does Tandem beat Claude Code?", "head-to-head profile: 30 trials"],
+      ["Null pilot: is Claude Code any different from itself?", "null pilot profile: 60 trials"],
       [
         "full benchmark: does Tandem beat Claude Code?",
         `full profile: ${trialCount(full.spec)} trials`,
@@ -694,7 +695,13 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       );
       const stored = safeParseKitSpec(kit!.spec);
       expect(stored.success && trialCount(stored.data)).toBe(
-        expected.startsWith("smoke") ? 3 : expected.startsWith("head") ? 30 : trialCount(full.spec),
+        expected.startsWith("smoke")
+          ? 3
+          : expected.startsWith("head")
+            ? 30
+            : expected.startsWith("null")
+              ? 60
+              : trialCount(full.spec),
       );
     }
   }, 60_000);
