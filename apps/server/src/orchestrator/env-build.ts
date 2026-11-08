@@ -38,6 +38,8 @@ import {
   type RecipeArch,
   type RecipeCatalog,
   type RunnerInstaller,
+  toolchainRecipes,
+  withRecipes,
 } from "@anybench/envs";
 import { hashKitPaths, KIT_LAYOUT } from "@anybench/kit";
 import type { ComputeProvider } from "@anybench/providers";
@@ -304,8 +306,8 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
       };
     const kit = input.kit;
     const profile = kit.env?.profile ?? "base";
-    const requested = recipesForProfile(profile);
-    if (!requested) {
+    const profileRecipes = recipesForProfile(profile);
+    if (!profileRecipes) {
       return stageHold(`env profile '${profile}' is not built yet ([3.9]); base and agent-cc are`);
     }
     const [row] = await deps.db
@@ -319,6 +321,12 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
     }
     const kitDir = fileURLToPath(row.filesUrl);
     const catalog = await (deps.catalog ?? (() => loadRecipeCatalog()))();
+    // TDM-60: the kit's declared toolchains go on BOTH images: the subject runs the project's
+    // tests while it works, and the scoring image runs the hidden tests. Unknown → hold.
+    const tools = toolchainRecipes(catalog, kit.env?.toolchains ?? []);
+    if (!tools.ok) return stageHold(`env build: ${tools.reason}`);
+    const requested = withRecipes(profileRecipes, tools.recipes);
+    const scoringRecipes = withRecipes(SCORING_RECIPES, tools.recipes);
     const runner = await deps.runner();
     if (!runner) {
       return stageHold(
@@ -356,7 +364,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
       v: ENV_BUILD_VERSION,
       provider: deps.provider.name,
       scoring: true,
-      recipes: resolvedRecipeVersions(catalog, SCORING_RECIPES),
+      recipes: resolvedRecipeVersions(catalog, scoringRecipes),
     });
     const cachedSnapshot = async (hash: string) => {
       const [row] = await deps.db
@@ -395,13 +403,13 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         provider: deps.provider,
         spec: { vcpu: 2, memoryMb: 4096, diskGb: 20 },
         label: `scoring-${scoringHash.slice(0, 12)}`,
-        recipes: SCORING_RECIPES,
+        recipes: scoringRecipes,
         catalog,
         runId: ctx.run.id,
         signal: ctx.signal,
         log: progress("scoring image"),
       });
-      await saveSnapshot(scoringHash, "scoring", b.snapshotId, { recipes: SCORING_RECIPES });
+      await saveSnapshot(scoringHash, "scoring", b.snapshotId, { recipes: scoringRecipes });
       return b.snapshotId;
     };
 

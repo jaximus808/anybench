@@ -360,6 +360,30 @@ export async function fixChangedLines(
   return out;
 }
 
+/** Toolchain each test runner needs (env-build installs it on the subject AND scoring images). */
+export const RUNNER_TOOLCHAINS: Readonly<Record<string, { name: string; version: string }>> = {
+  go: { name: "go", version: "1.26" },
+  "node-test": { name: "node", version: "22" },
+  vitest: { name: "node", version: "22" },
+  jest: { name: "node", version: "22" },
+  mocha: { name: "node", version: "22" },
+  pytest: { name: "python", version: "3.12" },
+  cargo: { name: "rust", version: "stable" },
+};
+
+/** The template's toolchains plus every mined task's runner toolchain, one entry per name. */
+export function kitToolchains(
+  base: readonly { name: string; version: string }[],
+  tasks: readonly MinedTask[],
+): { name: string; version: string }[] {
+  const out = [...base];
+  for (const t of tasks) {
+    const tc = RUNNER_TOOLCHAINS[t.runner.kind];
+    if (tc && !out.some((x) => x.name === tc.name)) out.push(tc);
+  }
+  return out;
+}
+
 // ---------- the kit ----------
 
 export interface AgentKitTask {
@@ -577,7 +601,17 @@ export async function materializeAgentKit(
     scoring: { weights: { "tests-pass": 60, wall: 20, cost: 20 }, primary: "tests-pass" },
     repeats: input.repeats ?? AGENT_DEFAULT_REPEATS,
     schedule: { warmups: 0, order_seed: input.orderSeed ?? 60 },
-    ...(tSpec.env ? { env: tSpec.env } : {}),
+    ...(tSpec.env
+      ? {
+          env: {
+            ...tSpec.env,
+            toolchains: kitToolchains(
+              tSpec.env.toolchains,
+              input.tasks.map((t) => t.task),
+            ),
+          },
+        }
+      : {}),
   };
   if (tSpec.proof.regression) {
     const rdir = tSpec.proof.regression.dir;

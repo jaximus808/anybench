@@ -12,7 +12,21 @@ import { mkdtempSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestGitHubRepo, ingestLocalRepo, type RepoIngest } from "@anybench/kit";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  ingestGitHubRepo,
+  ingestLocalRepo,
+  mineRepoTasks,
+  runProofSuiteReport,
+  validateGeneratedKit,
+  type ProofTrialRequest,
+  type RepoIngest,
+} from "@anybench/kit";
+import { DockerLocalProvider } from "@anybench/providers";
+import { designMinedAgentKit } from "../src/orchestrator/agent-kit-designer.js";
+import { hostProofRunnerTdm44 } from "../../../packages/kit/test/tdm44-proof-helpers.js";
 import { createNaiveClientFromEnv } from "@anybench/naive";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentSessions, runs } from "../src/db/schema/index.js";
@@ -148,5 +162,99 @@ describe.skipIf(!available)("kit designer on Naïve, sessions only (TDM-60)", ()
       await designFor("tandem", "jaximus808/tandem", ingest);
     },
     20 * 60_000,
+  );
+
+  // Step 6 on the real Tandem repo: mine its history on docker-local, write the issues on Naïve
+  // (issue-writer sessions only), materialize the kit, prove oracle + do-less + mutation with
+  // host trials and the real gate (go / node on this machine). TDM60_TANDEM_MINE=1.
+  it.skipIf(!process.env.TDM60_TANDEM_MINE || !process.env.TDM60_TANDEM_DIR)(
+    "jaximus808/tandem: a generated agent kit from its own history",
+    async () => {
+      const repoDir = process.env.TDM60_TANDEM_DIR!;
+      const provider = new DockerLocalProvider({
+        baseImage: process.env.TDM60_MINE_IMAGE ?? "golang:1.26-bookworm",
+        labels: { "anybench.tdm60-live-mine": "1" },
+      });
+      let mined;
+      try {
+        mined = await mineRepoTasks(repoDir, {
+          provider,
+          computer: { vcpu: 4, memoryMb: 4096 },
+          repoUrl: "https://github.com/jaximus808/tandem",
+          modelCutoff: process.env.TDM60_MODEL_CUTOFF ?? "2026-03-01",
+          targetTasks: 30,
+          maxVerify: 60,
+          log: (l: string) => log("mine", { l }),
+        });
+      } finally {
+        await provider.dispose();
+      }
+      log("mined", { verified: mined.tasks.length, drops: mined.report.drop_counts });
+      out.tandem_mined = { report: mined.report };
+      if (mined.tasks.length === 0) return;
+      const { ctx } = await ctxFor("jaximus808/tandem", "kit_draft");
+      const dir = join(kitsDir, "tandem-agent-kit");
+      const readme = readFileSync(join(repoDir, "README.md"), "utf8").slice(0, 4000);
+      const r = await designMinedAgentKit({ db: h.db, client: naive }, ctx, {
+        repoDir,
+        tasks: mined.tasks,
+        repo: {
+          name: "tandem",
+          summary: "a shared task queue for parallel AI coding-agent sessions",
+        },
+        readmeExcerpt: readme,
+        subject: {
+          kind: "harness",
+          name: "tandem",
+          summary:
+            "Tandem (3 workers) vs plain Claude Code on issues mined from Tandem's own history.",
+          better_means: ["more issues solved", "less time and cost per solved issue"],
+        },
+        template: {
+          dir: fileURLToPath(new URL("../../../kits/tandem-vs-claude-code/", import.meta.url)),
+          contenders: ["claude-code-solo", "tandem"],
+          subject: "tandem",
+        },
+        dir,
+      });
+      log(
+        "tandem agent kit",
+        r.ok ? { kept: r.kept, dropped: r.dropped, cost: r.costMicroUsd } : r,
+      );
+      out.tandem_agent_kit = r.ok
+        ? { dir: r.dir, kept: r.kept, dropped: r.dropped, cost: r.costMicroUsd }
+        : r;
+      if (!r.ok) return;
+      const v = await validateGeneratedKit(dir);
+      const files = (root: string, rel = ""): string[] =>
+        readdirSync(join(root, rel)).flatMap((e) => {
+          const p = rel ? `${rel}/${e}` : e;
+          return statSync(join(root, p)).isDirectory() ? files(root, p) : [p];
+        });
+      const behave = (req: ProofTrialRequest) => {
+        const input = join(dir, "workloads", req.workloadId, "input");
+        const f: Record<string, Uint8Array> = {};
+        for (const p of files(input)) f[`workspace/${p}`] = readFileSync(join(input, p));
+        const od =
+          req.overlay?.id === "upstream-fix"
+            ? "proof/oracle"
+            : (req.overlay?.env?.AB_OVERLAY_DIR ?? null);
+        const o = od ? join(dir, od, req.workloadId) : null;
+        if (o && existsSync(o))
+          for (const p of files(o)) f[`workspace/${p}`] = readFileSync(join(o, p));
+        return {
+          files: f,
+          metrics: [{ name: "wall_s", value: 1, gate_id: "hidden-tests", level: "trial" }],
+        };
+      };
+      const report = await runProofSuiteReport(v.kit!, {
+        runner: hostProofRunnerTdm44(v.kit!, behave),
+        concurrency: 2,
+      });
+      out.tandem_proof = { checks: report.checks, mutation: report.mutation };
+      for (const c of report.checks)
+        log("tandem proof", { check: c.check, pass: c.pass, reason: c.reason.slice(0, 400) });
+    },
+    120 * 60_000,
   );
 });

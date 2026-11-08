@@ -214,4 +214,45 @@ describe.skipIf(!available)("kit trial source + env build on Postgres (demo-env-
       (await provider.list()).filter((c) => c.tags.some((t) => t.startsWith("ab-infra-envbuild-"))),
     ).toHaveLength(0);
   });
+
+  it("TDM-60 env_build: declared toolchains go on both images (and their hashes); unknown holds", async () => {
+    const kit = await loadKit(CLI_KIT);
+    const { run, kit: kitRow } = await seed(CLI_KIT, kit.spec);
+    const provider = new FakeProvider();
+    provider.onExec("uname -m", () => "x86_64\n");
+    provider.onExec(/runner --version$/, () => "runner 0\n");
+    provider.onExec(/bash \.\/healthcheck\.sh$/, () => "");
+    provider.onExec(
+      (c) => c.includes("kit/adapters/"),
+      () => "",
+    );
+    const runner = { sha256: () => "e".repeat(64), install: async () => undefined };
+    const ctx = { run: { id: run.id }, signal: new AbortController().signal } as never;
+    const build = providerEnvBuild({ db: h.db, provider, runner: async () => runner });
+    const withGo = {
+      ...kit.spec,
+      env: {
+        ...kit.spec.env!,
+        resources: { ...kit.spec.env!.resources, vcpu: 3 },
+        toolchains: [{ name: "go", version: "1.26" }],
+      },
+    };
+    const before = (await h.db.select().from(envs)).length;
+    const r = await build(ctx, { kit_id: kitRow.id, kit: withGo });
+    expect(r.ok).toBe(true);
+    const detail = (r as { value: { detail: { recipes: string[] } } }).value.detail;
+    expect(detail.recipes).toContain("go@1.26.3");
+    const rows = (await h.db.select().from(envs)).slice(before);
+    const scoringRow = rows.find((x) => x.profile === "scoring")!;
+    expect((scoringRow.health as { recipes: string[] }).recipes).toContain("go");
+    const unknown = {
+      ...kit.spec,
+      env: { ...kit.spec.env!, toolchains: [{ name: "rust", version: "stable" }] },
+    };
+    expect(await build(ctx, { kit_id: kitRow.id, kit: unknown })).toEqual({
+      ok: false,
+      outcome: "needs_human",
+      reason: "env build: toolchain 'rust' has no recipe yet (known: node, python, go)",
+    });
+  });
 });

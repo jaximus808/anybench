@@ -1,0 +1,28 @@
+{
+  "name": "go",
+  "version": "1.26.3",
+  "description": "Go 1.26.3 (official linux tarball from go.dev/dl) in /opt/anybench/go-1.26.3, go and gofmt linked into /usr/local/bin, module and build caches under /opt/anybench.",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "GOROOT": "/opt/anybench/go-1.26.3",
+    "GOTOOLCHAIN": "local",
+    "GOFLAGS": "-mod=mod",
+    "GOPATH": "/opt/anybench/gopath",
+    "GOMODCACHE": "/opt/anybench/gopath/pkg/mod",
+    "GOCACHE": "/opt/anybench/gocache"
+  },
+  "path": [],
+  "downloads": {
+    "x64": {
+      "url": "https://go.dev/dl/go1.26.3.linux-amd64.tar.gz",
+      "sha256": "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556",
+      "checksumSource": "upstream"
+    },
+    "arm64": {
+      "url": "https://go.dev/dl/go1.26.3.linux-arm64.tar.gz",
+      "sha256": "9d89a3ea57d141c2b22d70083f2c8459ba3890f2d9e818e7e933b75614936565",
+      "checksumSource": "upstream"
+    }
+  }
+}

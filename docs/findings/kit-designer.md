@@ -270,3 +270,34 @@ Expected size: two image builds, plus about 44 proof computers for a kit like th
 | **total** | **137,240** |
 
 Session costs are from `agent_sessions.cost_micro_usd`. No computers were created on Naïve.
+
+## Toolchains on both images: Go (docker-local, no spend)
+
+- New recipe `packages/envs/recipes/go` pins Go 1.26.3 from go.dev/dl for x64 and arm64. Its
+  sha256 values come from `https://go.dev/dl/?mode=json&include=all`, upstream:
+  `2b2cfc71…eb556` (linux-amd64) and `9d89a3ea…36565` (linux-arm64). Module and build caches
+  are world-writable, so the gate's contender uid can run `go test`. Its health check builds a
+  module and checks that `go test -json` reports the test as passing.
+- `@anybench/envs` `toolchainRecipes` maps `node` → node22, `python` → python312-uv and
+  `go` → go. A version matches by prefix (`1.26` matches 1.26.3). An unknown toolchain or a
+  version the catalog does not carry is an error. env-build holds on it: "env build: toolchain
+  'rust' has no recipe yet (known: node, python, go)".
+- env-build: the subject image installs the profile recipes plus the toolchain recipes, and the
+  scoring image installs SCORING_RECIPES plus the toolchain recipes. Both go into their snapshot
+  hashes. The curated kit's `node 22` is already in both lists, so its hashes do not change.
+- `materializeAgentKit` declares the template's toolchains plus each mined runner's toolchain:
+  go → `go 1.26`, node runners → `node 22`, pytest → `python 3.12`, cargo → `rust` (which holds).
+
+```
+$ cd apps/server && npx vitest run test/toolchains-go-docker-tdm60.test.ts --silent=false
+recipes: git-time installed 19.8 s, node22 installed 8.1 s, go 1.26.3 installed 6.2 s (health check 26.5 s)
+before (untouched workspace): {"pass":false,"reason":"hidden-tests: 0/2 FAIL_TO_PASS and 1/1 PASS_TO_PASS tests pass on mined-8b9af7eecc (not passing: example.com/calc/calc/TestAbsNegative; example.com/calc/calc/TestClampLow)"}
+after (the upstream fix):     {"pass":true,"reason":"hidden-tests: 2/2 FAIL_TO_PASS and 1/1 PASS_TO_PASS tests pass on mined-8b9af7eecc"}
+ Tests  1 passed (1)
+```
+
+The task in that run was a Go fixture repo (Clamp's low bound and Abs of negatives, fixed with
+tests), mined on docker-local `golang:1.26-bookworm`. The gate ran on an ubuntu:24.04 computer
+built with env-build's scoring recipe list (`toolchainRecipes` + `withRecipes`).
+`trial-source-demo.test.ts` covers the env-build wiring on Postgres + FakeProvider: go lands on
+both images and in their recorded recipes, and an unknown toolchain holds.
