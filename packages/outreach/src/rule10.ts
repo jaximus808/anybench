@@ -50,8 +50,7 @@ export interface Rule10Violation {
 // ---- vocabulary --------------------------------------------------------------------------------
 
 /** Intensifiers and quantities between a copula and the comparative: "is MUCH faster", "is 2x slower". */
-const ADV =
-  String.raw`(?:(?:much|far|way|any|significantly|substantially|clearly|noticeably|considerably|dramatically|measurably|consistently|slightly|actually|really|indeed|in fact|about|roughly|nearly|almost|over|up to|at least|still|even|a lot|a bit|~?\d+(?:\.\d+)?\s?(?:x|%|times|percent))\s+)*`;
+const ADV = String.raw`(?:(?:much|far|way|any|significantly|substantially|clearly|noticeably|considerably|dramatically|measurably|consistently|slightly|actually|really|indeed|in fact|about|roughly|nearly|almost|over|up to|at least|still|even|a lot|a bit|~?\d+(?:\.\d+)?\s?(?:x|%|times|percent))\s+)*`;
 
 const MORE_LESS_ADJ = String.raw`(?:accurate|efficient|reliable|expensive|performant|capable|robust|stable|correct|scalable|token-efficient|cost-effective|productive|consistent)`;
 
@@ -92,7 +91,9 @@ const ASSERTIONS: readonly AssertionPattern[] = [
   },
   {
     rule: "comparative_than",
-    re: rx(String.raw`\b(?:${COMP}|${JUDGMENT})\s+than\b|\bas\s+(?:fast|cheap|accurate|good|efficient|reliable)\s+as\b`),
+    re: rx(
+      String.raw`\b(?:${COMP}|${JUDGMENT})\s+than\b|\bas\s+(?:fast|cheap|accurate|good|efficient|reliable)\s+as\b`,
+    ),
     excusedBy: ["plan", "report"],
   },
   {

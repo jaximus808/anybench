@@ -166,9 +166,9 @@ describe("checkQuote: strikethrough, elision and negation", () => {
       ok: false,
       reason: "quote_not_found",
     });
-    expect(checkQuote(mat, "Zippy is 2x faster than pi on our suite", "README.md#L2")).toMatchObject(
-      { ok: true, line: 2, relocated: false },
-    );
+    expect(
+      checkQuote(mat, "Zippy is 2x faster than pi on our suite", "README.md#L2"),
+    ).toMatchObject({ ok: true, line: 2, relocated: false });
     expect(checkQuote(mat, "3x cheaper per solved task", "README.md#L3")).toEqual({
       ok: false,
       reason: "quote_not_found",
@@ -176,13 +176,15 @@ describe("checkQuote: strikethrough, elision and negation", () => {
   });
 
   it("refuses an ellipsis inside the quote (it could splice out a 'not'); allows one at either end", () => {
-    expect(checkQuote(mat, "Zippy is ... 10x faster than plain Claude Code", "README.md#L4")).toEqual(
-      { ok: false, reason: "quote_elided" },
+    expect(
+      checkQuote(mat, "Zippy is ... 10x faster than plain Claude Code", "README.md#L4"),
+    ).toEqual({ ok: false, reason: "quote_elided" });
+    expect(checkQuote(mat, "Zippy is … 10x faster than plain Claude Code", "README.md#L4")).toEqual(
+      {
+        ok: false,
+        reason: "quote_elided",
+      },
     );
-    expect(checkQuote(mat, "Zippy is … 10x faster than plain Claude Code", "README.md#L4")).toEqual({
-      ok: false,
-      reason: "quote_elided",
-    });
     expect(checkQuote(mat, "...2x faster than pi on our suite", "README.md#L2")).toMatchObject({
       ok: true,
       line: 2,

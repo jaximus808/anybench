@@ -27,7 +27,9 @@ import {
   type NaiveClient,
 } from "@anybench/naive";
 import { z } from "zod";
+import { findEmailViaHunter, HUNTER_EMAIL_FINDER_MICRO_USD } from "./email-finder.js";
 import type { MicroUsd } from "./money.js";
+import { MonidError, type MonidClient } from "./monid.js";
 import {
   METRICS_BY_CLASS,
   ScoutBriefRejectedError,
@@ -303,6 +305,38 @@ export interface ScoutEmailFinder {
   readonly maxCostMicroUsd: MicroUsd;
   /** Null when no address was found. `costMicroUsd` counts against the scout run cap. */
   find(lead: ScoutLead): Promise<{ email: string | null; costMicroUsd: MicroUsd }>;
+}
+
+/**
+ * The scout's email lookup: Hunter `/email-finder` through Monid (TDM-163 `findEmailViaHunter`),
+ * for a person lead whose company domain is known. No call (and no spend) for organizations, a
+ * missing domain, or a contact that is not a first + last name (a GitHub login is not a name).
+ * A Monid refusal before the run (SPEND_CAP, HALTED, a settled 4xx) costs 0; an unknown charge is
+ * rethrown so runScout books the lookup at its max cost.
+ */
+export function hunterScoutEmailFinder(monid: MonidClient): ScoutEmailFinder {
+  return {
+    source: "hunter_via_monid",
+    maxCostMicroUsd: HUNTER_EMAIL_FINDER_MICRO_USD,
+    async find(lead) {
+      const name = lead.contact?.trim() ?? "";
+      const domain = lead.signals.domain ?? null;
+      if (lead.signals.ownerType === "Organization" || !domain || !/\S\s+\S/.test(name)) {
+        return { email: null, costMicroUsd: 0n };
+      }
+      try {
+        const found = await findEmailViaHunter(monid, { domain, fullName: name });
+        return found
+          ? { email: found.email, costMicroUsd: found.costMicroUsd }
+          : { email: null, costMicroUsd: 0n };
+      } catch (err) {
+        if (err instanceof MonidError && !err.chargeUnknown) {
+          return { email: null, costMicroUsd: err.run?.costMicroUsd ?? 0n };
+        }
+        throw err;
+      }
+    },
+  };
 }
 
 // ---- the run ----------------------------------------------------------------------------------

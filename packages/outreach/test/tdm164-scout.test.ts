@@ -13,6 +13,9 @@ import { describe, expect, it } from "vitest";
 import {
   checkQuote,
   contactFor,
+  hunterScoutEmailFinder,
+  MonidError,
+  type MonidClient,
   DEFAULT_SCOUT_PER_LEAD_BUDGET_MICRO_USD,
   MemoryScoutLeadStore,
   METRICS_BY_CLASS,
@@ -21,6 +24,7 @@ import {
   runScout,
   ScoutBriefRejectedError,
   ScoutBriefSchema,
+  ScoutLeadSchema,
   ScoutMaterial,
   scoutLeadFromRow,
   scoutLeadFromStored,
@@ -175,9 +179,9 @@ describe("checkQuote: quotes must be on their cited line of the fetched text", (
       relocated: false,
     });
     expect(checkQuote(mat, "“Uses 46% fewer tokens than pi”", "README.md#L8").ok).toBe(true);
-    expect(checkQuote(mat, "SWE-bench Verified: 27 → 33 of 50 with Claude", "README.md#L12").ok).toBe(
-      true,
-    );
+    expect(
+      checkQuote(mat, "SWE-bench Verified: 27 → 33 of 50 with Claude", "README.md#L12").ok,
+    ).toBe(true);
   });
 
   it("relocates a real quote cited on the wrong line, refuses invented or trivial ones", () => {
@@ -476,6 +480,63 @@ describe("runScout (FakeNaive)", () => {
       cost_micro_usd: 0n,
     });
     expect(b!.status !== "error" && b!.brief.contact.status).toBe("none");
+  });
+
+  it("hunterScoutEmailFinder: Hunter via Monid only for a named person with a domain; refusals cost 0", async () => {
+    const runs: unknown[] = [];
+    let mode: "found" | "spend_cap" | "unknown" = "found";
+    const monid = {
+      run: async (req: { input: unknown; maxCostMicroUsd: bigint }) => {
+        runs.push(req);
+        if (mode === "spend_cap") throw new MonidError("cap", "SPEND_CAP");
+        if (mode === "unknown") {
+          const e = new MonidError("timeout", "POLL_TIMEOUT");
+          e.chargeUnknown = true;
+          throw e;
+        }
+        return {
+          runId: "run_1",
+          output: { data: { email: "Ada@Zippy.example", score: 91, verification: "valid" } },
+          costMicroUsd: 24_500n,
+        };
+      },
+    } as unknown as MonidClient;
+    const finder = hunterScoutEmailFinder(monid);
+    expect(finder.maxCostMicroUsd).toBe(24_500n);
+    const base = { id: "a", githubUrl: "https://github.com/acme/zippy" };
+    const person = ScoutLeadSchema.parse({
+      ...base,
+      contact: "Ada Lovelace",
+      signals: { domain: "zippy.example", ownerType: "User" },
+    });
+    expect(await finder.find(person)).toEqual({
+      email: "ada@zippy.example",
+      costMicroUsd: 24_500n,
+    });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ maxCostMicroUsd: 24_500n });
+
+    // No call: a login is not a name, no domain, or an organization.
+    for (const l of [
+      { ...base, contact: "adalove", signals: { domain: "zippy.example" } },
+      { ...base, contact: "Ada Lovelace" },
+      {
+        ...base,
+        contact: "Ada Lovelace",
+        signals: { domain: "zippy.example", ownerType: "Organization" },
+      },
+    ]) {
+      expect(await finder.find(ScoutLeadSchema.parse(l))).toEqual({
+        email: null,
+        costMicroUsd: 0n,
+      });
+    }
+    expect(runs).toHaveLength(1);
+
+    mode = "spend_cap";
+    expect(await finder.find(person)).toEqual({ email: null, costMicroUsd: 0n });
+    mode = "unknown";
+    await expect(finder.find(person)).rejects.toThrow(MonidError);
   });
 
   it("books a failed email lookup at its max cost", async () => {

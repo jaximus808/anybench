@@ -7,6 +7,9 @@ import { parseArgs } from "node:util";
 import { formatUsd } from "@anybench/core";
 import { createNaiveClientFromEnv, type NaiveClient } from "@anybench/naive";
 import {
+  createMonidClientFromEnv,
+  hunterScoutEmailFinder,
+  type MonidClient,
   PgScoutLeadStore,
   runScout,
   scoutSettingsFromEnv,
@@ -33,6 +36,8 @@ reading or writing the database.
   --model <id>                 override the scout model (packages/agents/scout/config.json)
   --out <file>                 write the full report (briefs included) as JSON
   --database-url <url>         default $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev DB
+  --find-email                 for scored leads with no email: Hunter via Monid (needs MONID_API_KEY;
+                               $0.0245 per address found, counted against the run cap)
   --dry-run                    write nothing to the database (sessions still run and spend)
   --json                       print the report as JSON
 Needs NAIVE_API_KEY.`;
@@ -51,6 +56,7 @@ export interface OutreachScoutDeps {
   naive?: NaiveClient;
   openStore?: (databaseUrl: string) => Promise<OpenedScoutStore>;
   ingest?: ScoutOptions["ingest"];
+  monid?: MonidClient;
 }
 
 async function openPgStore(databaseUrl: string): Promise<OpenedScoutStore> {
@@ -103,6 +109,7 @@ export async function runOutreachScout(
         out: { type: "string" },
         "database-url": { type: "string" },
         "dry-run": { type: "boolean", default: false },
+        "find-email": { type: "boolean", default: false },
         json: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -156,6 +163,16 @@ export async function runOutreachScout(
     naive = createNaiveClientFromEnv(env);
   }
 
+  let monid = deps.monid;
+  if (v["find-email"] && !monid) {
+    if (!env.MONID_API_KEY) {
+      err("--find-email needs MONID_API_KEY");
+      return 2;
+    }
+    // Monid's own ledger is capped at the run cap too; runScout also checks before each lookup.
+    monid = createMonidClientFromEnv(env, { spendCapMicroUsd: cap });
+  }
+
   const repos = v.repo ?? [];
   const adHoc: ScoutLeadInput[] = repos.map((url) => ({ id: repoLeadId(url), githubUrl: url }));
   let opened: OpenedScoutStore | undefined;
@@ -175,6 +192,7 @@ export async function runOutreachScout(
       perLeadBudgetMicroUsd: perLead,
       runCapMicroUsd: cap,
       ...(v.model ? { model: v.model } : {}),
+      ...(v["find-email"] && monid ? { emailFinder: hunterScoutEmailFinder(monid) } : {}),
       dryRun: v["dry-run"] || adHoc.length > 0,
       log: v.json ? () => undefined : err,
     });
