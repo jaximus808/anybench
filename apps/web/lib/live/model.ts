@@ -35,7 +35,7 @@ export interface LiveSnapshot {
     | "spent_micro_usd"
     | "estimate_micro_usd"
     | "created_at"
-  >;
+  > & { paused_reason?: string | null };
   contenders: LiveContender[];
   trials: Trial[];
   agents: AgentSession[];
@@ -138,6 +138,8 @@ export interface LiveRun {
   feed: FeedItem[];
   alerts: LiveAlert[];
   stateHistory: { state: RunState; at: string }[];
+  /** Why the run is held or ended (runs.paused_reason, then the latest run.state_changed reason). */
+  holdReason: string | null;
   lastSeq: number;
   /** The newest event time seen; the page's clock when replaying. */
   lastAt: string | null;
@@ -239,6 +241,7 @@ export function initLive(s: LiveSnapshot): LiveRun {
         firstSeen: a.first_seen,
       })),
     stateHistory: [{ state: s.run.state, at: s.run.created_at }],
+    holdReason: s.run.paused_reason ?? null,
     lastSeq: s.lastSeq,
     lastAt: null,
     needsTrialRefresh: false,
@@ -610,6 +613,7 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
     case "run.state_changed":
       next.state = ev.payload.to;
       next.stateHistory = [...next.stateHistory, { state: ev.payload.to, at: ev.at }];
+      next.holdReason = ev.payload.reason ?? null;
       break;
     case "agent.tool.started":
     case "agent.message":

@@ -22,6 +22,7 @@ import {
   type LiveStatus,
   type UseLiveRunOptions,
 } from "../../lib/live/useLiveRun";
+import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
@@ -264,6 +265,8 @@ export function LiveRunView({
             </li>
           ))}
         </ol>
+
+        <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
 
         {problem || ackProblem ? (
           <p className={styles.alert} data-sev="warn" role="status">
