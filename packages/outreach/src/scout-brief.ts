@@ -181,6 +181,8 @@ export const DroppedItemSchema = z.strictObject({
   reason: z.enum([
     "quote_not_found",
     "quote_too_short",
+    "quote_elided",
+    "quote_out_of_context",
     "unknown_file",
     "line_out_of_range",
     "duplicate_claim",
@@ -332,12 +334,15 @@ function stripDotSlash(p: string): string {
 }
 
 /**
- * The comparable form of a line or a quote: markup dropped (images, HTML tags, link URLs,
- * emphasis, backticks, heading/list/quote markers, table pipes), typographic quotes, dashes and
- * the multiplication sign unified, whitespace collapsed, lowercased.
+ * The comparable form of a line or a quote: struck-through text DELETED (`~~x~~`, `<del>`, `<s>`,
+ * `<strike>`: a retracted claim is not a claim), other markup dropped (images, HTML tags, link
+ * URLs, emphasis, backticks, heading/list/quote markers, table pipes), typographic quotes, dashes
+ * and the multiplication sign unified, whitespace collapsed, lowercased.
  */
 export function normalizeForQuote(s: string): string {
   return s
+    .replace(/~~[^~]*~~/g, " ")
+    .replace(/<(del|s|strike)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<[^>]*>/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -350,7 +355,7 @@ export function normalizeForQuote(s: string): string {
     .replace(/[‐-―−]/g, "-")
     .replace(/×/g, "x")
     .replace(/…/g, "...")
-    .replace(/[`*]|__|~~/g, "")
+    .replace(/[`*]|__/g, "")
     .replace(/(^|\s)_+|_+(?=\s|$|[.,;:!?)])/g, "$1")
     .replace(/^\s*(?:#{1,6}|>|[-+]|\d+\.)\s+/, "")
     .replace(/\|/g, " ")
@@ -359,27 +364,53 @@ export function normalizeForQuote(s: string): string {
     .toLowerCase();
 }
 
-/** Strip wrapping quote marks and a trailing ellipsis the model may add around a quote. */
-function quoteParts(quote: string): string[] {
+/**
+ * The quote as one contiguous needle: wrapping quote marks and a LEADING or TRAILING ellipsis are
+ * dropped. Null when an ellipsis is left inside: an elided quote can splice out a "not".
+ */
+function quoteNeedle(quote: string): string | null {
   const n = normalizeForQuote(quote)
     .replace(/^["'\s]+|["'\s]+$/g, "")
-    .replace(/^\.\.\.\s*|\s*\.\.\.$/g, "");
-  return n
-    .split(/\s*\.\.\.\s*/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+    .replace(/^(?:\.\.\.\s*)+|(?:\s*\.\.\.)+$/g, "")
+    .replace(/^["'\s]+|["'\s]+$/g, "");
+  return n.includes("...") ? null : n;
 }
 
-/** Every part of the quote appears on the line, in order. */
-function lineHasQuote(line: string, parts: readonly string[]): boolean {
+/** Where a clause starts: sentence or clause punctuation, a spaced dash, or a conjunction. */
+const CLAUSE_BOUNDARY = /[.!?](?=\s|$)|[;:()]|\s-\s|\b(?:but|however|whereas)\b/g;
+
+/**
+ * A negation or disclaimer that, sitting before the quoted span in the same clause, flips or
+ * retracts it: "our tool is NOT 10x faster", "we NEVER CLAIMED it is 2x faster".
+ */
+const DISCLAIMER =
+  /\b(?:not|no|never|nor|neither|without|unlike|instead of|rather than|retract\w*|withdr[ae]wn?|disclaim\w*|claimed|false|myth|debunk\w*)\b|n't\b/;
+
+/** A retraction AFTER the span in the same clause: "10x faster (since retracted)". */
+const TRAILING_DISCLAIMER =
+  /\b(?:retracted|withdrawn|was wrong|is wrong|were wrong|no longer|not true|untrue|false|debunked|incorrect)\b/;
+
+/** The text of `hay` from the start of the clause holding `at`, up to `at`. */
+export function clausePrefix(hay: string, at: number): string {
+  let start = 0;
+  for (const m of hay.slice(0, at).matchAll(CLAUSE_BOUNDARY)) start = (m.index ?? 0) + m[0].length;
+  return hay.slice(start, at);
+}
+
+type LineMatch = "ok" | "out_of_context" | "absent";
+
+/** Is the needle on the line, with no negation or disclaimer before it in its clause? */
+function matchOnLine(line: string, needle: string): LineMatch {
   const hay = normalizeForQuote(line);
-  let from = 0;
-  for (const p of parts) {
-    const at = hay.indexOf(p, from);
-    if (at < 0) return false;
-    from = at + p.length;
+  let seen = false;
+  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
+    seen = true;
+    const after = hay.slice(at + needle.length);
+    const cut = after.search(/[.!?](?=\s|$)|[;:]/);
+    const suffix = cut < 0 ? after : after.slice(0, cut);
+    if (!DISCLAIMER.test(clausePrefix(hay, at)) && !TRAILING_DISCLAIMER.test(suffix)) return "ok";
   }
-  return true;
+  return seen ? "out_of_context" : "absent";
 }
 
 /** Letters and digits in the quote; below this a "quote" is a word, not a claim. */
@@ -389,12 +420,20 @@ export type QuoteCheck =
   | { ok: true; path: string; line: number; relocated: boolean }
   | {
       ok: false;
-      reason: "quote_not_found" | "quote_too_short" | "unknown_file" | "line_out_of_range";
+      reason:
+        | "quote_not_found"
+        | "quote_too_short"
+        | "quote_elided"
+        | "quote_out_of_context"
+        | "unknown_file"
+        | "line_out_of_range";
     };
 
 /**
- * Does `quote` appear on line `ref` of the material? If it is not on the cited line but is on
- * exactly one other line of the same file, the ref is corrected (relocated). Anything else fails.
+ * Does `quote` appear, contiguously and in context, on line `ref` of the material? If it is not on
+ * the cited line but is on exactly one other line of the same file, the ref is corrected
+ * (relocated). A match preceded by a negation or disclaimer in its clause is
+ * `quote_out_of_context`; struck-through text never matches.
  */
 export function checkQuote(material: ScoutMaterial, quote: string, ref: string): QuoteCheck {
   const mref = SOURCE_REF_RE.exec(ref.trim());
@@ -403,16 +442,22 @@ export function checkQuote(material: ScoutMaterial, quote: string, ref: string):
   const line = Number(mref[2]);
   const lines = material.lines(path);
   if (!lines) return { ok: false, reason: "unknown_file" };
-  const parts = quoteParts(quote);
-  if (parts.join("").replace(/[^a-z0-9]/g, "").length < MIN_QUOTE_CHARS) {
+  const needle = quoteNeedle(quote);
+  if (needle === null) return { ok: false, reason: "quote_elided" };
+  if (needle.replace(/[^a-z0-9]/g, "").length < MIN_QUOTE_CHARS) {
     return { ok: false, reason: "quote_too_short" };
   }
-  if (line <= lines.length && lineHasQuote(lines[line - 1]!, parts)) {
-    return { ok: true, path, line, relocated: false };
-  }
+  const cited = line <= lines.length ? matchOnLine(lines[line - 1]!, needle) : "absent";
+  if (cited === "ok") return { ok: true, path, line, relocated: false };
   const hits: number[] = [];
-  for (let i = 0; i < lines.length; i++) if (lineHasQuote(lines[i]!, parts)) hits.push(i + 1);
+  let outOfContext = cited === "out_of_context";
+  for (let i = 0; i < lines.length; i++) {
+    const m = matchOnLine(lines[i]!, needle);
+    if (m === "ok") hits.push(i + 1);
+    else if (m === "out_of_context") outOfContext = true;
+  }
   if (hits.length === 1) return { ok: true, path, line: hits[0]!, relocated: true };
+  if (outOfContext && hits.length === 0) return { ok: false, reason: "quote_out_of_context" };
   return {
     ok: false,
     reason: line > lines.length && hits.length === 0 ? "line_out_of_range" : "quote_not_found",
