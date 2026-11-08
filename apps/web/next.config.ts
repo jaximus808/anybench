@@ -11,6 +11,14 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@anybench/core"],
   // Same-origin API proxy (TDM-100): the browser calls /api/*, so the session cookie (and the
   // OAuth state cookie, when the GitHub callback is <web>/api/auth/github/callback) is first-party.
+  // The retired TDM-204/205 public routes point at their /r equivalents (the signed publication
+  // page and its embed card); query strings (?theme=) carry over and unknown slugs 404 at /r.
+  async redirects() {
+    return [
+      { source: "/b/:owner/:slug", destination: "/r/:slug", permanent: false },
+      { source: "/embed/:slug", destination: "/r/:slug/embed", permanent: false },
+    ];
+  },
   async rewrites() {
     return [{ source: `${WEB_API_BASE}/:path*`, destination: `${upstreamApiUrl()}/:path*` }];
   },

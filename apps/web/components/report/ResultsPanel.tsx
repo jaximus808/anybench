@@ -1,8 +1,9 @@
 "use client";
 // The Results section (TDM-103 [11.6]): the run's report from GET /runs/:id/report, through the
 // web app's API client (lib/api.ts, the same-origin /api proxy). Headline verdict first, then one
-// row per requirement with every setup's value and n, the verdict vs the baseline with the CI of
-// the difference, and the smallest detectable difference. Then how the setups ran (disclosure)
+// chart per requirement (each setup's value with its interval, the difference vs the baseline with
+// its CI and verdict), then the exact numbers: one row per requirement with every setup's value
+// and n, the verdict with the CI of the difference, and the smallest detectable difference. Then how the setups ran (disclosure)
 // and the proof basis. No composite score anywhere.
 //
 // All report text is untrusted (it carries agent and kit text): it renders as React text nodes,
@@ -17,6 +18,7 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useLiveApi } from "../../lib/live/client";
+import { RequirementCharts, TaskCharts } from "../bench/Charts";
 import { describeApiError } from "../../lib/live/useLiveRun";
 import { perTaskRows, proofBasis, resultRows, splitAnswer } from "./model";
 import styles from "./report.module.css";
@@ -160,6 +162,13 @@ function ReportBody({ report }: { report: Report }) {
       </p>
 
       {rows.length ? (
+        <>
+          <h3 className={styles.subTitle}>By requirement</h3>
+          <RequirementCharts report={report} />
+        </>
+      ) : null}
+
+      {rows.length ? (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead>
@@ -264,6 +273,7 @@ function ReportBody({ report }: { report: Report }) {
             {report.per_task.scope} Each task’s repeats are the unit; Holm across{" "}
             {report.per_task.family} task × requirement tests.
           </p>
+          <TaskCharts report={report} />
           {taskRows.length ? (
             <div className={styles.tableWrap}>
               <table className={styles.table}>

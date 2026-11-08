@@ -6,6 +6,7 @@
 // - nothing here combines requirements into a composite score.
 import type { ContenderResult, Report, RequirementComparison } from "@anybench/core";
 import { formatUsd } from "@anybench/core";
+import { formatMde } from "../report/model";
 
 type RequirementResult = ContenderResult["requirements"][number];
 
@@ -64,9 +65,34 @@ export interface ValueBar {
   survivorship: boolean;
   /** 0..1 of the axis. */
   frac: number;
+  /**
+   * This setup's own 95% interval, in the requirement's unit: a Wilson interval for a pass rate
+   * (from the rate and n), or the report's ci95 for a metric. Null when there is none.
+   */
+  ci: [number, number] | null;
+  /** The interval's point: the value, or for a pass rate with no gated value its gate pass rate. */
+  estimate: number | null;
+  /** "7/7" for a pass rate. */
+  count: string | null;
 }
 
+/** Wilson score 95% interval for x/n (the formula of @anybench/bench stats.wilsonCi). */
+export function wilson95(x: number, n: number): [number, number] {
+  if (n <= 0) return [0, 1];
+  const z = 1.959963984540054;
+  const p = x / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z / denom) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  return [x === 0 ? 0 : Math.max(0, center - half), x === n ? 1 : Math.min(1, center + half)];
+}
+
+const isRate = (unit: string | null) => unit === "ratio" || unit === "rate";
+
 export interface DiffItem {
+  /** Unique per row (a setup, or a setup on one task). */
+  key: string;
   contenderId: string;
   name: string;
   baselineName: string;
@@ -83,6 +109,8 @@ export interface DiffItem {
   claim: RequirementComparison["claim"];
   tasks: number;
   downgraded: RequirementComparison["downgraded"];
+  /** The smallest detectable difference, or why there is none. */
+  mde: string;
 }
 
 export interface RequirementView {
@@ -92,6 +120,10 @@ export interface RequirementView {
   unit: string | null;
   lowerIsBetter: boolean;
   bars: ValueBar[];
+  /** "wilson" for pass rates, "report" when every gated setup has the report's ci95, else null. */
+  intervals: "wilson" | "report" | null;
+  /** The per-setup axis, [0, max]. */
+  axis: [number, number];
   diffs: DiffItem[];
   /** Symmetric-ish domain for the difference chart, always containing 0. */
   diffDomain: [number, number];
@@ -111,9 +143,29 @@ export function requirementViews(report: Report): RequirementView[] {
       .filter((x): x is { c: (typeof report.contenders)[number]; r: RequirementResult } => !!x.r);
     const first = rows[0]!.r;
     const lib = lowerIsBetter(rows.find((x) => x.r.comparison)?.r ?? first);
-    const max = Math.max(0, ...rows.map((x) => x.r.value ?? 0));
-    const axisMax = first.unit === "ratio" ? 1 : max > 0 ? max * 1.08 : 1;
-    const bars: ValueBar[] = rows.map(({ c, r }) => ({
+    const rate = isRate(first.unit);
+    const cis = rows.map(({ r }): [number, number] | null => {
+      if (rate && r.n) {
+        const v = r.value ?? r.gate_pass_rate;
+        return v === null ? null : wilson95(Math.round(v * r.n), r.n);
+      }
+      return r.value !== null && r.ci95 ? [r.ci95[0], r.ci95[1]] : null;
+    });
+    const gated = rows.filter(({ r }) => r.value !== null);
+    const intervals: RequirementView["intervals"] = rate
+      ? cis.some(Boolean)
+        ? "wilson"
+        : null
+      : gated.length && rows.every(({ r }, i) => r.value === null || cis[i])
+        ? "report"
+        : null;
+    const max = Math.max(
+      0,
+      ...rows.map((x) => x.r.value ?? 0),
+      ...(intervals ? cis.map((c) => c?.[1] ?? 0) : []),
+    );
+    const axisMax = rate ? 1 : max > 0 ? max * 1.08 : 1;
+    const bars: ValueBar[] = rows.map(({ c, r }, i) => ({
       contenderId: c.contender_id,
       name: c.name,
       role: c.role,
@@ -122,34 +174,16 @@ export function requirementViews(report: Report): RequirementView[] {
       n: r.n ?? null,
       survivorship: r.survivorship === true,
       frac: r.value === null ? 0 : Math.max(0, Math.min(1, r.value / axisMax)),
+      ci: intervals ? cis[i]! : null,
+      estimate: rate ? (r.value ?? r.gate_pass_rate) : r.value,
+      count:
+        rate && r.n && (r.value ?? r.gate_pass_rate) !== null
+          ? `${Math.round((r.value ?? r.gate_pass_rate)! * r.n)}/${r.n}`
+          : null,
     }));
     const diffs: DiffItem[] = rows
       .filter(({ r }) => r.comparison)
-      .map(({ c, r }) => {
-        const k = r.comparison!;
-        const lo = Math.min(k.diff_ci.lo, k.diff_ci.hi);
-        const hi = Math.max(k.diff_ci.lo, k.diff_ci.hi);
-        const point =
-          k.diff_ci.unit === "metric" && k.effect.hodges_lehmann !== null
-            ? k.effect.hodges_lehmann
-            : (lo + hi) / 2;
-        return {
-          contenderId: c.contender_id,
-          name: c.name,
-          baselineName: nameOf(k.baseline_id),
-          verdict: k.verdict,
-          lo,
-          hi,
-          point,
-          level: k.diff_ci.level,
-          attained: k.diff_ci.attained,
-          ciUnit: k.diff_ci.unit,
-          statement: k.statement,
-          claim: k.claim,
-          tasks: k.n.tasks,
-          downgraded: k.downgraded,
-        };
-      });
+      .map(({ c, r }) => diffItem(c, r.comparison!, r.unit, nameOf, c.contender_id));
     const ext = Math.max(1e-9, ...diffs.flatMap((d) => [Math.abs(d.lo), Math.abs(d.hi)]));
     return {
       id,
@@ -158,9 +192,79 @@ export function requirementViews(report: Report): RequirementView[] {
       unit: first.unit,
       lowerIsBetter: lib,
       bars,
+      intervals,
+      axis: [0, axisMax],
       diffs,
       diffDomain: [-ext * 1.15, ext * 1.15],
     };
+  });
+}
+
+function diffItem(
+  c: Report["contenders"][number],
+  k: RequirementComparison,
+  unit: string | null,
+  nameOf: (id: string) => string,
+  key: string,
+): DiffItem {
+  const lo = Math.min(k.diff_ci.lo, k.diff_ci.hi);
+  const hi = Math.max(k.diff_ci.lo, k.diff_ci.hi);
+  // Rates: the observed difference (oriented = raw, since higher is better); metrics: the
+  // Hodges–Lehmann shift; otherwise the CI midpoint.
+  const point =
+    k.diff_ci.unit === "rate" && k.effect.measure === "rate_diff"
+      ? k.effect.value
+      : k.diff_ci.unit === "metric" && k.effect.hodges_lehmann !== null
+        ? k.effect.hodges_lehmann
+        : (lo + hi) / 2;
+  return {
+    key,
+    contenderId: c.contender_id,
+    name: c.name,
+    baselineName: nameOf(k.baseline_id),
+    verdict: k.verdict,
+    lo,
+    hi,
+    point,
+    level: k.diff_ci.level,
+    attained: k.diff_ci.attained,
+    ciUnit: k.diff_ci.unit,
+    statement: k.statement,
+    claim: k.claim,
+    tasks: k.n.tasks,
+    downgraded: k.downgraded,
+    mde: formatMde(k, unit),
+  };
+}
+
+/**
+ * E18 per task: one view per requirement that has per-task results, each row one task (and the
+ * setup, when more than one is compared), all on one shared difference axis. Each row speaks for
+ * its task only; the report's scope line goes next to it.
+ */
+export function taskViews(report: Report): RequirementView[] {
+  if (!report.per_task) return [];
+  const order = report.per_task.tasks;
+  const compared = report.contenders.filter((c) =>
+    c.requirements.some((r) => r.by_task?.length),
+  ).length;
+  const nameOf = (id: string) =>
+    report.contenders.find((c) => (c.contender_id as string) === id)?.name ?? "baseline";
+  return requirementViews(report).flatMap((view) => {
+    const diffs: DiffItem[] = [];
+    for (const t of order)
+      for (const c of report.contenders) {
+        const r = c.requirements.find((x) => x.requirement_id === view.id);
+        const bt = r?.by_task?.find((x) => x.workload_id === t);
+        if (!r || !bt) continue;
+        const d = diffItem(c, bt.comparison, r.unit, nameOf, `${c.contender_id}:${t}`);
+        diffs.push({ ...d, name: compared > 1 ? `${t} · ${c.name}` : t });
+      }
+    if (!diffs.length) return [];
+    const ext = Math.max(1e-9, ...diffs.flatMap((d) => [Math.abs(d.lo), Math.abs(d.hi)]));
+    return [
+      { ...view, bars: [], diffs, diffDomain: [-ext * 1.15, ext * 1.15] as [number, number] },
+    ];
   });
 }
 
@@ -170,103 +274,4 @@ export function formatDiff(v: number, d: Pick<DiffItem, "ciUnit">, unit: string 
   if (d.ciUnit === "cliffs_delta")
     return `${v > 0 ? "+" : v < 0 ? "−" : ""}${round(Math.abs(v))} δ`;
   return formatMetric(v, unit, true);
-}
-
-// ---- gate pass rate per setup -----------------------------------------------------------------
-
-export interface PassRate {
-  contenderId: string;
-  name: string;
-  role: string;
-  /** 0..1, or null when the report has no gated requirement for it. */
-  rate: number | null;
-  n: number | null;
-  gate: string | null;
-}
-
-/** Each setup's correctness-gate pass rate (from its first measured requirement). */
-export function passRates(report: Report): PassRate[] {
-  return report.contenders.map((c) => {
-    const r = c.requirements.find((x) => x.type === "measured" && x.gate_pass_rate !== null);
-    return {
-      contenderId: c.contender_id,
-      name: c.name,
-      role: c.role,
-      rate: r?.gate_pass_rate ?? null,
-      n: r?.n ?? null,
-      gate: r?.gate_id ?? null,
-    };
-  });
-}
-
-// ---- per task: small multiples ----------------------------------------------------------------
-
-export interface TaskCell {
-  task: string;
-  requirementId: string;
-  title: string;
-  name: string;
-  verdict: Verdict;
-  lo: number;
-  hi: number;
-  ciUnit: RequirementComparison["diff_ci"]["unit"];
-  unit: string | null;
-  statement: string;
-}
-
-export interface TaskGrid {
-  tasks: string[];
-  requirements: { id: string; title: string }[];
-  cells: TaskCell[];
-  scope: string;
-  headline: string[];
-}
-
-/** E18 per-task results. Null when the report has none (older reports, non-agent kits). */
-export function taskGrid(report: Report): TaskGrid | null {
-  if (!report.per_task) return null;
-  const cells: TaskCell[] = [];
-  const reqs: { id: string; title: string }[] = [];
-  for (const c of report.contenders)
-    for (const r of c.requirements)
-      for (const t of r.by_task ?? []) {
-        if (!reqs.some((x) => x.id === r.requirement_id))
-          reqs.push({ id: r.requirement_id, title: r.title || r.requirement_id });
-        cells.push({
-          task: t.workload_id,
-          requirementId: r.requirement_id,
-          title: r.title || r.requirement_id,
-          name: c.name,
-          verdict: t.comparison.verdict,
-          lo: Math.min(t.comparison.diff_ci.lo, t.comparison.diff_ci.hi),
-          hi: Math.max(t.comparison.diff_ci.lo, t.comparison.diff_ci.hi),
-          ciUnit: t.comparison.diff_ci.unit,
-          unit: r.unit,
-          statement: t.comparison.statement,
-        });
-      }
-  return {
-    tasks: report.per_task.tasks,
-    requirements: reqs,
-    cells,
-    scope: report.per_task.scope,
-    headline: report.per_task.headline,
-  };
-}
-
-// ---- failures: what didn't count, and why -----------------------------------------------------
-
-export const FAILURE_WORD: Record<string, string> = {
-  infra: "our infrastructure (not billed)",
-  subject: "the setup crashed or gave up",
-  gate: "failed the correctness gate",
-  kit: "the kit (our test)",
-  budget: "hit its budget",
-  timeout: "timed out",
-};
-
-export function failureRows(report: Report): { kind: string; word: string; count: number }[] {
-  return Object.entries(report.failures)
-    .filter(([, n]) => n > 0)
-    .map(([kind, count]) => ({ kind, word: FAILURE_WORD[kind] ?? kind, count }));
 }

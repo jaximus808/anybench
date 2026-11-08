@@ -251,6 +251,32 @@
 .req + .req {
   margin-top: var(--space-6);
 }
+.direction {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+/* The exact numbers behind each chart, one click away. */
+.numbers {
+  margin-top: var(--space-4);
+}
+.numbers > summary {
+  cursor: pointer;
+  width: fit-content;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.numbers > summary:hover {
+  color: var(--fg);
+}
+.numbers[open] > summary {
+  margin-bottom: var(--space-3);
+}
 .tableWrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
