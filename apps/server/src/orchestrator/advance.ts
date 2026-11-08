@@ -891,7 +891,10 @@ class RunAdvance {
     if (run.estimateMicroUsd > run.budgetMicroUsd) {
       return this.wait(run.state, "estimate exceeds the run budget");
     }
-    const gate = await this.deps.billingGate({ userId: run.ownerId }, run.estimateMicroUsd);
+    const gate = await this.deps.billingGate(
+      { userId: run.ownerId, runId: run.id },
+      run.estimateMicroUsd,
+    );
     if (!gate.allowed) return this.wait(run.state, `billing gate: ${gate.reason}`);
     return this.commit(
       run,

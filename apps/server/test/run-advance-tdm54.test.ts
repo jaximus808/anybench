@@ -6,6 +6,7 @@ import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLedger } from "@anybench/billing";
 import { loadKit, validateKitDir } from "@anybench/kit";
 import { safeParseKitSpec } from "@anybench/core";
 import { FakeNaive } from "@anybench/naive/fake";
@@ -17,13 +18,16 @@ import {
   computers,
   contenders,
   events,
+  interventions,
   killSwitches,
   kits,
   reports,
   runs,
   trials,
   usageEntries,
+  users,
 } from "../src/db/schema/index.js";
+import { ADMIN_AUTO_COMP_REASON } from "../src/lib/billing-gate.js";
 import { JOBS } from "../src/jobs/index.js";
 import {
   createRunAdvanceJob,
@@ -724,6 +728,56 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     await drainTdm54(paused.w, r.queue);
     expect(await runRow(ours)).toMatchObject({ state: "cancelled", cancelCause: "ours" });
     expect(await h.db.select().from(usageEntries).where(eq(usageEntries.runId, ours))).toEqual([]);
+  }, 60_000);
+
+  it("demo comp: auto-go with the default gate comps an admin's run, the ledger bills nothing; a non-admin waits", async () => {
+    const [owner] = await h.db.select().from(users).where(eq(users.id, userId));
+    const login = owner!.githubLogin;
+    const r = rig();
+    // The real default gate (BILLING_MODE=test) and the real ledger hook.
+    const admin = r.worker({
+      orchestrator: { charges: undefined, billingGate: undefined },
+      env: { BILLING_MODE: "test", ADMIN_GITHUB_LOGINS: login },
+    });
+    const id = await createRun(r.queue);
+    await drainTdm54(admin.w, r.queue);
+    const run = await runRow(id);
+    expect(run).toMatchObject({
+      state: "delivered",
+      compedBy: login,
+      compedReason: ADMIN_AUTO_COMP_REASON,
+    });
+    expect(await stateEdges(id)).toContainEqual(["awaiting_go", "running"]);
+    const ivs = await h.db.select().from(interventions).where(eq(interventions.runId, id));
+    expect(ivs).toHaveLength(1);
+    expect(ivs[0]).toMatchObject({
+      id: run.compInterventionId,
+      userId,
+      who: login,
+      what: "comp",
+      why: ADMIN_AUTO_COMP_REASON,
+    });
+    // The ledger records the run fee as comped: never counted, never sent to Stripe.
+    const billed = await h.db.select().from(usageEntries).where(eq(usageEntries.runId, id));
+    expect(billed.filter((u) => u.type === "run_fee")).toHaveLength(1);
+    for (const u of billed) {
+      expect(u).toMatchObject({ compedBy: login, interventionId: ivs[0]!.id, reportedAt: null });
+    }
+    const unreported = await createLedger(h.db).listUnreported({ userId, limit: 1000 });
+    expect(unreported.filter((u) => u.runId === id)).toEqual([]);
+
+    // Same env, owner not an admin: the gate refuses and the run waits in awaiting_go.
+    const plain = r.worker({
+      orchestrator: { charges: undefined, billingGate: undefined },
+      env: { BILLING_MODE: "test", ADMIN_GITHUB_LOGINS: "someone-else" },
+    });
+    const waits = await createRun(r.queue);
+    await drainTdm54(plain.w, r.queue);
+    expect(await runRow(waits)).toMatchObject({ state: "awaiting_go", compedBy: null });
+    expect(await h.db.select().from(interventions).where(eq(interventions.runId, waits))).toEqual(
+      [],
+    );
+    expect(await h.db.select().from(usageEntries).where(eq(usageEntries.runId, waits))).toEqual([]);
   }, 60_000);
 
   it("ANYBENCH_PAUSE=1 cancels a run as ours before any agent runs", async () => {

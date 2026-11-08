@@ -143,7 +143,7 @@ export function orchestratorDeps(
       ),
     pipeline: options.pipeline?.(ctx) ?? defaultPipeline(ctx),
     sessions: options.sessions?.(ctx) ?? defaultSessions(ctx),
-    billingGate: options.billingGate?.(ctx) ?? defaultBillingGate(ctx.config),
+    billingGate: options.billingGate?.(ctx) ?? defaultBillingGate(ctx.config, ctx.db),
     charges: options.charges ? options.charges(ctx) : ledgerCharges(ctx.db, ctx.config),
     owner: leaseOwnerBase(ctx.workerId, ctx.workerStartedAt),
     paused: ctx.config.ANYBENCH_PAUSE,

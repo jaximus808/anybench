@@ -43,7 +43,7 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // TDM-67: the run gate's billing port and the job queue, defaulted for the runs/kits routers.
   const tenant = {
     ...deps,
-    billingGate: deps.billingGate ?? defaultBillingGate(deps.config),
+    billingGate: deps.billingGate ?? defaultBillingGate(deps.config, deps.db),
     jobs: deps.jobs ?? graphileJobQueue(),
   };
   // TDM-65: CORS and CSRF must run before every route, so this line stays first.

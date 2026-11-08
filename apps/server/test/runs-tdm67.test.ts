@@ -16,7 +16,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createDb } from "../src/db/client.js";
 import { scopedDb } from "../src/db/scoped.js";
-import { contenders, events, kits, projects, runs } from "../src/db/schema/index.js";
+import {
+  contenders,
+  events,
+  interventions,
+  kits,
+  projects,
+  runs,
+  users,
+} from "../src/db/schema/index.js";
+import { ADMIN_AUTO_COMP_REASON } from "../src/lib/billing-gate.js";
 import { readEvents } from "../src/lib/events.js";
 import { graphileJobQueue } from "../src/lib/job-queue.js";
 import { createSession } from "../src/lib/session.js";
@@ -373,6 +382,56 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     const e = await expectApiError(a.runs.go({ params: { id: run.id } }), 402, "payment_required");
     expect(e.paymentRequired).toEqual(body);
     expect((await a.runs.get({ params: { id: run.id } })).run.state).toBe("awaiting_go");
+  });
+
+  it("demo comp: an admin owner's Go is comped (interventions row) and allowed; a non-admin still gets 402", async () => {
+    const [aliceRow] = await db.db.select().from(users).where(eq(users.id, alice));
+    // Upper-case on purpose: ADMIN_GITHUB_LOGINS matching is case-insensitive (TDM-65).
+    const adminApp = runsAppTdm67(db.url, {
+      env: { ADMIN_GITHUB_LOGINS: `someone-else,${aliceRow!.githubLogin.toUpperCase()}` },
+    });
+    try {
+      // Admin (alice): the default gate comps the run and lets it Go.
+      const ca = clientFor(adminApp, alice);
+      const run = (await ca.runs.create({ body: githubBody })).run;
+      await forceRunStateTdm67(db.db, run.id, "awaiting_go", 2_000_000n);
+      await seedKitTdm67(db.db, run.id, true);
+      const went = await ca.runs.go({ params: { id: run.id } });
+      expect(went.run.state).toBe("running");
+      expect(went.run.comped).toBe(true);
+      const [row] = await db.db.select().from(runs).where(eq(runs.id, run.id));
+      expect(row).toMatchObject({
+        compedBy: aliceRow!.githubLogin,
+        compedReason: ADMIN_AUTO_COMP_REASON,
+      });
+      const ivs = await db.db.select().from(interventions).where(eq(interventions.runId, run.id));
+      expect(ivs).toHaveLength(1);
+      expect(ivs[0]).toMatchObject({
+        id: row!.compInterventionId,
+        userId: alice,
+        who: aliceRow!.githubLogin,
+        what: "comp",
+        why: ADMIN_AUTO_COMP_REASON,
+      });
+
+      // Non-admin (bob), same app and env: still the contract's 402, nothing comped or logged.
+      const cb = clientFor(adminApp, bob);
+      const other = (await cb.runs.create({ body: githubBody })).run;
+      await forceRunStateTdm67(db.db, other.id, "awaiting_go", 2_000_000n);
+      await seedKitTdm67(db.db, other.id, true);
+      const e = await expectApiError(cb.runs.go({ params: { id: other.id } }), 402);
+      expect(e.paymentRequired).toEqual({
+        reason: "no_payment_method",
+        link_card_url: "https://anybench.jaxonp.com/settings/billing",
+      });
+      const [otherRow] = await db.db.select().from(runs).where(eq(runs.id, other.id));
+      expect(otherRow).toMatchObject({ state: "awaiting_go", compedBy: null });
+      expect(
+        await db.db.select().from(interventions).where(eq(interventions.runId, other.id)),
+      ).toEqual([]);
+    } finally {
+      await adminApp.dbh.close();
+    }
   });
 
   it("go refuses (409) outside awaiting_go, with an unproven kit, or over budget", async () => {

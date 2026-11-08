@@ -26,7 +26,8 @@
 // to specific runs gets 403 on any other run id, only lists its own runs, and cannot create runs.
 //
 // Go and the billing gate: `deps.billingGate(actor, estimate)` (lib/billing-gate.ts). Its default
-// allows only under BILLING_MODE=off; in test/live it answers the contract's 402
+// allows under BILLING_MODE=off, and in test/live comps an admin owner's run (founder demo
+// bypass, an interventions row) and answers everyone else the contract's 402
 // `{reason, link_card_url}` until the real gate ([10.6]) is passed in AppDeps.
 import {
   AlertIdSchema,
@@ -572,7 +573,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
       return goCheck(tx, row);
     });
     if (!first.ok) return fail(c, first.status === 404 ? "not_found" : "conflict", first.message);
-    const gate = await deps.billingGate({ userId: actor.userId }, first.estimate);
+    const gate = await deps.billingGate({ userId: actor.userId, runId: id }, first.estimate);
     if (!gate.allowed) {
       const body: PaymentRequired = { reason: gate.reason, link_card_url: gate.link_card_url };
       return c.json(route.errors[402].parse(body), 402);
