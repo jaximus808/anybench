@@ -20,3 +20,5 @@ export * from "./proxy-credentials.js";
 export * from "./fake.js";
 export * from "./fake-computers.js";
 export * from "./apps.js";
+// TDM-39 [4.7]: retry Naïve 429 "at capacity" on create / exec / file writes.
+export * from "./capacity-retry.js";
