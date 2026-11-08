@@ -14,6 +14,7 @@ import {
   envBuildSteps,
   phaseLog,
   phaseView,
+  runningView,
   type EnvImage,
   type EnvStepKey,
   type PhaseLine,
@@ -23,6 +24,7 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { clock, span, usd } from "./format";
 import { GoFailureText, useGoAction } from "./GoBar";
 import styles from "./live.module.css";
+import { useStableSlots } from "../../lib/live/slots";
 import { Inspector } from "./Inspector";
 import { PhaseFigure, type FocusTarget } from "./PhaseFigure";
 import { RunningStage } from "./RunningStage";
@@ -77,6 +79,11 @@ export function PhaseStage({
   const view = phaseView(live, nowMs);
   const key = view.hold ? `hold:${view.hold.state}` : view.current.state;
   const showFigure = !view.delivered;
+  // One stable trial → bay assignment, shared by the figure's computers and the cards.
+  const slots = useStableSlots(
+    runningView(live, nowMs, { cap: 99 }).live.map((t) => t.id),
+    5,
+  );
   const hero = useRef<HTMLElement>(null);
   const [focus, setFocus] = useState<{
     target: FocusTarget;
@@ -114,6 +121,7 @@ export function PhaseStage({
             nowMs={nowMs}
             active={!ended && !view.hold}
             onFocus={focusAt}
+            slots={slots}
           />
         </div>
       ) : null}
@@ -121,7 +129,7 @@ export function PhaseStage({
         {view.hold ? (
           <HoldBody view={view} />
         ) : (
-          <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={focusTrial} />
+          <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={focusTrial} slots={slots} />
         )}
       </div>
       {focus ? (
@@ -264,11 +272,13 @@ function PhaseBody({
   view,
   nowMs,
   onOpenTrial,
+  slots,
 }: {
   live: LiveRun;
   view: PhaseView;
   nowMs: number;
   onOpenTrial: (id: string, at?: { x: number; y: number }) => void;
+  slots: (string | null)[];
 }) {
   switch (view.current.state) {
     case "env_build":
@@ -276,7 +286,7 @@ function PhaseBody({
     case "awaiting_go":
       return <GoBody live={live} />;
     case "running":
-      return <RunningStage live={live} nowMs={nowMs} onOpenTrial={onOpenTrial} />;
+      return <RunningStage live={live} nowMs={nowMs} onOpenTrial={onOpenTrial} slots={slots} />;
     case "delivered":
       return <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />;
     default:

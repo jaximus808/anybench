@@ -36,7 +36,7 @@ const P = (x: number, y: number, z = 0): Point3 => [x, y, z];
 const QU = -125;
 const QV = -178;
 const BAY_U = -125;
-const BAY_VS = [-104, -52, 0, 52, 104];
+const BAY_VS = [128, 64, 0, -64, -128];
 const BAY_K = 0.62;
 const WALL_U = -66;
 const GU = -24;
@@ -95,8 +95,8 @@ interface Placed {
   shape: number;
 }
 
-function place(live: LiveRun, cards: LiveTrialCard[]): Placed[] {
-  const bayOf = new Map(cards.map((c, i) => [c.id, i]));
+function place(live: LiveRun, bays: (LiveTrialCard | null)[]): Placed[] {
+  const bayOf = new Map(bays.flatMap((c, i) => (c ? ([[c.id, i]] as [string, number][]) : [])));
   const n = { queue: 0, grader: 0, pass: 0, fail: 0, infra: 0 };
   const rank = new Map(live.contenders.map((c, i) => [c.id, i]));
   // One stable order (the run's trial order) for the DOM and for slot numbers, so stacks fill
@@ -132,10 +132,10 @@ function stationParts(): Part[] {
   parts.push({
     ...box("wall", 0, 0, 0, 0, 0, 20, "glass", { layer: 1 }),
     ring: [
-      [WALL_U - 1.5, -118],
-      [WALL_U + 1.5, -118],
-      [WALL_U + 1.5, 118],
-      [WALL_U - 1.5, 118],
+      [WALL_U - 1.5, -150],
+      [WALL_U + 1.5, -150],
+      [WALL_U + 1.5, 150],
+      [WALL_U - 1.5, 150],
     ].map(([u, v]) => {
       const [x, y] = P(u!, v!);
       return [x, y] as [number, number];
@@ -166,7 +166,7 @@ function tokenParts(shape: number): Part[] {
 interface Label {
   id: string;
   at: [number, number];
-  anchor: "start" | "middle" | "end";
+  anchor: "start" | "middle" | "end" | "above";
   title: string;
   sub?: string;
   tone?: "live" | "pass" | "fail" | "muted";
@@ -180,16 +180,22 @@ interface Label {
 
 // ---- component ------------------------------------------------------------------------------
 
-export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigureProps) {
+export function PipelineFigure({ live, view, nowMs, active, onFocus, slots }: FigureProps) {
   const state = view.current.state;
-  const v = runningView(live, nowMs, { cap: 5 });
-  const placed = place(live, v.live);
+  const all = runningView(live, nowMs, { cap: 99 });
+  const byId = new Map(all.live.map((c) => [c.id, c]));
+  // Each live trial keeps its computer until it ends (stable slots from PhaseStage).
+  const bays: (LiveTrialCard | null)[] = (slots ?? all.live.slice(0, 5).map((c) => c.id))
+    .slice(0, 5)
+    .map((id) => (id ? (byId.get(id) ?? null) : null));
+  while (bays.length < 5) bays.push(null);
+  const placed = place(live, bays);
 
   const geo = useMemo(() => {
     const stations = stationParts();
     const extent: Point3[] = [...stations.flatMap(cornersOf), P(QU, QV, 22), P(BU, 0, 24)];
-    const fit = fitProjection(extent, W - 440, H - 44, { pad: 4 });
-    const proj: Projection = { ...fit, origin: [fit.origin[0] + 318, fit.origin[1] + 36] };
+    const fit = fitProjection(extent, W - 260, H - 48, { pad: 4 });
+    const proj: Projection = { ...fit, origin: [fit.origin[0] + 110, fit.origin[1] + 40] };
     const solids = new Map(stations.map((p) => [p.id, solidOf(p, proj)]));
     const order = paintOrder(stations, proj);
     const tokens = [1, 2, 3].map((n) =>
@@ -245,7 +251,7 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
     live.trialOrder.map((id) => live.trials[id]!.gate?.gate).find(Boolean) ?? "hidden tests";
 
   const bayTone = (i: number): Tone => {
-    const c = v.live[i];
+    const c = bays[i];
     if (!c) return "dim";
     return c.stage === "booting" ? "warm" : c.stage === "grading" ? "warm" : "live";
   };
@@ -257,7 +263,7 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
   };
   const beatOf = (p: Part): string | null => {
     const bay = /^bay\.(\d)\.screen$/.exec(p.id);
-    if (bay) return v.live[Number(bay[1])]?.heartbeatAt ?? null;
+    if (bay) return bays[Number(bay[1])]?.heartbeatAt ?? null;
     return null;
   };
   const bayOfPart = (id: string): number | null => {
@@ -285,24 +291,20 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
     title: "QUEUE",
     sub: `${queued} waiting`,
   });
-  // Bay names in a column on the left, each with a leader line to its computer.
-  const gutter = 304;
+  // Each computer's name sits right on top of it; its card below says what it's running.
   BAY_VS.forEach((bv, i) => {
-    const c = v.live[i];
-    const [x0, y0] = geo.abs(P(BAY_U - 24 * BAY_K, bv + 18 * BAY_K, 3));
+    const c = bays[i];
+    const [x0, y0] = geo.abs(P(BAY_U, bv - 13 * BAY_K, 36 * BAY_K));
     labels.push({
       id: `bay.${i}`,
-      at: [gutter, y0 - 2],
-      anchor: "end",
-      title: c ? `VM ${c.computerId ? c.computerId.slice(-6) : "starting"}` : `BAY ${i + 1} · IDLE`,
-      sub: c ? `${c.setup} · ${c.task} #${c.repeat + 1}` : undefined,
+      at: [x0, y0],
+      anchor: "above",
+      title: c ? `VM ${c.computerId ? c.computerId.slice(-6) : "…"}` : `BAY ${i + 1}`,
       tone: c ? "live" : "muted",
-      inline: true,
-      leader: [gutter + 6, y0 - 5, x0 - 3, y0],
     });
   });
   // The wall's and the grader's names sit off the figure on leader lines, clear of the wall.
-  const wb = geo.abs(P(WALL_U, 118, 0));
+  const wb = geo.abs(P(WALL_U, 150, 0));
   labels.push({
     id: "wall",
     at: [wb[0] - 8, H - 26],
@@ -343,7 +345,7 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus }: FigurePro
       >
         {geo.order.map((p, i) => {
           const bay = bayOfPart(p.id);
-          const card = bay !== null ? v.live[bay] : undefined;
+          const card = bay !== null ? bays[bay] : undefined;
           const clickable = card
             ? { kind: "trial" as const, id: card.id }
             : p.id.startsWith("grader")

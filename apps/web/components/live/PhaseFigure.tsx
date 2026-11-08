@@ -572,6 +572,8 @@ export interface FigureProps {
   view: PhaseView;
   nowMs: number;
   active: boolean;
+  /** Stable slot → trial id for the five computers (shared with the cards). */
+  slots?: (string | null)[];
   /** A computer, trial or station was clicked: open the inspector from that point. */
   onFocus?: (target: FocusTarget, at: { x: number; y: number }) => void;
 }

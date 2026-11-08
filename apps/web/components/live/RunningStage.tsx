@@ -32,12 +32,20 @@ export function RunningStage({
   live,
   nowMs,
   onOpenTrial,
+  slots,
 }: {
   live: LiveRun;
   nowMs: number;
   onOpenTrial: (id: string, at?: { x: number; y: number }) => void;
+  /** Stable slot → trial id (PhaseStage): a trial keeps its card until it ends. */
+  slots?: (string | null)[];
 }) {
-  const v = runningView(live, nowMs);
+  const v = runningView(live, nowMs, { cap: 99 });
+  const byId = new Map(v.live.map((t) => [t.id, t]));
+  const cardsInSlots = (slots ?? v.live.slice(0, 5).map((t) => t.id)).map((id) =>
+    id ? (byId.get(id) ?? null) : null,
+  );
+  const more = Math.max(0, v.live.length - cardsInSlots.filter(Boolean).length);
   const c = v.counts;
   const spentPct = pctOf(live.spentMicroUsd, live.budgetMicroUsd);
   return (
@@ -79,41 +87,45 @@ export function RunningStage({
         </div>
       </dl>
 
-      {v.live.length ? (
-        <ul className={styles.cards} aria-label="Trials running now">
-          {v.live.map((t) => (
+      <ul className={styles.cards} aria-label="Trials running now">
+        {cardsInSlots.map((t, i) =>
+          t ? (
             <TrialCard key={t.id} card={t} onOpen={onOpenTrial} />
-          ))}
-        </ul>
-      ) : (
-        <p className={styles.streamWait}>
-          {c.queued ? "Starting the next trials" : "Waiting on the last results"}
-          <span className={styles.caret} aria-hidden="true" />
-        </p>
-      )}
-      {v.more ? (
-        <p className={styles.moreLive}>
-          + <span className="num">{v.more}</span> more running
-        </p>
-      ) : null}
-
-      {v.justFinished.length ? (
-        <ul className={styles.finished} aria-label="Just finished">
-          {v.justFinished.slice(0, 3).map((f) => (
-            <li key={f.id} data-tone={f.tone}>
-              <button
-                type="button"
-                onClick={(e) => onOpenTrial(f.id, { x: e.clientX, y: e.clientY })}
-              >
-                <span className={styles.finishedMark} aria-hidden="true">
-                  {f.tone === "passed" ? "✓" : f.tone === "failed" ? "✕" : "↻"}
-                </span>
-                {f.setup} · {f.task} #{f.repeat + 1} {TONE_WORD[f.tone]}
-              </button>
+          ) : (
+            <li key={`idle-${i}`} className={styles.card} data-idle>
+              <span className={styles.cardIdle}>
+                <span className={styles.cardVm}>bay {i + 1}</span>
+                {c.queued ? "starting the next trial" : "idle"}
+              </span>
             </li>
-          ))}
-        </ul>
-      ) : null}
+          ),
+        )}
+      </ul>
+
+      {/* One fixed line, so the hero never changes height when a trial finishes. */}
+      <p className={styles.finishedLine} aria-live="polite">
+        {v.justFinished[0] ? (
+          <button
+            type="button"
+            data-tone={v.justFinished[0].tone}
+            onClick={(e) => onOpenTrial(v.justFinished[0]!.id, { x: e.clientX, y: e.clientY })}
+          >
+            <span className={styles.finishedMark} aria-hidden="true">
+              {v.justFinished[0].tone === "passed"
+                ? "✓"
+                : v.justFinished[0].tone === "failed"
+                  ? "✕"
+                  : "↻"}
+            </span>
+            {v.justFinished[0].setup} · {v.justFinished[0].task} #{v.justFinished[0].repeat + 1}{" "}
+            {TONE_WORD[v.justFinished[0].tone]}
+          </button>
+        ) : more ? (
+          <span>
+            + <span className="num">{more}</span> more running
+          </span>
+        ) : null}
+      </p>
 
       <div className={styles.runSpend}>
         <span className={styles.runSpendBar} aria-hidden="true">
@@ -144,6 +156,9 @@ const TrialCard = memo(function TrialCard({
         onClick={(e) => onOpen(card.id, { x: e.clientX, y: e.clientY })}
         aria-label={`${card.setup} · ${card.task} #${card.repeat + 1}: ${card.state}`}
       >
+        <span className={styles.cardVm}>
+          {card.computerId ? `VM ${card.computerId.slice(-6)}` : "VM starting"}
+        </span>
         <span className={styles.cardTop}>
           <span className={styles.cardSetup}>{card.setup}</span>
           {/* Remounts on every heartbeat, so the flash is one real heartbeat. */}

@@ -272,3 +272,15 @@ describe("run row and event→trial (from launch-ux-wip)", () => {
     expect(live.trials[comp!.trialId!]).toBeDefined();
   });
 });
+
+describe("stable slots (anti-jump)", () => {
+  it("keeps each trial in its slot; a new trial takes the first free slot", async () => {
+    const { assignSlots } = await import("../lib/live/slots");
+    let s = assignSlots([], ["a", "b", "c"], 5);
+    expect(s).toEqual(["a", "b", "c", null, null]);
+    s = assignSlots(s, ["b", "c", "d"], 5); // a finished, d started
+    expect(s).toEqual(["d", "b", "c", null, null]);
+    s = assignSlots(s, ["b", "c", "d", "e", "f", "g"], 5);
+    expect(s).toEqual(["d", "b", "c", "e", "f"]);
+  });
+});
