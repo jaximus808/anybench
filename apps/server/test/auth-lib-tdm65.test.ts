@@ -13,6 +13,7 @@ import {
   signValue,
   verifySignedValue,
 } from "../src/lib/session.js";
+import { landingUrl } from "../src/routes/auth.js";
 import { AUTH_ENV_TDM65 } from "./helpers/auth-tdm65.js";
 
 function issues(env: Record<string, string>): string[] {
@@ -57,6 +58,44 @@ describe("auth config (TDM-65)", () => {
         GITHUB_OAUTH_CALLBACK_URL: "http://api.example.com/auth/github/callback",
       }),
     ).toEqual(["GITHUB_OAUTH_CALLBACK_URL"]);
+  });
+
+  it("refuses a PUBLIC_WEB_URL whose origin is not in ALLOWED_ORIGINS", () => {
+    expect(issues({ PUBLIC_WEB_URL: "https://anybench.jaxonp.com" })).toEqual(["PUBLIC_WEB_URL"]);
+    expect(
+      issues({
+        PUBLIC_WEB_URL: "https://evil.example/app",
+        ALLOWED_ORIGINS: "https://anybench.jaxonp.com",
+      }),
+    ).toEqual(["PUBLIC_WEB_URL"]);
+    expect(
+      issues({
+        PUBLIC_WEB_URL: "https://anybench.jaxonp.com/app",
+        ALLOWED_ORIGINS: "https://anybench.jaxonp.com",
+      }),
+    ).toEqual([]);
+  });
+
+  it("landingUrl always returns an absolute URL on the web origin", () => {
+    const web = "https://anybench.jaxonp.com";
+    for (const evil of [
+      "/.//evil.com",
+      "/a/..//evil.com",
+      "/%2e//evil.com",
+      "/\\evil.com",
+      "//evil.com",
+      "///evil.com",
+      "https://evil.com/",
+    ]) {
+      const out = new URL(landingUrl(web, evil));
+      expect(out.origin, evil).toBe(web);
+      expect(landingUrl(web, evil).startsWith(`${web}/`), evil).toBe(true);
+      expect(out.pathname.startsWith("//"), evil).toBe(false);
+    }
+    expect(landingUrl(web, "/runs/1?tab=live#x")).toBe(`${web}/runs/1?tab=live#x`);
+    expect(landingUrl(web, "/", { auth_error: "access_denied" })).toBe(
+      `${web}/?auth_error=access_denied`,
+    );
   });
 
   it("treats SESSION_SECRET and GITHUB_CLIENT_SECRET as secrets for redaction", () => {

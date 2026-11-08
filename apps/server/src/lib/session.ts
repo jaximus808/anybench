@@ -15,12 +15,12 @@ import { apiError, newId, SESSION_COOKIE, SessionIdSchema } from "@anybench/core
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
+import { parse as parseCookieHeader, type CookieOptions } from "hono/utils/cookie";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
 import { sessions } from "../db/schema/sessions.js";
 import { users } from "../db/schema/users.js";
-import { scopedDb } from "../db/scoped.js";
+import { scopedDb, type DbActor } from "../db/scoped.js";
 import type { AppDeps, AppEnv } from "../types.js";
 import { isAdminLogin } from "./admin.js";
 
@@ -265,5 +265,24 @@ export function requireSession(
     if (!principal) return unauthorized(c);
     c.set("session", principal);
     await next();
+  };
+}
+
+/**
+ * `AppDeps.authenticate` backed by the session cookie: the signed-in user as a DbActor, so tenant
+ * routes (events, TDM-72) read through RLS as that user. It sees only the raw Request, so a slid
+ * expiry is written to the row but the cookie itself is re-issued by the next cookie-aware route.
+ * API keys are not handled here (their ticket wraps this).
+ */
+export function sessionAuthenticator(
+  deps: Pick<AppDeps, "db">,
+): (req: Request) => Promise<DbActor | null> {
+  return async (req) => {
+    const header = req.headers.get("cookie");
+    if (!header) return null;
+    const token = parseCookieHeader(header, SESSION_COOKIE)[SESSION_COOKIE];
+    if (!token) return null;
+    const found = await resolveSession(deps.db, token);
+    return found ? { kind: "user", userId: found.user.id } : null;
   };
 }

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runs } from "../src/db/schema/runs.js";
 import { sessions } from "../src/db/schema/sessions.js";
 import { users } from "../src/db/schema/users.js";
 import { adminOnly } from "../src/lib/admin.js";
@@ -169,6 +170,34 @@ describe.skipIf(!hasDb)("auth routes (TDM-65)", () => {
     expect((await h.app.request("/auth/github?redirect_to=//evil.example/")).status).toBe(400);
     const { cb } = await signIn("code-plain", "/\\evil.example/x");
     expect(cb.headers.get("location")).toBe(`${WEB_ORIGIN_TDM65}/`);
+    // Dot segments and encoded dots normalize to `//evil.com`: must stay on the web origin.
+    for (const evil of ["/.//evil.com", "/a/..//evil.com", "/%2e//evil.com"]) {
+      const res = (await signIn("code-plain", evil)).cb;
+      expect(res.status, evil).toBe(302);
+      const location = res.headers.get("location")!;
+      expect(location.startsWith(`${WEB_ORIGIN_TDM65}/`), evil).toBe(true);
+      expect(new URL(location).origin, evil).toBe(WEB_ORIGIN_TDM65);
+      expect(new URL(location).pathname.startsWith("//"), evil).toBe(false);
+    }
+  });
+
+  it("no web origin configured (PUBLIC_WEB_URL and ALLOWED_ORIGINS unset) is a 503", async () => {
+    const bare = authAppTdm65(fresh.url, github, { PUBLIC_WEB_URL: "", ALLOWED_ORIGINS: "" });
+    try {
+      const start = await bare.app.request("/auth/github?redirect_to=/.//evil.com");
+      expect(start.status).toBe(503);
+      expect(await start.json()).toMatchObject({
+        error: { code: "unavailable", message: "sign-in not configured" },
+      });
+      expect(cookieTdm65(start, OAUTH_STATE_COOKIE)).toBeUndefined();
+      const cb = await bare.app.request("/auth/github/callback?code=code-plain&state=x");
+      expect(cb.status).toBe(503);
+      expect(cb.headers.get("location")).toBeNull();
+      const denied = await bare.app.request("/auth/github/callback?error=access_denied");
+      expect(denied.status).toBe(503);
+    } finally {
+      await bare.dbh.close();
+    }
   });
 
   it("isAdmin is true only for ADMIN_GITHUB_LOGINS, and is evaluated per request", async () => {
@@ -303,6 +332,33 @@ describe.skipIf(!hasDb)("auth routes (TDM-65)", () => {
       .set({ expiresAt: sql`now() - interval '1 second'` })
       .where(eq(sessions.tokenHash, hash));
     expect((await h.app.request("/auth/me", withSession(token))).status).toBe(401);
+  });
+
+  it("a signed-in owner can read and stream their run's events; others get 404, nobody 401", async () => {
+    const owner = (await signIn("code-plain")).token!;
+    const other = (await signIn("code-admin")).token!;
+    const [u] = await fresh.db.select().from(users).where(eq(users.githubId, PLAIN.id));
+    const [run] = await fresh.db
+      .insert(runs)
+      .values({
+        ownerId: u!.id,
+        question: "is tdm65 faster?",
+        budgetMicroUsd: 1_000_000n,
+        state: "delivered",
+      })
+      .returning();
+    for (const path of [`/runs/${run!.id}/events`, `/runs/${run!.id}/stream`]) {
+      const mine = await h.app.request(path, withSession(owner));
+      expect(mine.status, path).toBe(200);
+      const body = await mine.text();
+      if (path.endsWith("/stream")) expect(body).toContain("event: end");
+      const foreign = await h.app.request(path, withSession(other));
+      expect(foreign.status, path).toBe(404);
+      await foreign.body?.cancel();
+      const anon = await h.app.request(path);
+      expect(anon.status, path).toBe(401);
+      await anon.body?.cancel();
+    }
   });
 
   it("CORS answers only ALLOWED_ORIGINS, with credentials", async () => {

@@ -166,6 +166,16 @@ function bootAssertions(env: Env): ConfigIssue[] {
       message: `'${bad}' is not an origin (scheme://host[:port], http or https, no path)`,
     });
   }
+  // Sign-in only ever redirects to the web origin, and that origin must be an allowed one.
+  if (env.PUBLIC_WEB_URL) {
+    const webOrigin = new URL(env.PUBLIC_WEB_URL).origin;
+    if (!origins.valid.includes(webOrigin)) {
+      issues.push({
+        path: "PUBLIC_WEB_URL",
+        message: `origin ${webOrigin} must be listed in ALLOWED_ORIGINS`,
+      });
+    }
+  }
   if (prod && env.GITHUB_OAUTH_CALLBACK_URL?.startsWith("http://")) {
     issues.push({
       path: "GITHUB_OAUTH_CALLBACK_URL",

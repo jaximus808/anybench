@@ -4,8 +4,9 @@
 //   GET  /auth/me                the signed-in user (is_admin evaluated for this request)
 //   POST /auth/logout            revoke the session, clear the cookie (CSRF: allowed Origin only)
 //
-// Until GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_OAUTH_CALLBACK_URL and SESSION_SECRET are
-// set, the OAuth routes answer 503 (the rest of the API keeps working).
+// Until GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_OAUTH_CALLBACK_URL, SESSION_SECRET and a web
+// origin (PUBLIC_WEB_URL or ALLOWED_ORIGINS) are set, the OAuth routes answer 503 (the rest of the
+// API keeps working). Every post-sign-in redirect is an absolute URL on that web origin.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   API_ERROR_STATUS,
@@ -69,19 +70,21 @@ function fail(c: Context<AppEnv>, code: ApiErrorCode, message: string, issues?: 
   );
 }
 
-/** Where sign-in lands: PUBLIC_WEB_URL, else the first allowed origin, else this API host. */
+/** Where sign-in lands: PUBLIC_WEB_URL, else the first allowed origin. None = not configured. */
 function webBase(deps: AppDeps): string | undefined {
   const raw = deps.config.PUBLIC_WEB_URL ?? deps.config.allowedOrigins[0];
   return raw ? new URL(raw).origin : undefined;
 }
 
 /**
- * An absolute URL on the web origin for a relative `redirect_to`. Anything that would resolve to a
- * different origin (`/\evil.com` becomes `//evil.com` in a browser) falls back to `/`.
+ * An absolute URL on the web origin `base` for a relative `redirect_to`. Always absolute, never a
+ * bare path: `/.//evil.com`, `/a/..//evil.com` and `/%2e//evil.com` normalize to the pathname
+ * `//evil.com`, which as a bare Location is protocol-relative. A leading run of slashes in the
+ * normalized pathname collapses to one, and anything that still resolves off-origin (`/\evil.com`)
+ * falls back to `/`.
  */
-function landingUrl(deps: AppDeps, path: string, extra?: Record<string, string>): string {
-  const base = webBase(deps);
-  const origin = base ?? "http://api.invalid";
+export function landingUrl(base: string, path: string, extra?: Record<string, string>): string {
+  const origin = new URL(base).origin;
   let url: URL;
   try {
     url = new URL(path, origin);
@@ -89,8 +92,20 @@ function landingUrl(deps: AppDeps, path: string, extra?: Record<string, string>)
     url = new URL("/", origin);
   }
   if (url.origin !== origin) url = new URL("/", origin);
-  for (const [k, v] of Object.entries(extra ?? {})) url.searchParams.set(k, v);
-  return base ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
+  url.pathname = url.pathname.replace(/^\/{2,}/, "/");
+  const out = new URL(`${url.pathname}${url.search}${url.hash}`, origin);
+  for (const [k, v] of Object.entries(extra ?? {})) out.searchParams.set(k, v);
+  return out.origin === origin ? out.toString() : `${origin}/`;
+}
+
+/** Everything sign-in needs, or undefined when any piece is missing (the routes answer 503). */
+function signInSetup(
+  deps: AppDeps,
+): { github: GitHubOAuth; secret: string; web: string } | undefined {
+  const github = githubFor(deps);
+  const secret = deps.config.SESSION_SECRET;
+  const web = webBase(deps);
+  return github && secret && web ? { github, secret, web } : undefined;
 }
 
 function githubFor(deps: AppDeps): GitHubOAuth | undefined {
@@ -158,9 +173,9 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
   const r = new Hono<AppEnv>();
 
   r.get("/github", (c) => {
-    const github = githubFor(deps);
-    const secret = deps.config.SESSION_SECRET;
-    if (!github || !secret) return fail(c, "unavailable", "GitHub sign-in is not configured");
+    const setup = signInSetup(deps);
+    if (!setup) return fail(c, "unavailable", "sign-in not configured");
+    const { github, secret } = setup;
     const parsed = parseRouteRequest(contract.githubStart, { query: c.req.query() });
     if (!parsed.ok)
       return fail(c, "validation_failed", parsed.error.error.message, parsed.error.error.issues);
@@ -185,9 +200,9 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
   });
 
   r.get("/github/callback", async (c) => {
-    const github = githubFor(deps);
-    const secret = deps.config.SESSION_SECRET;
-    if (!github || !secret) return fail(c, "unavailable", "GitHub sign-in is not configured");
+    const setup = signInSetup(deps);
+    if (!setup) return fail(c, "unavailable", "sign-in not configured");
+    const { github, secret, web } = setup;
 
     const rawState = getCookie(c, OAUTH_STATE_COOKIE);
     clearStateCookie(c, deps);
@@ -196,7 +211,7 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
     if (denied !== undefined) {
       // The user declined (access_denied) or the app is misconfigured: back to the web app.
       const code = /^[a-z_]{1,64}$/.test(denied) ? denied : "github_error";
-      return c.redirect(landingUrl(deps, "/", { auth_error: code }), 302);
+      return c.redirect(landingUrl(web, "/", { auth_error: code }), 302);
     }
 
     const parsed = parseRouteRequest(contract.githubCallback, { query: c.req.query() });
@@ -246,7 +261,7 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
     });
     setSessionCookie(c, deps.config, token);
     c.get("log").info({ userId, githubLogin: identity.login }, "auth: signed in");
-    return c.redirect(landingUrl(deps, payload.r), 302);
+    return c.redirect(landingUrl(web, payload.r), 302);
   });
 
   r.get("/me", requireSession(deps), (c) => {
