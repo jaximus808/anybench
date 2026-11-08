@@ -122,7 +122,9 @@ export function checkOpening(out: WriterOutput, brief: ScoutBrief, project: stri
     if (!claimText.includes(n)) issues.push(`number "${n}" is not in a quoted claim`);
   }
   if (URL_RE.test(both)) issues.push("contains a URL or domain");
-  if (OTHER_CUSTOMERS_RE.test(both)) issues.push("mentions another customer (Tandem)");
+  if (OTHER_CUSTOMERS_RE.test(both) && !OTHER_CUSTOMERS_RE.test(project)) {
+    issues.push("mentions another customer (Tandem)");
+  }
   if (CLICHE_RE.test(both)) issues.push("flattery or a cliché");
   if (/^\s*(hi|hello|hey|dear)\b/i.test(out.opening)) issues.push("opening has a greeting");
   if (words(out.opening) > OPENING_MAX_WORDS) {
@@ -256,10 +258,15 @@ export function lintDraft(d: Pick<DraftEmail, "subject" | "text">, ctx: LintCont
   if (!d.text.includes(ANYBENCH_URL)) issues.push(`no link to ${ANYBENCH_URL}`);
   if (!d.subject.trim()) issues.push("empty subject");
   if (d.subject.length > SUBJECT_MAX_CHARS + 30) issues.push("subject is too long");
-  if (OTHER_CUSTOMERS_RE.test(`${d.subject}\n${d.text}`)) {
+  // Naming Tandem is only a problem when the email is about someone else's project (it would be
+  // citing another customer). An email whose subject is about tandem itself may name it.
+  if (OTHER_CUSTOMERS_RE.test(`${d.subject}\n${d.text}`) && !OTHER_CUSTOMERS_RE.test(d.subject)) {
     issues.push("mentions another customer (Tandem)");
   }
-  if (/\{\{|\}\}|TODO|lorem ipsum/i.test(d.text)) issues.push("unfilled placeholder");
+  // "TODO.md" is a real file name prospects use; a bare TODO or template braces are placeholders.
+  if (/\{\{|\}\}|\bTODO\b(?!\.md)/.test(d.text) || /lorem ipsum/i.test(d.text)) {
+    issues.push("unfilled placeholder");
+  }
   const body = d.text.split(/\n--\n/)[0] ?? "";
   if (words(body) > BODY_MAX_WORDS)
     issues.push(`body is ${words(body)} words (max ${BODY_MAX_WORDS})`);
