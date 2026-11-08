@@ -106,3 +106,35 @@ README says…" or "we'd check…". Neither brief states a result.
   Quote `brief.claims[].text` with `source_url`; never add a claim that isn't in the brief.
 - The model would be stronger if it could cite a range (`#L252-L253`) for claims that wrap. Not
   done: the verifier only accepts one line.
+
+## Review fixes (TDM-164 finisher, 2026-11-08)
+
+- **Rule 10 is one exported filter**, `packages/outreach/src/rule10.ts`: `findRule10Violations(text)`
+  → `{sentence, match, rule}[]`, `violatesRule10(text)`, `unmeasuredAssertions(text)` (sentences).
+  A hedge counts only when it comes BEFORE the assertion in the same clause. Bare
+  test/check/measure/verify/confirm/will/may are not hedges. Attribution ("your README claims 3x
+  faster") excuses comparatives but never "your numbers are inflated" or "we measured". Tables:
+  `packages/outreach/test/tdm164-rule10.test.ts` (must-catch / must-allow). The writer (TDM-165)
+  should run it on every draft.
+- **Quote check**: struck-through text (`~~x~~`, `<del>`, `<s>`, `<strike>`) is deleted before
+  matching; an ellipsis inside a quote → `quote_elided`; a negation/disclaimer before the span in
+  its clause, or a retraction after it → `quote_out_of_context`.
+- **Email lookups count against the run cap** (`report.spentMicroUsd = naive + email`), and one
+  runs only when the cap still covers its max cost (`contact_lookup.outcome = skipped_run_cap`
+  otherwise). `hunterScoutEmailFinder(monid)` wraps TDM-163's `findEmailViaHunter`; CLI
+  `--find-email`.
+- **`compared_against[].verified`**: true for a resolved `path#Ln`, or an https URL the fetched
+  README/manifests link; otherwise false (`verified_by: null`). We never fetch the URL itself.
+
+## Naïve at capacity (2026-11-08 ~04:50 UTC)
+
+`anybench outreach scout --repo https://github.com/samuelfaj/distill --budget-micro-usd 250000
+--run-cap-micro-usd 400000` printed:
+```
+lead repo:samuelfaj/distill https://github.com/samuelfaj/distill: rate_limited: the service is at capacity
+scout: 1 leads, spend $0.0036 of $0.4000 cap (Naïve $0.0036, email lookups $0.0000) ...
+```
+The session had run (3,593 µ$ consumed) but a later call got `429 rate_limited`. `credits.show`
+also answered 429 three times in a row, 20 s apart, and the next run failed in `ensureAgent`
+("the service is at capacity"). `runScout` now retries a 429 around `runSession` (20 s, then
+60 s) with the same idempotency key, so a session that already ran is replayed, not paid twice.

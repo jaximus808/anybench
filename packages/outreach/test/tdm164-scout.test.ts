@@ -614,6 +614,30 @@ describe("runScout (FakeNaive)", () => {
     });
   });
 
+  it("retries a Naïve 429 at capacity with the same idempotency key (no double spend)", async () => {
+    const naive = new FakeNaive();
+    naive.script(
+      "scout",
+      { createError: fakeNaiveError("rate_limited", 429, "the service is at capacity") },
+      { output: tdm164Output(), costMicroUsd: 4_000n },
+    );
+    const waits: number[] = [];
+    const report = await runScout({
+      naive,
+      leads: [{ id: "cap", githubUrl: "https://github.com/acme/cap" }],
+      ingest: async (url) => tdm164Ingest(url),
+      capacityRetryDelaysMs: [5, 10],
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+    expect(waits).toEqual([5]);
+    expect(report.results[0]).toMatchObject({ status: "scored", costMicroUsd: 4_000n });
+    expect(report.spentMicroUsd).toBe(4_000n);
+    const keys = naive.sessionCreates.map((c) => c.idempotencyKey);
+    expect(new Set(keys).size).toBe(1);
+  });
+
   it("a pre-flight refusal (quote above the per-lead budget) is recorded as 0 spend", async () => {
     const naive = new FakeNaive();
     naive.script("scout", { createError: fakeNaiveError("budget_exceeded", 402) });

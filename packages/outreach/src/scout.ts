@@ -363,6 +363,9 @@ export interface ScoutOptions {
   dryRun?: boolean;
   now?: () => Date;
   log?: (line: string) => void;
+  /** Waits before retrying a Naïve 429 `rate_limited` (default 20 s, then 60 s). */
+  capacityRetryDelaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type ScoutLeadResult =
@@ -385,6 +388,8 @@ export type ScoutLeadResult =
       error: { code: string; message: string };
       /** Naïve spend for this lead (the session's, or its whole budget when it can't be read). */
       costMicroUsd: MicroUsd;
+      /** The Naïve session, when one was created (a rerun replays it: same idempotency key). */
+      sessionId?: string;
     };
 
 export interface ScoutRunReport {
@@ -540,6 +545,22 @@ async function defaultIngest(githubUrl: string): Promise<RepoIngest> {
   return ingestGitHubRepo(githubUrl, { depth: 50 });
 }
 
+async function retryAtCapacity<T>(o: ScoutOptions, fn: () => Promise<T>): Promise<T> {
+  const waits = o.capacityRetryDelaysMs ?? [20_000, 60_000];
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const wait = waits[attempt];
+      if (!(err instanceof NaiveError && err.code === "rate_limited") || wait === undefined)
+        throw err;
+      o.log?.(`naive at capacity; retrying in ${Math.round(wait / 1000)}s (same idempotency key)`);
+      await sleep(wait);
+    }
+  }
+}
+
 export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
   const log = o.log ?? (() => undefined);
   const now = o.now ?? (() => new Date());
@@ -565,7 +586,7 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
     maxTaskMicroUsd: perLead,
     outputSchema: scoutOutputJsonSchema(),
   });
-  const ensured = await ensureAgent(o.naive, spec);
+  const ensured = await retryAtCapacity(o, () => ensureAgent(o.naive, spec));
   const report: ScoutRunReport = {
     agent: {
       id: ensured.agent.id,
@@ -594,6 +615,7 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
       );
       break;
     }
+    let sessionId: string | undefined;
     const fail = (code: string, message: string, cost: MicroUsd): void => {
       report.spentMicroUsd += cost;
       report.naiveSpentMicroUsd += cost;
@@ -603,6 +625,7 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
         status: "error",
         error: { code, message },
         costMicroUsd: cost,
+        ...(sessionId ? { sessionId } : {}),
       });
       log(`lead ${lead.id} ${lead.githubUrl}: ${code}: ${message}`);
     };
@@ -621,24 +644,28 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
       continue;
     }
 
-    let sessionId: string | undefined;
     let result;
     try {
-      result = await runSession(o.naive, {
-        agentId: ensured.agent.id,
-        agentVersion: ensured.agent.version,
-        role: SCOUT_ROLE,
-        input: scoutSessionInput(lead, ingested, material),
-        output: { schema: ScoutOutputSchema, jsonSchema: scoutOutputJsonSchema() },
-        budgetMicroUsd: perLead,
-        idempotencyKey: keyFor(lead, ensured.fingerprint, ingested.digest.hash, perLead),
-        metadata: { lead_id: lead.id, repo_url: lead.githubUrl },
-        onSession: (s) => {
-          sessionId = s.id;
-        },
-      });
+      // A Naïve 429 "at capacity" is retried with the SAME idempotency key, so a session that
+      // already ran is replayed, never paid for twice.
+      result = await retryAtCapacity(o, () =>
+        runSession(o.naive, {
+          agentId: ensured.agent.id,
+          agentVersion: ensured.agent.version,
+          role: SCOUT_ROLE,
+          input: scoutSessionInput(lead, ingested, material),
+          output: { schema: ScoutOutputSchema, jsonSchema: scoutOutputJsonSchema() },
+          budgetMicroUsd: perLead,
+          idempotencyKey: keyFor(lead, ensured.fingerprint, ingested.digest.hash, perLead),
+          metadata: { lead_id: lead.id, repo_url: lead.githubUrl },
+          onSession: (s) => {
+            sessionId = s.id;
+          },
+        }),
+      );
     } catch (err) {
       const sid = sessionId ?? (err instanceof NaiveError ? err.sessionId : undefined);
+      sessionId = sid;
       if (err instanceof NaiveBudgetExceededError && err.consumedMicroUsd === null && !sid) {
         // Refused at create: the pre-flight quote (input + the model's max output) is above the
         // per-lead budget. Nothing ran, nothing is debited (docs/findings/outreach-scout.md).
