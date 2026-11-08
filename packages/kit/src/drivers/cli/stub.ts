@@ -135,6 +135,32 @@ export interface PlanCliStubTrialOptions {
   env?: Readonly<Record<string, string>>;
 }
 
+/** A file bound for the subject computer: the kit path it came from and where it lands. */
+export interface SubjectFileRef {
+  kitPath: string;
+  to: string;
+}
+
+/**
+ * Last-resort guard for the subject computer: throws CliStubError if any file comes from
+ * gates/, reference/ or proof/. The single exception is `allowed` (an overlay's replacement
+ * driver), and only when both its kit path and its destination match exactly.
+ */
+export function assertSubjectFiles(
+  files: readonly SubjectFileRef[],
+  allowed?: SubjectFileRef,
+): void {
+  for (const f of files) {
+    const ok = allowed !== undefined && f.kitPath === allowed.kitPath && f.to === allowed.to;
+    const hidden = CLI_SUBJECT_FORBIDDEN_DIRS.find((d) => underDir(f.kitPath, d));
+    if (hidden !== undefined && !ok) {
+      throw new CliStubError(
+        `refusing to ship ${f.kitPath} to the subject computer: ${hidden}/ never reaches it`,
+      );
+    }
+  }
+}
+
 /** Plan one cli trial of `contender` on `workload`, optionally under a proof overlay. */
 export async function planCliStubTrial(
   kit: LoadedKit,
@@ -205,15 +231,10 @@ export async function planCliStubTrial(
 
   // Final guard: nothing from gates/, reference/ or proof/ goes to the subject computer, except
   // the overlay's replacement driver, and only at the driver path.
-  for (const f of files) {
-    const allowed = f.kitPath === overlayDriver && f.to === `kit/${driverPath}`;
-    const hidden = CLI_SUBJECT_FORBIDDEN_DIRS.find((d) => underDir(f.kitPath, d));
-    if (hidden !== undefined && !allowed) {
-      throw new CliStubError(
-        `refusing to ship ${f.kitPath} to the subject computer: ${hidden}/ never reaches it`,
-      );
-    }
-  }
+  assertSubjectFiles(
+    files,
+    overlayDriver === undefined ? undefined : { kitPath: overlayDriver, to: `kit/${driverPath}` },
+  );
 
   const env: Record<string, string> = {
     ...opts.env,

@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url";
 import { GateResultSchema } from "@anybench/core";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  assertSubjectFiles,
+  CliStubError,
   CLI_GENERATED_MARKER,
   CLI_OUTPUT_PATHS,
   loadKit,
@@ -497,6 +499,7 @@ describe("runner stub plans", async () => {
   );
 
   it("never ships gates/, reference/ or proof/ to the subject computer", async () => {
+    let planned = 0;
     for (const c of kit.contenders) {
       for (const w of kit.workloads) {
         for (const overlay of [
@@ -508,14 +511,58 @@ describe("runner stub plans", async () => {
           const p = await planCliStubTrial(kit, c.id, w.id, {
             root: "/r",
             ...(overlay ? { overlay } : {}),
-          }).catch(() => null);
-          for (const f of p?.files ?? []) {
+          }).catch((e: unknown) => {
+            // The only expected refusal: an overlay that targets the other contender.
+            if (e instanceof CliStubError && /applies to contender/.test(e.message)) return null;
+            throw e;
+          });
+          if (p === null) continue;
+          planned++;
+          for (const f of p.files) {
             expect(f.to).toMatch(/^(kit\/adapters\/[a-z0-9-]+\/|in\/|run\.sh$)/);
             expect(new TextDecoder().decode(f.content)).not.toContain("tree/src/power.c:4:");
           }
         }
       }
     }
+    // 2 contenders x 2 workloads bare, plus 2 workloads for each of the 3 overlays.
+    expect(planned).toBe(10);
+  });
+
+  it("assertSubjectFiles refuses gates/, reference/ and proof/ except the overlay driver", () => {
+    const adapter = { kitPath: "adapters/ripgrep/driver.sh", to: "kit/adapters/ripgrep/driver.sh" };
+    const input = { kitPath: "workloads/w/input/a.txt", to: "in/a.txt" };
+    expect(() => assertSubjectFiles([adapter, input])).not.toThrow();
+    for (const kitPath of [
+      "gates/same-matches/check.sh",
+      "reference/same-matches/w/stdout.txt",
+      "proof/oracle/README.md",
+      "gates",
+    ]) {
+      expect(() => assertSubjectFiles([adapter, { kitPath, to: "kit/x" }]), kitPath).toThrow(
+        CliStubError,
+      );
+    }
+    const overlay = {
+      kitPath: "proof/do_less/truncate/driver.sh",
+      to: "kit/adapters/ripgrep/driver.sh",
+    };
+    expect(() => assertSubjectFiles([overlay, input], overlay)).not.toThrow();
+    for (const to of [
+      "kit/proof/do_less/truncate/driver.sh",
+      "in/driver.sh",
+      "kit/adapters/ripgrep/other.sh",
+    ]) {
+      expect(() => assertSubjectFiles([{ ...overlay, to }], overlay), to).toThrow(
+        /refusing to ship proof\/do_less\/truncate\/driver.sh/,
+      );
+    }
+    // An allowance for one file does not cover another file under proof/.
+    expect(() =>
+      assertSubjectFiles([{ kitPath: "proof/oracle/driver.sh", to: overlay.to }], overlay),
+    ).toThrow(CliStubError);
+    // Prefix lookalikes are not hidden dirs.
+    expect(() => assertSubjectFiles([{ kitPath: "gatesway/x", to: "kit/x" }])).not.toThrow();
   });
 
   it("ships only the gate and its reference to the scoring computer", async () => {
