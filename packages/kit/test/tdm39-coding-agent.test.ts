@@ -540,8 +540,7 @@ describe("a trial on the host with a fake claude", () => {
       }).stderr,
     ).toMatch(/token source anthropic_key needs an Anthropic model id/);
     expect(
-      run({ CLAUDE_CODE_VERSION: CC, CC_MODEL: NAIVE_MODEL, AB_TOKEN_SOURCE: "openai" })
-        .stderr,
+      run({ CLAUDE_CODE_VERSION: CC, CC_MODEL: NAIVE_MODEL, AB_TOKEN_SOURCE: "openai" }).stderr,
     ).toMatch(/AB_TOKEN_SOURCE must be naive_proxy or anthropic_key/);
 
     // BYOK: a direct Anthropic key, recorded as such.
@@ -674,7 +673,9 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
     expect(plan.script).not.toContain("t0ken-value");
     const proxy = plan.files.find((f) => f.to === "proxy.env")!;
     expect(proxy.mode).toBe(0o600);
-    expect(plan.files.map((f) => f.to).filter((f) => /^kit\/(gates|reference|proof)\//.test(f))).toEqual([]);
+    expect(
+      plan.files.map((f) => f.to).filter((f) => /^kit\/(gates|reference|proof)\//.test(f)),
+    ).toEqual([]);
   });
 
   for (const [contender, setupLine] of CONTENDERS) {
@@ -687,7 +688,10 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
       expect(seen).toContain(`ANTHROPIC_MODEL=${NAIVE_MODEL}\n`);
       expect(seen).toContain("MAX_THINKING_TOKENS=0\n");
       const argv = await argvOf(fake);
-      expect(argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2)).toEqual(["--model", NAIVE_MODEL]);
+      expect(argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2)).toEqual([
+        "--model",
+        NAIVE_MODEL,
+      ]);
       expect(argv.includes("Agent")).toBe(contender === "claude-code-solo");
       expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toContain(setupLine);
       expect(await readFile(path.join(out, P.stream), "utf8")).toContain('"subtype":"init"');
