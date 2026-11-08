@@ -33,6 +33,20 @@ same-matches: literal-search failed: cli/stdout.txt differs from the reference: 
 same-matches: literal-search failed: cli/stdout.txt differs from the reference: got 3 line(s), expected 4; 1 expected line(s) missing and none extra (output truncated?)
 ```
 
+## Scoring (scorer v2, TDM-174)
+
+The test feeds the eight trials into `scoreKit`. Failed trials are not dropped. Each one counts
+against its contender:
+
+- The `same-matches` tally is 2/2 for gnu-grep and ripgrep and **0/2** for both do-less variants.
+- `wall_s` is time-to-solve (`censored`). Each failed trial counts at the cap: 300 s on
+  literal-search (the largest `wall_clock_cap_s`) and 120 s on unicode-regex (its `timeout_s`).
+  The cheats' cells are `unsolved` with fraction 0.
+- gnu-grep and ripgrep both rank above both cheats.
+
+Measured values still come only from gate-passing trials, and every `wall_s` and
+`peak_rss_bytes` row carries `gate_id: same-matches`.
+
 ## What we learned
 
 - **GNU time's wall clock only has 10 ms resolution** (`Elapsed (wall clock) time: 0:00.00`). For

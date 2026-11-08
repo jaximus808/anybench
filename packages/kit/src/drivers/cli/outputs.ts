@@ -5,7 +5,8 @@
 // them in bench's `CollectorInput` shape, so a trial's rows are
 //   collect(await readCliCollectorOutputs(out), kit.requirements)
 // and every row a measured requirement reads comes back stamped with that requirement's
-// gate_id; `scoreKit` then counts it only from trials whose `gate.json` passed. (`@anybench/kit`
+// gate_id; `scoreKit` then takes a measured value only from trials whose `gate.json` passed, and
+// counts a failed trial against the contender (0 on the gate tally, `wall_s` at the cap). (`@anybench/kit`
 // cannot import bench, which depends on it, so the shape is matched structurally here and pinned
 // by bench's TDM-36 test.)
 import { readFile, lstat } from "node:fs/promises";

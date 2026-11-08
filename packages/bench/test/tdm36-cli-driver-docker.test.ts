@@ -1,7 +1,8 @@
 // TDM-36 [4.4] done condition: the cli example kit (packages/kit/examples/cli) runs on
 // docker-local through the runner stub. The honest contender and the oracle pass the
 // output-diff gate; both do-less variants fail it with a clear reason. Collector rows come back
-// stamped with the gate, and scoreKit counts them only for the trials whose gate passed.
+// stamped with the gate, and scoreKit (v2) counts the cheats' failed trials against them: 0/2 on
+// the gate tally, wall_s at the cap, ranked below both honest contenders.
 //
 // Two computers, as in production: the subject computer gets the contender's adapter and the
 // workload input only; a separate scoring computer gets the gate, its reference and the frozen
@@ -29,7 +30,6 @@ import type { GateResult } from "@anybench/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   COLLECTOR_OUTPUT_FILES,
-  NO_SCORE_REASONS,
   collect,
   scoreKit,
   trialMetricRecord,
@@ -242,7 +242,7 @@ describe.skipIf(!available)("examples/cli on docker-local (runner stub)", () => 
     }
   });
 
-  it("measured rows carry gate_id and only gate-passing trials are scored", () => {
+  it("measured rows carry gate_id; failed trials count against the cheats (scorer v2)", () => {
     for (const o of outcomes) {
       for (const name of ["wall_s", "peak_rss_bytes"]) {
         const row = o.metrics.find((m) => m.name === name && m.level === "trial");
@@ -260,15 +260,39 @@ describe.skipIf(!available)("examples/cli on docker-local (runner stub)", () => 
     }));
     const score = scoreKit(kit.spec, trials);
     const by = Object.fromEntries(score.contenders.map((c) => [c.contenderId, c]));
-    expect(by["gnu-grep"]?.scored).toBe(true);
-    expect(by["ripgrep"]?.scored).toBe(true);
-    for (const cheat of ["ripgrep+truncated-output", "ripgrep+first-match-only"]) {
-      expect(by[cheat]).toMatchObject({
-        scored: false,
-        total: null,
-        reason: NO_SCORE_REASONS.gate_failed,
-      });
+    for (const honest of ["gnu-grep", "ripgrep"]) {
+      expect(by[honest]).toMatchObject({ scored: true });
+      expect(by[honest]?.gates["same-matches"]).toMatchObject({ passed: 2, failed: 0, total: 2 });
     }
-    expect([...score.ranking].sort()).toEqual(["gnu-grep", "ripgrep"]);
+    // wall_s is time-to-solve: every failed trial counts at the cap. The cap is the workload's
+    // timeout_s (unicode-regex: 120 s), else the largest wall_clock_cap_s (ripgrep: 300 s).
+    const capOf: Record<string, number> = { "literal-search": 300, "unicode-regex": 120 };
+    for (const cheat of ["ripgrep+truncated-output", "ripgrep+first-match-only"]) {
+      const c = by[cheat]!;
+      expect(c.gates["same-matches"], cheat).toMatchObject({ passed: 0, failed: 2, total: 2 });
+      const wall = c.requirements.find((r) => r.requirementId === "wall");
+      expect(wall, cheat).toMatchObject({ scored: true, aggregate: "censored" });
+      if (wall?.scored !== true) throw new Error(`${cheat}: wall unscored`);
+      for (const cell of wall.byWorkload) {
+        expect(cell, `${cheat}/${cell.workloadId}`).toMatchObject({
+          status: "unsolved",
+          fraction: 0,
+          solved: 0,
+          trials: 1,
+          cap: capOf[cell.workloadId],
+          samples: [capOf[cell.workloadId]],
+        });
+      }
+    }
+    // Both honest contenders rank above both cheats.
+    const rank = (id: string) => score.ranking.indexOf(id);
+    for (const honest of ["gnu-grep", "ripgrep"]) {
+      for (const cheat of ["ripgrep+truncated-output", "ripgrep+first-match-only"]) {
+        expect(rank(honest), `${honest} vs ${cheat}`).toBeGreaterThanOrEqual(0);
+        expect(rank(cheat) === -1 || rank(honest) < rank(cheat), `${honest} vs ${cheat}`).toBe(
+          true,
+        );
+      }
+    }
   });
 });
