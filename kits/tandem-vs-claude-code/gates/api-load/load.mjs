@@ -58,10 +58,14 @@ async function startServer(ws, abRun, deadlineS) {
     ["env", "NODE_ENV=production", "NO_COLOR=1", "timeout", "-k", "5", String(deadlineS), "node", ".hidden-tests/serve.ts"],
     { cwd: ws, stdio: ["pipe", "pipe", "inherit"] },
   );
+  child.stdin.on("error", () => {}); // EPIPE once the app is gone: nothing left to close
   const exited = new Promise((r) => child.on("exit", r));
   const port = await new Promise((resolvePort, reject) => {
     let buf = "";
-    const timer = setTimeout(() => reject(new Error("app did not start within 20 s")), 20_000);
+    const timer = setTimeout(() => {
+      child.stdin.end(); // serve.ts exits when its stdin closes; check.sh stops whatever is left
+      reject(new Error("app did not start within 20 s"));
+    }, 20_000);
     child.stdout.on("data", (chunk) => {
       buf += chunk;
       const m = /^PORT (\d+)$/m.exec(buf);

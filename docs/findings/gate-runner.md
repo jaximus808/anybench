@@ -204,6 +204,9 @@ failure anywhere else becomes a plain FAIL verdict.
 - Files copied from the kit keep its mode (0640, group abgate), so abrun can't read them. After
   `cp -R`, run `chmod -R a+rX` on the copy. The first e2e run without it failed the *honest*
   contender's copied tests.
+- Stop the contender in the EXIT trap, before the fallback verdict: `stop_contender` (see
+  "Checks stop the contender" below). A server or daemon of the contender uid that is still alive
+  when the check exits fails the gate closed as `lingering`, even when every test passed.
 - Every path that involves the outputs must end with a verdict. A verdict-less exit counts against
   the contender anyway, and only flags `kit_suspect`.
 
@@ -229,3 +232,63 @@ would leak it.
 - A scoring computer carries the trial's tag, but `trials.computer_id` names the subject's
   computer. So the reaper only spares it while `last_seen_at` is fresh. The runner `touch`es the
   registry on every exec (about every 2 s while polling), and checks run detached.
+
+## Checks stop the contender before they exit (fix-gate-lingering)
+
+The first real trial on Naïve (claude-code-solo, todo-api) passed 16/16 hidden tests and api-load,
+but hidden-tests came back `lingering`: "2 contender process(es) still running when the check
+exited". The runner's rule (any abrun task alive when the check exits fails closed) is unchanged.
+Instead every check that runs contender code now stops it in its EXIT trap, before the fallback
+verdict: `stop_contender` runs a small script **as abrun** through `"$AB_RUN"` (abgate can't signal
+abrun): `kill -TERM -1`, up to 2 s grace, then `kill -KILL -1` (repeated up to 2 s), skipping the
+stopper's own session. It prints `stopping contender processes: <pid>:<comm> ...` into the gate log
+when it finds any. It does nothing when `$AB_RUN` doesn't switch uid (`ab-run-local.sh`: the inner
+uid equals the caller's) or lands on root, so local runs never signal your own processes. `pkill`
+isn't used: ubuntu:24.04 has no procps. Files: both `kits/tandem-vs-claude-code/gates/*/check.sh`,
+`packages/kit/examples/harness/gates/hidden-tests/check.sh`, and the coding-agent template
+(`renderCodingAgentGateScript`, example regenerated). `load.mjs` also closes `serve.ts`'s stdin when
+the app fails to start in 20 s, not only in `stop()`.
+
+What the 2 processes were is still unknown. What I checked:
+
+- Naïve (node v24.22.1, PID 1 systemd, `pam_systemd` in common-session), the gate's PAM setup,
+  `runuser -u abgate -- su abrun -s /bin/bash -c '...'`: `su -c` gives a new session (`sid=1643
+  pid=1643`), its cgroup stays `0::/system.slice/guest-agent.service/workload`, `loginctl` says
+  "No sessions", `user@997.service` is `inactive (dead)`. So it isn't a systemd user manager.
+- The live trial's frozen outputs (`runs/e6017e9b-…/trials/7e2b249a-…/out.tar.gz` from S3), plain
+  `timeout -k 5 600 node --test … .hidden-tests/*.test.ts` as abrun, on Naïve and in docker node:22
+  and node:24: 16/16 pass, and **no** abrun process at t+0, 2, 7 or 15 s.
+- The same outputs through the real gate runner on docker-local, old checks: no lingering either.
+
+So the leftover depends on something about the live scoring computer we didn't reproduce. The stop
+doesn't depend on the cause, and the next live run's gate log will name the processes.
+
+`packages/bench/test/gate-docker-tandem-lingering.test.ts` (docker-local, node:24, real runner,
+uid split):
+
+```sh
+cd packages/bench
+ANYBENCH_OLD_CHECKS_REF=main ANYBENCH_LIVE_BUNDLE=<out.tar.gz> ANYBENCH_GATE_LOG=<file> \
+  npx vitest run test/gate-docker-tandem-lingering.test.ts
+```
+
+```
+oracle             hidden-tests verdict   true  12572ms 16/16 hidden tests passed
+oracle             api-load     verdict   true  43622ms p95 70.0 ms at 50 req/s over 1000 requests, 0 errors
+live               hidden-tests verdict   true  12732ms 16/16 hidden tests passed
+live               api-load     verdict   true  43477ms p95 70.2 ms at 50 req/s over 1000 requests, 0 errors
+daemon             hidden-tests verdict   true  15408ms 16/16 hidden tests passed
+    log: stopping contender processes: 1264:bash 1299:bash 1337:bash 1366:bash 1387:sleep 1388:sleep 1397:sleep 1398:sleep
+daemon             api-load     verdict   true  43373ms p95 109.5 ms at 50 req/s over 1000 requests, 0 errors
+daemon-old-checks  hidden-tests lingering false 12690ms gate hidden-tests: 7 contender process(es) still running when the check exited (fail closed)
+daemon-old-checks  api-load     lingering false 43548ms gate api-load: 10 contender process(es) still running when the check exited (fail closed)
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+```
+
+`daemon` is the oracle plus an `app.ts` that spawns `setsid bash -c "trap '' TERM; while :; ..."`
+on every import. **Trade-off:** with these checks, a contender that leaves a daemon behind is
+stopped, not failed. `lingering` now fires only for a process the check couldn't stop (or for a kit
+whose check doesn't stop the contender, as `daemon-old-checks` shows). That doesn't open a cheat:
+the uid split already keeps abrun away from the verdict, the kit and the check, and the runner kills
+both uids between gates.

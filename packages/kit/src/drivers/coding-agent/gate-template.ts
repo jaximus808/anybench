@@ -32,10 +32,41 @@ write_verdict() {
   printf '{"pass":%s,"reason":%s,"evidence":[%s]}\\n' "$1" "$(json_str "$2")" "$3" > "$verdict.tmp"
   mv "$verdict.tmp" "$verdict"
 }
+# Stop every contender process before this check exits. The gate runner fails the gate closed
+# (\`lingering\`) on any process of the contender uid still alive when the check exits, and the
+# contender's code (the app the tests import, a server it starts) can leave some behind. This uid
+# can't signal the contender uid, so the stop runs AS it, through "$AB_RUN": TERM, a 2 s grace,
+# then KILL, for every process of that uid except the stopper's own session. It does nothing when
+# "$AB_RUN" doesn't switch uid (a local ab-run-local.sh), so it never signals your own processes.
+AB_STOP_ALL='me=$$ uid=$(id -u)
+[ "$uid" != "$1" ] && [ "$uid" != 0 ] || exit 0
+alive() {
+  left=""
+  for p in /proc/[0-9]*; do
+    [ "\${p#/proc/}" != "$me" ] && [ -O "$p" ] || continue
+    st=""; { read -r st < "$p/stat"; } 2>/dev/null || continue
+    set -- \${st##*\\)}
+    case "\${1:-}" in Z|X|"") continue ;; esac
+    [ "\${4:-}" != "$me" ] || continue
+    c="\${st#*\\(}"; left="$left \${p#/proc/}:\${c%\\)*}"
+  done
+}
+alive; [ -z "$left" ] || echo "stopping contender processes:$left"
+kill -TERM -1 2>/dev/null
+i=0; while alive; [ -n "$left" ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+kill -KILL -1 2>/dev/null
+i=0; while alive; [ -n "$left" ] && [ "$i" -lt 20 ]; do sleep 0.1; kill -KILL -1 2>/dev/null; i=$((i + 1)); done
+[ -z "$left" ] || { echo "still running after KILL:$left"; exit 1; }'
+stop_contender() {
+  [ -n "\${AB_RUN:-}" ] && [ -d "\${AB_RUN_DIR:-}" ] || return 0
+  (cd "$AB_RUN_DIR" && "$AB_RUN" bash -c "$AB_STOP_ALL" ab-stop "$(id -u)" < /dev/null) >&2 || true
+}
 # From here on the outputs are involved: whatever they make go wrong is a FAIL verdict, never a
 # verdict-less exit (which would read as a broken check).
 fail_closed() {
   local rc=$?
+  # Stop first, then the verdict: nothing of the contender outlives the check, on any path.
+  stop_contender
   [ -s "$verdict" ] || write_verdict false "$gate_id: the hidden tests could not run on these outputs (exit $rc)" ""
   exit 0
 }
