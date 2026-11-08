@@ -255,7 +255,7 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     expect((await eventsOf(s.runId)).length).toBe(evs.length);
   });
 
-  it("a failing verdict is the contender's: failure_class gate, then reviewing when the kit has a rubric", async () => {
+  it("a failing verdict is the contender's: failure_class gate, then done (review skipped until the reviewer ships)", async () => {
     const s = await seedTdm51(h.db, true);
     const t = await trialTdm51(h.db, s, "gating");
     const fake = fakeScoringTdm51({
@@ -263,9 +263,9 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       "db-state": JSON.stringify({ pass: false, applicable: false, reason: "no db", evidence: [] }),
     });
     const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
-    expect(report).toMatchObject({ outcome: "scored", to: "reviewing" });
+    expect(report).toMatchObject({ outcome: "scored", to: "done" });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
-    expect(row!.state).toBe("reviewing");
+    expect(row!.state).toBe("done");
     expect(row!.failureClass).toBe("gate");
     const gate = row!.gate as TrialGateRecord;
     expect(gate.gates["sum-tests"]).toMatchObject({
@@ -283,9 +283,9 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       "db-state": JSON.stringify({ pass: false, reason: "db rows differ", evidence: [] }),
     });
     const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
-    expect(report).toMatchObject({ outcome: "scored", to: "reviewing" });
+    expect(report).toMatchObject({ outcome: "scored", to: "done" });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
-    expect(row!.state).toBe("reviewing");
+    expect(row!.state).toBe("done");
     expect(row!.failureClass).toBe("gate");
     const gate = row!.gate as TrialGateRecord;
     expect(gate.gates["sum-tests"]).toMatchObject({

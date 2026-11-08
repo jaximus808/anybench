@@ -371,7 +371,11 @@ export async function gateTrial(
     throw err;
   }
 
-  const command = reviewed ? ({ type: "advance" } as const) : ({ type: "skip_review" } as const);
+  // No reviewer job exists yet ([6.x] reviewer): a trial parked in `reviewing` never leaves it and
+  // the run never scores. Until it ships, every trial skips review; reviewed requirements stay
+  // unscored and drop out of the verdict family (proof-score already treats them that way).
+  void reviewed;
+  const command = { type: "skip_review" } as const;
   const t = transitionTrial("gating", command);
   if (!t.ok) throw new Error(t.error.message);
   const { failureClass, kitSuspects } = classifyGateRecord(record);
