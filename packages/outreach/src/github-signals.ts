@@ -161,6 +161,15 @@ const NON_COMPANY_HOSTS = [
   "google.com",
   "bit.ly",
   "linktr.ee",
+  // webmail: an address domain, never a company
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "yahoo.com",
+  "icloud.com",
+  "proton.me",
+  "protonmail.com",
 ];
 
 const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
@@ -254,6 +263,10 @@ export type RepoSignals = z.infer<typeof RepoSignalsSchema>;
 export const ReadmeSignalsSchema = z.object({
   available: z.boolean(),
   path: z.string().nullable(),
+  /** Git blob SHA of the README as fetched (from /readme): pins exactly which text was cited. */
+  blobSha: z.string().nullable().default(null),
+  /** Commit SHA the claim URLs are pinned to; only fetched when a GITHUB_TOKEN is set. */
+  commitSha: z.string().nullable().default(null),
   claims: z.array(z.object({ line: z.number().int(), text: z.string(), url: z.string() })),
 });
 export type ReadmeSignals = z.infer<typeof ReadmeSignalsSchema>;
@@ -287,9 +300,13 @@ const GhRepoWire = z.looseObject({
 
 const GhReadmeWire = z.looseObject({
   path: z.string(),
+  sha: z.string().nullish(),
   content: z.string(),
   encoding: z.string(),
 });
+
+/** GET /repos/{o}/{r}/git/ref/heads/{branch}: just the ref, no author data. */
+const GhRefWire = z.looseObject({ object: z.looseObject({ sha: z.string() }) });
 
 const GhUserWire = z.looseObject({
   login: z.string(),
@@ -345,8 +362,8 @@ export interface GithubSignalsOptions {
   /** Wait for a rate-limit reset only if it is at most this far away. Default 60 s. */
   maxWaitMs?: number;
   cache?: SignalCache;
-  /** Fallback for repo metadata once GitHub is exhausted. */
-  monid?: MonidClient;
+  /** Fallback for repo metadata once GitHub is exhausted (skipped once the client has halted). */
+  monid?: MonidClient | undefined;
   fetch?: FetchLike;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -536,8 +553,8 @@ export function createGithubSignals(o: GithubSignalsOptions = {}): GithubSignals
         const limited =
           err instanceof GithubSignalsError &&
           (err.code === "RATE_LIMITED" || err.code === "BUDGET");
-        // No fallback configured: surface GitHub's own reason (RATE_LIMITED or BUDGET).
-        if (!limited || !o.monid) throw err;
+        // No fallback configured, or Monid halted after an unknown charge: surface GitHub's reason.
+        if (!limited || !o.monid || o.monid.halted() !== undefined) throw err;
         sig = await viaMonid(`${owner}/${repo}`);
       }
       cache.set(key, sig);
@@ -548,7 +565,14 @@ export function createGithubSignals(o: GithubSignalsOptions = {}): GithubSignals
       const key = `readme:${sig.fullName}`.toLowerCase();
       const hit = ReadmeSignalsSchema.safeParse(cache.get(key));
       if (hit.success) return hit.data;
-      if (exhausted) return { available: false, path: null, claims: [] };
+      const unavailable: ReadmeSignals = {
+        available: false,
+        path: null,
+        blobSha: null,
+        commitSha: null,
+        claims: [],
+      };
+      if (exhausted) return unavailable;
       let body: unknown;
       try {
         body = await gh(
@@ -559,13 +583,13 @@ export function createGithubSignals(o: GithubSignalsOptions = {}): GithubSignals
           err instanceof GithubSignalsError &&
           (err.code === "RATE_LIMITED" || err.code === "BUDGET")
         ) {
-          return { available: false, path: null, claims: [] };
+          return unavailable;
         }
         throw err;
       }
       let out: ReadmeSignals;
       if (body === null) {
-        out = { available: true, path: null, claims: [] };
+        out = { available: true, path: null, blobSha: null, commitSha: null, claims: [] };
       } else {
         const p = GhReadmeWire.safeParse(body);
         if (!p.success) {
@@ -578,12 +602,29 @@ export function createGithubSignals(o: GithubSignalsOptions = {}): GithubSignals
           p.data.encoding === "base64"
             ? Buffer.from(p.data.content, "base64").toString("utf8")
             : p.data.content;
+        // Pin claim URLs to a commit only with a token: one extra call per repo is fine at 5,000/h,
+        // not at the shared 60/h. Without it, the blob SHA still records exactly what was cited.
+        let commitSha: string | null = null;
+        if (o.token) {
+          try {
+            const ref = GhRefWire.safeParse(
+              await gh(
+                `/repos/${sig.fullName.split("/").map(encodeURIComponent).join("/")}/git/ref/heads/${encodeURIComponent(sig.defaultBranch)}`,
+              ),
+            );
+            if (ref.success) commitSha = ref.data.object.sha;
+          } catch (err) {
+            if (!(err instanceof GithubSignalsError)) throw err;
+          }
+        }
         out = {
           available: true,
           path: p.data.path,
+          blobSha: p.data.sha ?? null,
+          commitSha,
           claims: extractReadmeClaims(text, {
             fullName: sig.fullName,
-            branch: sig.defaultBranch,
+            branch: commitSha ?? sig.defaultBranch,
             path: p.data.path,
           }),
         };

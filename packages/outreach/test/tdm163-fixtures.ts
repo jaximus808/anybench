@@ -200,7 +200,12 @@ export const DIVE_README =
   "# Dive\n\nBeats the baseline by 7.7 points with 4x fewer context tokens.\n";
 
 export function readmeBody(path: string, text: string) {
-  return { path, encoding: "base64", content: Buffer.from(text, "utf8").toString("base64") };
+  return {
+    path,
+    sha: `blob-${path.length}-${text.length}`,
+    encoding: "base64",
+    content: Buffer.from(text, "utf8").toString("base64"),
+  };
 }
 
 export const READMES: Record<string, Record<string, unknown>> = {

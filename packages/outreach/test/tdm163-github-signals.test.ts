@@ -92,6 +92,62 @@ describe("GitHub signals", () => {
     expect(cache.size()).toBe(2);
   });
 
+  it("records the README blob SHA and pins claim URLs to a commit only with a token", async () => {
+    const anon = routerFetch(githubRoutes());
+    const gh = createGithubSignals({ fetch: anon.fetchFn });
+    const readme = await gh.readme({ fullName: "samuelfaj/distill", defaultBranch: "main" });
+    expect(readme.blobSha).toMatch(/^blob-/);
+    expect(readme.commitSha).toBeNull();
+    expect(readme.claims[0]!.url).toContain("/blob/main/README.md#L13");
+    expect(anon.calls.some((c) => c.url.includes("/git/ref/"))).toBe(false);
+
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const authed = routerFetch([
+      [
+        /git\/ref\/heads\/main$/,
+        () => ({ status: 200, body: { ref: "refs/heads/main", object: { sha, type: "commit" } } }),
+      ],
+      ...githubRoutes(),
+    ]);
+    const gh2 = createGithubSignals({ fetch: authed.fetchFn, token: "ghp_test" });
+    const pinned = await gh2.readme({ fullName: "samuelfaj/distill", defaultBranch: "main" });
+    expect(pinned.commitSha).toBe(sha);
+    expect(pinned.claims[0]!.url).toBe(
+      `https://github.com/samuelfaj/distill/blob/${sha}/README.md#L13`,
+    );
+    expect(authed.calls[0]!.headers.authorization).toBe("Bearer ghp_test");
+  });
+
+  it("skips the Monid fallback once the Monid client has halted", async () => {
+    const { fetchFn: ghFetch } = routerFetch([
+      [
+        /api\.github\.com/,
+        () => ({
+          status: 403,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(NOW / 1000 + 3000) },
+        }),
+      ],
+    ]);
+    const { fetchFn: monidFetch, calls: monidCalls } = routerFetch([
+      [
+        /v1\/run$/,
+        () => {
+          throw new TypeError("fetch failed");
+        },
+      ],
+    ]);
+    const monid = createMonidClient({ apiKey: "m", fetch: monidFetch });
+    const gh = createGithubSignals({ fetch: ghFetch, monid, now: () => NOW });
+    await expect(gh.repo("samuelfaj", "distill")).rejects.toMatchObject({
+      code: "TRANSPORT_ERROR",
+      chargeUnknown: true,
+    });
+    expect(monid.halted()).toMatch(/charge unknown/);
+    await expect(gh.repo("trailhq", "Trail-Code")).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    expect(monidCalls).toHaveLength(1);
+  });
+
   it("never reads the profile email", async () => {
     const { fetchFn } = routerFetch(githubRoutes());
     const gh = createGithubSignals({ fetch: fetchFn });
@@ -174,7 +230,13 @@ describe("GitHub signals", () => {
       input: { body: { url: "https://github.com/samuelfaj/distill" } },
       maxCost: 0.0012,
     });
-    expect(await gh.readme(sig)).toEqual({ available: false, path: null, claims: [] });
+    expect(await gh.readme(sig)).toEqual({
+      available: false,
+      path: null,
+      blobSha: null,
+      commitSha: null,
+      claims: [],
+    });
     expect(ghCalls).toHaveLength(1);
   });
 

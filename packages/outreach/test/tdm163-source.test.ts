@@ -149,15 +149,116 @@ describe("runSourcing", () => {
     expect(store.leads).toHaveLength(2 + 3);
   });
 
-  it("skips a lead whose found email is suppressed", async () => {
+  it("skips a suppressed domain BEFORE paying for Hunter", async () => {
     const store = new MemoryLeadStore({ suppressions: ["SAMUEL@samuelfaj.example"] });
-    const { opts } = setup({ store });
+    const { net, opts } = setup({ store });
     const report = await runSourcing(opts);
     expect(report.skipped).toContainEqual({
       url: "https://github.com/samuelfaj/distill",
       reason: "suppressed",
+      detail: "an address at samuelfaj.example unsubscribed",
     });
-    expect(store.leads.some((l) => l.email === "samuel@samuelfaj.example")).toBe(false);
+    expect(report.emailLookups).toBe(0);
+    expect(hits(net.calls, /api\.monid\.ai/)).toBe(0);
+    expect(store.leads.some((l) => l.githubUrl?.endsWith("/distill"))).toBe(false);
+  });
+
+  it("skips a contact domain another lead already has, before Hunter", async () => {
+    const store = new MemoryLeadStore({
+      leads: [
+        {
+          source: "hackathon_optin",
+          query: null,
+          company: null,
+          contact: "Someone",
+          email: "someone@samuelfaj.example",
+          githubUrl: null,
+          signals: {},
+          status: "new",
+        },
+      ],
+    });
+    const { net, opts } = setup({ store });
+    const report = await runSourcing(opts);
+    expect(report.skipped).toContainEqual({
+      url: "https://github.com/samuelfaj/distill",
+      reason: "duplicate_domain",
+      detail: "samuelfaj.example",
+    });
+    expect(hits(net.calls, /api\.monid\.ai/)).toBe(0);
+  });
+
+  it("books maxCost and stops all Monid spend when a charge is unknown", async () => {
+    // Transport error on the Hunter POST; GitHub's budget then runs out, which would normally
+    // trigger the anyapi fallback. Neither Hunter nor the fallback may run again.
+    const net = routerFetch([
+      ...contextDevRoutes(),
+      ...githubRoutes(),
+      [
+        /api\.monid\.ai\/v1\/run$/,
+        () => {
+          throw new TypeError("fetch failed: socket hang up");
+        },
+      ],
+    ]);
+    const monid = createMonidClient({
+      apiKey: "m",
+      fetch: net.fetchFn,
+      spendCapMicroUsd: 2_000_000n,
+    });
+    const store = new MemoryLeadStore();
+    const report = await runSourcing({
+      queryId: "harness-perf",
+      limit: 10,
+      contextDev: createContextDevClient({ apiKey: "c", creditCap: 10, fetch: net.fetchFn }),
+      // aarora79: repo+readme+user, distill: repo+readme+user → the 7th call (VILA) is over budget.
+      github: createGithubSignals({ fetch: net.fetchFn, requestBudget: 6, monid, now: () => NOW }),
+      monid,
+      store,
+      now: () => NOW,
+    });
+    expect(report.emailStoppedBy).toBe("monid_charge_unknown");
+    expect(report.monidSpentMicroUsd).toBe(24_500n); // the Hunter maxCost, booked
+    expect(report.monidHalted).toMatch(/hunterio \/email-finder \(TRANSPORT_ERROR\)/);
+    expect(report.stoppedBy).toBe("github_exhausted");
+    expect(hits(net.calls, /api\.monid\.ai/)).toBe(1);
+    expect(store.leads.map((l) => l.githubUrl)).toEqual([
+      "https://github.com/aarora79/agentic-coding-harness-benchmarks",
+      "https://github.com/samuelfaj/distill",
+    ]);
+    expect(store.leads[1]!.email).toBeNull();
+  });
+
+  it("treats an insert conflict (a concurrent run won) as a duplicate skip", async () => {
+    const store = new MemoryLeadStore();
+    const realInsert = store.insert.bind(store);
+    let raced = false;
+    store.insert = async (lead) => {
+      if (!raced && lead.githubUrl?.endsWith("/distill")) {
+        raced = true;
+        await realInsert({ ...lead, signals: {} }); // the other run's row lands first
+      }
+      return realInsert(lead);
+    };
+    const { opts } = setup({ store });
+    const report = await runSourcing(opts);
+    expect(report.skipped).toContainEqual({
+      url: "https://github.com/samuelfaj/distill",
+      reason: "duplicate_email",
+      detail: "insert conflict",
+    });
+    expect(store.leads.filter((l) => l.githubUrl?.endsWith("/distill"))).toHaveLength(1);
+  });
+
+  it("records the README blob SHA in provenance", async () => {
+    const { store, opts } = setup();
+    await runSourcing(opts);
+    const distill = store.leads.find((l) => l.githubUrl?.endsWith("/distill"))!;
+    expect((distill.signals.provenance as { readme: unknown }).readme).toEqual({
+      path: "README.md",
+      blobSha: expect.stringMatching(/^blob-/),
+      commitSha: null,
+    });
   });
 
   it("stops at --limit", async () => {

@@ -171,7 +171,20 @@ export async function importOptinCsv(o: ImportOptions): Promise<ImportReport> {
         },
       },
     };
-    const id = o.dryRun ? null : (await o.store.insert(lead)).id;
+    let id: string | null = null;
+    if (!o.dryRun) {
+      const res = await o.store.insert(lead);
+      if (res.duplicate) {
+        // A concurrent import/sourcing run took this email or repo first.
+        report.skipped.push({
+          row,
+          reason: res.duplicate === "email" ? "duplicate_email" : "duplicate_repo",
+          detail: "insert conflict",
+        });
+        continue;
+      }
+      id = res.id;
+    }
     seenEmails.add(data.email);
     if (repoKey) seenRepos.add(repoKey);
     report.imported.push({ id, row, email: data.email, githubUrl: lead.githubUrl });

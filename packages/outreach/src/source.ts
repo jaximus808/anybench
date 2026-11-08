@@ -118,7 +118,13 @@ export type SkipReason =
   | "github_error";
 
 export type StopReason =
-  "limit" | "queries_exhausted" | "credit_cap" | "github_exhausted" | "spend_cap";
+  | "limit"
+  | "queries_exhausted"
+  | "credit_cap"
+  | "github_exhausted"
+  | "spend_cap"
+  /** A Monid run ended without a terminal run body; its maxCost was booked and Monid halted. */
+  | "monid_charge_unknown";
 
 export interface SourcedLead {
   id: string | null;
@@ -145,7 +151,9 @@ export interface SourceReport {
   emailLookups: number;
   emailsFound: number;
   /** Set when Hunter lookups stopped early (spend cap) while sourcing continued. */
-  emailStoppedBy?: "spend_cap" | undefined;
+  emailStoppedBy?: "spend_cap" | "monid_charge_unknown" | undefined;
+  /** Why the Monid client halted (unknown charge), if it did. */
+  monidHalted?: string | undefined;
   monidSpentMicroUsd: MicroUsd;
 }
 
@@ -227,6 +235,8 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
     report.githubRequests = o.github.requestsUsed();
     report.githubExhausted = o.github.exhausted();
     report.monidSpentMicroUsd = o.monid?.spentMicroUsd() ?? 0n;
+    const halted = o.monid?.halted();
+    if (halted) report.monidHalted = halted;
     return report;
   };
 
@@ -287,6 +297,9 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
           return finish("github_exhausted");
         }
         if (err instanceof MonidError && err.code === "SPEND_CAP") return finish("spend_cap");
+        if (err instanceof MonidError && (err.chargeUnknown || err.code === "HALTED")) {
+          return finish("monid_charge_unknown");
+        }
         if (err instanceof GithubSignalsError || err instanceof MonidError) {
           skip(ref.url, "github_error", err.message);
           continue;
@@ -336,31 +349,57 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
         continue;
       }
 
-      // Passed fit: now (and only now) spend on a contact and an address.
+      // Passed fit. Cheap checks first (free GitHub user lookup, DB dedupe and suppression by
+      // domain); Hunter is paid, so it runs last and only for leads we would actually keep.
       let user: GithubUser | null = null;
       if (sig.ownerType !== "Organization") user = await o.github.user(sig.ownerLogin);
+      const contactDomain =
+        sig.domain ?? (sig.ownerType !== "Organization" ? companyDomain(user?.blog) : null);
+      if (contactDomain && contactDomain !== sig.domain) {
+        const d = await o.store.existing({ githubUrls: [], domains: [contactDomain], emails: [] });
+        if (seenDomains.has(contactDomain) || d.domains.has(contactDomain)) {
+          skip(repoUrl, "duplicate_domain", contactDomain);
+          continue;
+        }
+      }
+      if (contactDomain) {
+        const sd = await o.store.suppressedDomains([contactDomain]);
+        if (sd.has(contactDomain)) {
+          skip(repoUrl, "suppressed", `an address at ${contactDomain} unsubscribed`);
+          continue;
+        }
+      }
+
       let found: FoundEmail | null = null;
-      let emailDomain: string | null = null;
-      if (!emailsOff && o.monid && sig.ownerType !== "Organization" && user?.name) {
-        emailDomain = sig.domain ?? companyDomain(user.blog);
-        if (emailDomain) {
-          try {
-            report.emailLookups++;
-            found = await findEmailViaHunter(o.monid, { domain: emailDomain, fullName: user.name });
-            if (found) report.emailsFound++;
-          } catch (err) {
-            if (err instanceof MonidError && err.code === "SPEND_CAP") {
-              emailsOff = true;
-              report.emailStoppedBy = "spend_cap";
-              report.emailLookups--;
-            } else if (err instanceof MonidError) {
-              log(`hunter error for ${repoUrl}: ${err.code}`);
-            } else {
-              throw err;
-            }
+      if (
+        !emailsOff &&
+        o.monid &&
+        sig.ownerType !== "Organization" &&
+        user?.name &&
+        contactDomain
+      ) {
+        try {
+          report.emailLookups++;
+          found = await findEmailViaHunter(o.monid, { domain: contactDomain, fullName: user.name });
+          if (found) report.emailsFound++;
+        } catch (err) {
+          if (!(err instanceof MonidError)) throw err;
+          if (err.code === "SPEND_CAP" || err.code === "HALTED") report.emailLookups--; // never ran
+          if (err.code === "SPEND_CAP") {
+            emailsOff = true;
+            report.emailStoppedBy = "spend_cap";
+          } else if (err.chargeUnknown || err.code === "HALTED") {
+            // Booked at maxCost by the client, which now refuses runs: no more Hunter, no more
+            // GitHub fallback for the rest of this run.
+            emailsOff = true;
+            report.emailStoppedBy = "monid_charge_unknown";
+            log(`monid charge unknown for ${repoUrl}: ${err.code}; stopping Monid spend`);
+          } else {
+            log(`hunter error for ${repoUrl}: ${err.code}`);
           }
         }
       }
+      const emailDomain = found ? contactDomain : null;
       const email = found?.email ?? null;
       if (email) {
         const sup = await o.store.suppressed([email]);
@@ -390,6 +429,7 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
         signals: {
           ...sig,
           readmePath: readme.path,
+          contactDomain,
           claims,
           provenance: {
             source: "context_dev",
@@ -401,6 +441,7 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
             resultUrl: r.url,
             resultTitle: r.title,
             claims,
+            readme: { path: readme.path, blobSha: readme.blobSha, commitSha: readme.commitSha },
             repoVia: sig.via,
             email: found
               ? {
@@ -416,8 +457,22 @@ export async function runSourcing(o: SourceOptions): Promise<SourceReport> {
           },
         },
       };
-      const id = o.dryRun ? null : (await o.store.insert(lead)).id;
+      let id: string | null = null;
+      if (!o.dryRun) {
+        const res = await o.store.insert(lead);
+        if (res.duplicate) {
+          // Another run inserted the same person or repo between our checks and this insert.
+          skip(
+            repoUrl,
+            res.duplicate === "email" ? "duplicate_email" : "duplicate_repo",
+            "insert conflict",
+          );
+          continue;
+        }
+        id = res.id;
+      }
       if (sig.domain) seenDomains.add(sig.domain);
+      if (contactDomain) seenDomains.add(contactDomain);
       if (email) seenEmails.add(email);
       report.written.push({ id, githubUrl: repoUrl, email, claims: claims.length });
       log(`lead ${repoUrl}${email ? ` <${email}>` : ""} (${claims.length} claims)`);

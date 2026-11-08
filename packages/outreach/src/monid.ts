@@ -25,6 +25,11 @@ export const MonidClientOptionsSchema = z.object({
   pollIntervalMs: z.number().int().positive().default(2000),
   /** Give up polling an async run after this long. */
   pollTimeoutMs: z.number().int().positive().default(120_000),
+  /**
+   * After a run whose charge is unknown, refuse every later run (code HALTED). Default true: a
+   * sourcing or sending run should stop spending rather than guess.
+   */
+  haltOnUnknownCharge: z.boolean().default(true),
 });
 export type MonidClientOptions = z.input<typeof MonidClientOptionsSchema> & {
   fetch?: FetchLike;
@@ -137,7 +142,11 @@ export type MonidErrorCode =
   | "POLL_TIMEOUT"
   | "SPEND_CAP"
   | "BAD_RESPONSE"
-  | "HTTP_ERROR";
+  | "HTTP_ERROR"
+  /** fetch itself failed after the run was (possibly) submitted. */
+  | "TRANSPORT_ERROR"
+  /** An earlier run's charge is unknown, so this client refuses further runs. */
+  | "HALTED";
 
 export class MonidError extends Error {
   override readonly name = "MonidError";
@@ -151,6 +160,12 @@ export class MonidError extends Error {
   ) {
     super(message);
   }
+  /**
+   * True when Monid may have charged for the run but we never saw a terminal run body (poll
+   * timeout, transport error, 5xx without a run, unparseable run). The client has then booked the
+   * full maxCost as spent and, by default, halted.
+   */
+  chargeUnknown = false;
   get retryable(): boolean {
     return this.code === "RATE_LIMITED" || (this.status !== undefined && this.status >= 500);
   }
@@ -172,7 +187,9 @@ export interface MonidClient {
   run<T = unknown>(req: MonidRunRequest, outputSchema?: z.ZodType<T>): Promise<MonidRun<T>>;
   getRun<T = unknown>(runId: string, outputSchema?: z.ZodType<T>): Promise<MonidRun<T>>;
   balance(): Promise<MonidBalance>;
-  /** Micro-USD settled by runs made through this client instance. */
+  /** Why this client stopped accepting runs, if it did (see haltOnUnknownCharge). */
+  halted(): string | undefined;
+  /** Micro-USD settled by runs made through this client instance (unknown charges count at maxCost). */
   spentMicroUsd(): MicroUsd;
 }
 
@@ -181,6 +198,7 @@ export function createMonidClient(options: MonidClientOptions): MonidClient {
   const doFetch: FetchLike = options.fetch ?? ((u, i) => fetch(u, i));
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let spent = 0n;
+  let haltedReason: string | undefined;
 
   async function call(method: string, path: string, json?: unknown) {
     const headers: Record<string, string> = { authorization: `Bearer ${opts.apiKey}` };
@@ -296,6 +314,9 @@ export function createMonidClient(options: MonidClientOptions): MonidClient {
       if (typeof req.maxCostMicroUsd !== "bigint" || req.maxCostMicroUsd < 0n) {
         throw new TypeError("maxCostMicroUsd is required and must be a non-negative bigint");
       }
+      if (haltedReason !== undefined) {
+        throw new MonidError(`Monid client halted: ${haltedReason}`, "HALTED");
+      }
       if (
         opts.spendCapMicroUsd !== undefined &&
         spent + req.maxCostMicroUsd > opts.spendCapMicroUsd
@@ -305,34 +326,61 @@ export function createMonidClient(options: MonidClientOptions): MonidClient {
           "SPEND_CAP",
         );
       }
-      const r = await call("POST", "/v1/run", {
-        provider: req.provider,
-        endpoint: req.endpoint,
-        input: req.input ?? {},
-        maxCost: microUsdToUsdWire(req.maxCostMicroUsd),
-      });
-      // Provider non-2xx comes back with the provider's status and a full run body; provider 402 → 502.
-      const looksLikeRun =
-        typeof r.body === "object" && r.body !== null && "runId" in r.body && "status" in r.body;
-      if (!looksLikeRun) throw errorFor(r.status, r.body, r.requestId);
-      let run = toRun<T>(r.body, outputSchema);
-      if (r.status === 202 || !TERMINAL.has(run.status)) {
-        const deadline = Date.now() + opts.pollTimeoutMs;
-        while (!TERMINAL.has(run.status)) {
-          if (Date.now() > deadline) {
-            throw new MonidError(
-              `Monid run ${run.runId} still ${run.status}`,
-              "POLL_TIMEOUT",
-              202,
-              run,
-            );
-          }
-          await sleep(opts.pollIntervalMs);
-          run = await client.getRun<T>(run.runId, outputSchema);
+      // From here on Monid may charge. Errors are either *settled* (we saw the run's cost, or a 4xx
+      // that Monid documents as not charged) or *unknown*: then the whole maxCost is booked.
+      let settled = false;
+      const settleOnce = <R>(run: MonidRun<R>, httpStatus: number): MonidRun<R> => {
+        settled = true;
+        return settle(run, httpStatus);
+      };
+      try {
+        const r = await call("POST", "/v1/run", {
+          provider: req.provider,
+          endpoint: req.endpoint,
+          input: req.input ?? {},
+          maxCost: microUsdToUsdWire(req.maxCostMicroUsd),
+        });
+        // Provider non-2xx comes back with the provider's status and a full run body; provider 402 → 502.
+        const looksLikeRun =
+          typeof r.body === "object" && r.body !== null && "runId" in r.body && "status" in r.body;
+        if (!looksLikeRun) {
+          if (r.status < 500) settled = true; // documented 4xx: nothing was run or charged
+          throw errorFor(r.status, r.body, r.requestId);
         }
-        return settle(run, 200);
+        let run = toRun<T>(r.body, outputSchema);
+        if (r.status === 202 || !TERMINAL.has(run.status)) {
+          const deadline = Date.now() + opts.pollTimeoutMs;
+          while (!TERMINAL.has(run.status)) {
+            if (Date.now() > deadline) {
+              throw new MonidError(
+                `Monid run ${run.runId} still ${run.status}`,
+                "POLL_TIMEOUT",
+                202,
+                run,
+              );
+            }
+            await sleep(opts.pollIntervalMs);
+            run = await client.getRun<T>(run.runId, outputSchema);
+          }
+          return settleOnce(run, 200);
+        }
+        return settleOnce(run, r.status);
+      } catch (err) {
+        if (settled) throw err;
+        spent += req.maxCostMicroUsd;
+        const e =
+          err instanceof MonidError
+            ? err
+            : new MonidError(
+                `Monid ${req.provider} ${req.endpoint}: ${(err as Error)?.message ?? String(err)}`,
+                "TRANSPORT_ERROR",
+              );
+        e.chargeUnknown = true;
+        if (opts.haltOnUnknownCharge) {
+          haltedReason = `charge unknown after ${req.provider} ${req.endpoint} (${e.code}); booked maxCost ${req.maxCostMicroUsd} micro-USD`;
+        }
+        throw e;
       }
-      return settle(run, r.status);
     },
 
     async getRun<T>(runId: string, outputSchema?: z.ZodType<T>) {
@@ -350,6 +398,7 @@ export function createMonidClient(options: MonidClientOptions): MonidClient {
     },
 
     spentMicroUsd: () => spent,
+    halted: () => haltedReason,
   };
   return client;
 }

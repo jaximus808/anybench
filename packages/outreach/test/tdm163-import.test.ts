@@ -96,3 +96,27 @@ describe("importOptinCsv", () => {
     ).rejects.toThrow(/missing: repo/);
   });
 });
+
+describe("MemoryLeadStore.insert", () => {
+  it("enforces one lead per email and per repo, case-insensitively", async () => {
+    const store = new MemoryLeadStore();
+    const base = {
+      source: "hackathon_optin" as const,
+      query: null,
+      company: null,
+      contact: "A",
+      signals: {},
+      status: "new" as const,
+    };
+    const a = await store.insert({ ...base, email: "a@x.io", githubUrl: "https://github.com/a/b" });
+    expect(a.id).toBeDefined();
+    expect(await store.insert({ ...base, email: "A@X.io", githubUrl: null })).toEqual({
+      duplicate: "email",
+    });
+    expect(
+      await store.insert({ ...base, email: null, githubUrl: "https://github.com/A/B" }),
+    ).toEqual({ duplicate: "repo" });
+    expect((await store.insert({ ...base, email: null, githubUrl: null })).id).toBeDefined();
+    expect((await store.insert({ ...base, email: null, githubUrl: null })).id).toBeDefined();
+  });
+});
