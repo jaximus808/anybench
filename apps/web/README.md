@@ -18,16 +18,18 @@ pnpm --filter web test       # vitest + jsdom + Testing Library
 
 ## Layout
 
-- `app/layout.tsx`: fonts (next/font/google: Bricolage Grotesque, Source Serif 4, JetBrains Mono), Header, Footer.
-- `app/globals.css`: the design tokens from `docs/design/anybench-product-page.html` as CSS variables, light and dark (`prefers-color-scheme`, overridable with `<html data-theme="light|dark">`):
+- `app/layout.tsx`: fonts (next/font/google: Newsreader, Geist, Geist Mono), Header, Footer. Design system: `docs/design/design-system.md`.
+- `app/globals.css`: the "instrument" design tokens (docs/design/design-system.md), dark-first with a warm-paper light theme (`prefers-color-scheme`, overridable with `<html data-theme="light|dark">`); `.instrument` forces dark on the landing page and `/runs/*`:
   - colour: `--bg`, `--surface`, `--fg`, `--muted`, `--line`, `--line-strong`, `--accent`, `--accent-soft`, `--on-accent`, `--ok(-soft)`, `--warn(-soft)`, `--bad`, `--code-bg/fg/dim/acc/ok`
-  - type: `--display` (Bricolage Grotesque), `--body` (Source Serif 4), `--mono` (JetBrains Mono); scale `--text-xs` 13 · `--text-sm` 15 · `--text-base` 17 · `--text-md` 21 · `--text-lg` 26 · `--text-xl` 26→33 · `--text-2xl` 34→52 · `--text-3xl` 40→78 (fluid); `--leading-tight/snug/body`, `--tracking-display`
+  - colour also: `--surface-2`, `--dim`, `--accent-ink` (orange text), `--pass(-soft)`, `--fail(-soft)`, `--queued`, `--infra`
+  - type: `--display` (Newsreader), `--body` (Geist), `--mono` (Geist Mono); fluid scale `--text-2xs` … `--text-3xl`; `--leading-tight/snug/body`, `--tracking-display`
   - spacing: `--space-1` … `--space-10` (4, 8, 12, 16, 24, 32, 48, 64, 96, 128 px)
   - layout: `--wrap` 1080px, `--column` 860px, `--measure` 66ch, `--gutter`, `--header-h`, `--radius-sm/md/lg`, `--ease-out`
   - utilities: `.wrap` (centred, padded container; pages own their width, the layout does not wrap `main`), `.column`, `.lede`, `.muted`, `.btn`, `.btn-quiet`, `.visually-hidden`
   Style new components with CSS modules that use these variables.
 - `components/site/Header.tsx` (client: sticky translucent bar, mobile menu with Escape-to-close), `Footer.tsx`, `Mark.tsx`, and `nav.ts` (`NAV_LINKS`, `SIGN_IN_LINK`, `LEGAL_LINKS`). Signed-out state only so far.
-- `app/(marketing)/page.tsx`: home page placeholder; [11.2] replaces it.
+- `app/(marketing)/page.tsx` + `components/marketing/*`: the landing page. The hero plays a simulated run through the live-run model (`LiveInstrument`) over a canvas trial field (`TrialField`).
+- `app/runs/[id]` + `components/live/*` + `lib/live/*`: the live run page. `lib/live/model.ts` folds `AnybenchEvent`s from `GET /runs/:id/stream` into a run view; `lib/live/simulator.ts` makes the schema-valid demo run served at `/runs/demo`; `lib/live/useLiveRun.ts` drives both.
 - `app/(legal)/{terms,privacy,refunds,aup}` and `app/docs/**` + `components/docs/*` ([11.9]): static legal drafts (each page opens with "Draft — pending founder/legal review"; unknown facts are `<Placeholder>`s) and the docs with a left nav (`DOCS_NAV` in `components/docs/links.ts`). The kit example on /docs/kits is validated by `safeParseKitSpec` in `test/tdm106-kit-example.test.ts`, and the driver table reads `DRIVER_DEFAULT_PROFILE` / `DRIVER_DEFAULT_COLLECTORS` from core.
 - `lib/api.ts`: `api()` / `createWebApiClient()` wrap `createApiClient` from `@anybench/core` with the cookie session (`credentials: "include"`). Base URL from `NEXT_PUBLIC_ANYBENCH_API_URL` (default `http://localhost:8787`).
 

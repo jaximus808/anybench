@@ -78,9 +78,9 @@ export function EarlyAccessForm() {
         </button>
       </form>
       <p id={noteId} className={styles.access}>
-        <strong>Early access:</strong> we&apos;ll run your first benchmark for you. Send your repo
-        and the question you want answered to{" "}
-        <span className={styles.email}>{EARLY_ACCESS_EMAIL}</span>.
+        <strong>Early access:</strong> email your repo and question to{" "}
+        <span className={styles.email}>{EARLY_ACCESS_EMAIL}</span> and we&apos;ll run the first one
+        for you.
       </p>
       <p
         id={statusId}

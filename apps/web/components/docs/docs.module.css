@@ -1,22 +1,27 @@
 /* Legal and docs pages (TDM-106 [11.9]). Colors and fonts are the site tokens in app/globals.css. */
 
+/* Same column and gutters as .wrap (and the header), so the nav lines up with the logo. */
 .shell {
   display: grid;
-  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
-  gap: 48px;
-  padding-block: 40px 64px;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 72px;
+  width: 100%;
+  max-width: calc(var(--wrap) + 2 * var(--gutter));
+  margin-inline: auto;
+  padding: 56px var(--gutter) 96px;
 }
 
 .sideNav {
   position: sticky;
-  top: 24px;
+  top: calc(var(--header-h) + 32px);
   align-self: start;
-  font-family: var(--display);
-  font-size: 15px;
+  font-family: var(--body);
+  font-size: var(--text-sm);
 }
 
 .sideNavTitle {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
+  padding-left: 14px;
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.08em;
@@ -28,41 +33,64 @@
   list-style: none;
   margin: 0;
   padding: 0;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .sideNav a {
   display: block;
-  padding: 6px 10px;
-  border-radius: 8px;
-  color: var(--fg);
+  margin-left: -1px;
+  padding: 7px 12px 7px 13px;
+  border-left: 1px solid transparent;
+  color: var(--muted);
   text-decoration: none;
+  line-height: 1.35;
+  transition:
+    color 120ms var(--ease-out),
+    border-color 120ms var(--ease-out);
 }
 
 .sideNav a:hover {
-  background: var(--accent-soft);
+  color: var(--fg);
+  border-left-color: var(--line-strong);
 }
 
 .sideNav a[aria-current="page"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 700;
+  color: var(--fg);
+  font-weight: 500;
+  border-left-color: var(--accent);
 }
 
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-    padding-top: 24px;
+    gap: 32px;
+    padding-top: 28px;
   }
   .sideNav {
     position: static;
-    padding-bottom: 16px;
+    padding-bottom: 20px;
     border-bottom: 1px solid var(--line);
   }
+  .sideNavTitle {
+    padding-left: 0;
+  }
   .sideNav ul {
-    display: flex;
+    flex-direction: row;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
+    border-left: 0;
+  }
+  .sideNav a {
+    margin-left: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+  .sideNav a[aria-current="page"] {
+    border-color: var(--accent);
   }
 }
 
@@ -72,26 +100,39 @@
 }
 
 .prose h1 {
-  margin: 4px 0 12px;
+  margin: 0 0 20px;
+  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4rem);
+  line-height: 1;
+  letter-spacing: -0.035em;
 }
 
 .prose h2 {
-  margin: 40px 0 12px;
-  font-size: clamp(22px, 3vw, 26px);
+  margin: 56px 0 16px;
+  font-size: clamp(1.6rem, 1.2rem + 1.4vw, 2.1rem);
+  line-height: 1.1;
 }
 
 .prose h3 {
-  margin: 28px 0 8px;
+  margin: 32px 0 10px;
 }
 
 .prose p,
 .prose ul,
 .prose ol {
-  margin: 0 0 16px;
+  margin: 0 0 18px;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25em;
 }
 
 .prose li + li {
-  margin-top: 6px;
+  margin-top: 10px;
+}
+
+.prose li::marker {
+  color: var(--dim);
 }
 
 .prose code {
@@ -99,8 +140,9 @@
 }
 
 .lede {
-  font-size: 20px;
-  line-height: 1.55;
+  margin-bottom: 8px !important;
+  font-size: var(--text-md);
+  line-height: 1.5;
   color: var(--muted);
 }
 
@@ -121,11 +163,11 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 0 0 24px;
-  padding: 14px 16px;
+  margin: 0 0 48px;
+  padding: 16px 18px;
   border: 1px solid var(--warn);
-  border-left-width: 4px;
-  border-radius: 10px;
+  border-left-width: 2px;
+  border-radius: var(--radius-sm);
   background: var(--warn-soft);
   color: var(--fg);
   font-size: 15.5px;
@@ -191,13 +233,18 @@
 .prose td {
   text-align: left;
   vertical-align: top;
-  padding: 8px 10px;
+  padding: 12px 14px 12px 0;
   border-bottom: 1px solid var(--line);
 }
 
 .prose thead th {
-  border-bottom: 2px solid var(--line-strong);
-  font-family: var(--display);
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .prose tbody th {
@@ -219,7 +266,8 @@
   margin: 0;
   padding: 16px;
   overflow-x: auto;
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   background: var(--code-bg);
   color: var(--code-fg);
   font-family: var(--mono);
@@ -236,11 +284,11 @@
 }
 
 .callout {
-  margin: 16px 0 24px;
-  padding: 16px 18px;
+  margin: 20px 0 28px;
+  padding: 18px 20px;
   border: 1px solid var(--line);
-  border-left: 4px solid var(--accent);
-  border-radius: 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
   background: var(--surface);
 }
 

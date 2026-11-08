@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { LandingPage } from "../../components/marketing/LandingPage";
 
-const TITLE = "Anybench: find out if what you built is actually better";
+const TITLE = "Anybench — The eval factory";
 const DESCRIPTION =
   "Point Anybench at an agent, a harness or any other software. Agents generate an eval kit with a correctness gate for every number, cloud computers run it, and you get a verdict on each comparison and the reasons behind it.";
 
