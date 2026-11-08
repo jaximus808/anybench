@@ -181,6 +181,63 @@ setups and metrics. The generated design is the more defensible measurement (rea
 PASS_TO_PASS, a proof the gate discriminates, no hand weights). The curated kit's weakest point
 is its no-op-only do-less, which its offline sign-off currently hides.
 
+## Step 6: agent/harness kits from mined tasks (docker-local + FakeNaive, no spend)
+
+Code:
+- `@anybench/kit` `generate/agent-kit.ts`, `materializeAgentKit`:
+  - Workloads come from `materializeMinedTask`.
+  - instruction.md is the screened issue text.
+  - The gate is `renderMinedGateScript`. It copies the hidden test files over a copy of the
+    frozen workspace and runs the task's runner as the contender uid (`$AB_RUN`). Grading uses
+    **the miner's own parsers**, embedded as compiled source (`minedVerdictProgram`). It passes
+    only when every FAIL_TO_PASS and every PASS_TO_PASS test passes.
+  - The oracle is the upstream fix, applied by `proof/oracle/driver.sh`.
+  - Do-less variants are `no-op` (noop) and `partial-fix` (partial-oracle). The partial drops
+    the largest hunk of the fix, or one file's change, or one added line of a one-hunk fix.
+  - `proof/mutation/<w>.json` limits mutants to the lines the fix changed.
+  - The contenders, adapters, regression, env and caps are copied from the template kit
+    (`kits/tandem-vs-claude-code`: claude-code-solo + tandem, opus-5.5, Claude Code 2.1.319,
+    equal caps). `vary` is cut to its middle value (TANDEM_WORKERS 3).
+  - Repeats are 10 (17.2 rule 3). Weights are tests-pass 60, wall 20 and cost 20, with
+    tests-pass as the primary metric.
+  - The subject summary says "Results hold on these N tasks only" when N < 20.
+  - `design/tasks.json` holds the commit dates against the cutoff, the held-out flags and the
+    backlogs (`groupMinedTasks`).
+- Proof suite changes: the mutation run honours `proof/mutation/<w>.json`, and it tries the next
+  workload when one yields no mutant.
+- The no-leak lint now compares each workload only with its own scoring files. A later task's
+  starting repo legitimately contains an earlier task's fix.
+- `@anybench/agents` `issue-writer` (deepseek-v4-flash, 50,000 µ$ per issue) works on
+  `screenSymptoms` output. Test ids, test paths, the commit, assertion source lines and long
+  literals are removed in code.
+- Server `orchestrator/agent-kit-designer.ts`, `designMinedAgentKit`, runs one issue session per
+  task. It drops a task when the writer says it is underspecified, or when the issue names a
+  hidden test, a hidden test file or the commit. Then it materializes and validates.
+
+Evidence:
+- `packages/kit/test/tdm60-agent-kit-docker.test.ts` mines the TDM-186 fixture on docker-local
+  node:22 (5 tasks) and materializes a kit from the Tandem template. It then runs the proof suite
+  with host trials that apply the overlay dirs, and gates that run the generated check.sh with
+  node --test:
+  ```
+  oracle_passes True   oracle 'upstream-fix' passed hidden-tests on 5/5 workload(s); the gate gave the same verdict 3 times
+                       (e.g. "1/1 FAIL_TO_PASS and 5/5 PASS_TO_PASS tests pass on mined-68b22c2835")
+  do_less_fails True   every do-less variant fails the gate ('no-op', 'partial-fix'); the hidden tests killed 3/3 oracle mutants
+  no_secret_in_kit True
+  (smoke, baselines, planted regression: need a real agent session; live window)
+  ```
+  Before the mutation-line limit, the same kit killed only 3 of 8 mutants. The 5 survivors were
+  in `titleCase`, which the truncate fix never touched and its tests never call. Mutating the
+  whole file measures the repo, not the task.
+- `apps/server/test/agent-kit-designer-tdm60.test.ts` (Postgres + docker + FakeNaive): one issue
+  says "underspecified" and is dropped; one quotes a test name and is dropped; the rest build a
+  valid kit. No FAIL_TO_PASS id appears in any issue-writer task message.
+
+**Jaximus808/tandem:** this path cannot build a real Tandem kit yet. The miner verified 0 of
+46 candidates, because its runners do not handle the nested `apps/api/go.mod` or TypeScript under
+`node --test`. The `tdm186-runners` follow-up fixes both. There is a second gap: the scoring image
+has no Go toolchain, so Go hidden tests could not run there yet.
+
 ## End-to-end on Naïve (BurntSushi/ripgrep): not run yet
 
 `apps/server/test/kit-designer-e2e-live-tdm60.test.ts` drives the production `run.advance` job
