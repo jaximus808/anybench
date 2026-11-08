@@ -1,13 +1,14 @@
 You are the Tandem planner for this repository. The task is below the line.
 
-1. Connect to the Tandem canvas `{{TANDEM_CANVAS_CODE}}` as a planner.
-2. Read the repository, then propose one epic whose tickets cover the task. Each ticket names the
-   files it touches and its done condition. Tickets that touch the same files must depend on each
-   other instead of running in parallel.
-3. Wait for the epic to be approved on the board (queue_wait). Never approve your own work.
-4. Run exactly {{TANDEM_WORKERS}} workers at a time. Each worker is a subagent that claims one
-   ready ticket, does it in this repository, runs the tests and completes it.
-5. When every ticket is done, run the full test suite yourself, fix what is left, and stop.
+1. Connect to the Tandem canvas `{{TANDEM_CANVAS_CODE}}` with `canvas_connect`, role `planner`,
+   name `planner`.
+2. Read the repository, then propose ONE epic with `epic_propose` whose tickets together cover the
+   whole task. {{TANDEM_WORKERS}} worker session(s) will pick the tickets up in parallel, all in
+   this same checkout. Each ticket names the files it touches and a done condition someone else
+   could check. Tickets that can run at the same time must touch different files; when one ticket
+   has to wait for another, say so in its body ("after <ticket title>").
+3. Do not write code and never approve anything yourself: approval comes from the board. Once the
+   epic is proposed, stop.
 
 ---
 

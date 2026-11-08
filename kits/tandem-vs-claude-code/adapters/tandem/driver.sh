@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# L2 driver for contender `tandem` (subject), type harness. Setups C, D and E come from the kit's
-# `vary: {TANDEM_WORKERS: [1, 3, 5]}`. CC_MODEL (required) is the pinned model id.
+# L2 driver for contender `tandem` (subject), type harness. Setups come from the kit's
+# `vary: {TANDEM_WORKERS: [...]}`.
 #
 #   driver.sh run <task> <workspace>
 #
-# Contract with the harness driver and approver sidecar (tickets 4.9 and 5.7): before `run`, the
-# sidecar creates a fresh trial canvas, applies human_in_loop.policy to it, and exports
-# TANDEM_CANVAS_CODE. The board's claims, conflicts and approvals are collected by the
-# `tandem-board` collector, not by this script.
-#
-# Writes $EVAL_OUT/stream.jsonl (the planner's stream-json; workers run as its subagents, so their
-# usage is included) and $EVAL_OUT/versions.json.
+# `run` is the harness runner, run.sh (TDM-41 [4.9]): a fresh Tandem server and canvas per trial,
+# the approver sidecar for human_in_loop.policy, a planner and $TANDEM_WORKERS workers as headless
+# Claude Code sessions, a completion detector and a hard timeout. Outputs: $EVAL_OUT/tandem/
+# (board, approvals, tandem.db, one stream-json per session), $EVAL_OUT/versions.json and the
+# scrubbed workspace in $EVAL_OUT/workspace/. Config: harness.yaml next to this file.
 set -euo pipefail
-kit="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 verb="${1:-run}"
 case "$verb" in
   start|ready|stop) exit 0 ;;
@@ -20,47 +18,4 @@ case "$verb" in
   *) echo "unknown verb '$verb'" >&2; exit 2 ;;
 esac
 task="${2:?usage: driver.sh run <task> <workspace>}"
-ws="${3:-${EVAL_WS:?EVAL_WS is not set}}"
-out="${EVAL_OUT:?EVAL_OUT is not set}"
-workers="${TANDEM_WORKERS:?TANDEM_WORKERS is not set}"
-model="${CC_MODEL:?CC_MODEL is not set: the kit pins the model in driver.env}"
-code="${TANDEM_CANVAS_CODE:?TANDEM_CANVAS_CODE is not set (the approver sidecar provides it)}"
-
-if [[ -n "${EVAL_SECRETS:-}" ]]; then set -a; . "$EVAL_SECRETS"; set +a; fi
-
-# Tokens from the Naïve model proxy (AB_TOKEN_SOURCE=naive_proxy, docs/findings/claude-code-naive-proxy.md).
-# The worker writes a per-trial proxy:write key to $HOME/.anybench/proxy.env (0600); it is sourced,
-# never echoed and never on an argv. The kit's proxy settings (driver.env) win over the file's, so
-# every contender runs the same model with effort naive-min and thinking off, and no direct
-# Anthropic key can bypass the proxy.
-if [[ "${AB_TOKEN_SOURCE:-}" == naive_proxy ]]; then
-  proxy_env="${NAIVE_PROXY_ENV:-$HOME/.anybench/proxy.env}"
-  [[ -f "$proxy_env" ]] || { echo "AB_TOKEN_SOURCE=naive_proxy but $proxy_env is missing" >&2; exit 2; }
-  pinned=()
-  for k in CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS MAX_THINKING_TOKENS CLAUDE_CODE_MODEL_CAPABILITIES \
-    ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL; do
-    [[ -n "${!k:-}" ]] && pinned+=("$k=${!k}")
-  done
-  set -a; . "$proxy_env"; set +a
-  for kv in "${pinned[@]}"; do export "${kv?}"; done
-  export ANTHROPIC_MODEL="$model"
-  unset ANTHROPIC_API_KEY
-  : "${ANTHROPIC_BASE_URL:?$proxy_env sets no ANTHROPIC_BASE_URL}" "${ANTHROPIC_AUTH_TOKEN:?$proxy_env sets no ANTHROPIC_AUTH_TOKEN}"
-fi
-
-mcp="$out/tandem/mcp.json"
-mkdir -p "$out/tandem"
-printf '{"mcpServers":{"tandem":{"command":"npx","args":["-y","@jaximus/tandem-mcp@%s"]}}}\n' "${TANDEM_MCP_VERSION:-3.2.0}" > "$mcp"
-
-prompt="$(TASK="$(cat "$task")" TANDEM_WORKERS="$workers" TANDEM_CANVAS_CODE="$code" node -e '
-  const fs = require("node:fs");
-  let p = fs.readFileSync(process.argv[1], "utf8");
-  for (const k of ["TASK", "TANDEM_WORKERS", "TANDEM_CANVAS_CODE"]) p = p.replaceAll(`{{${k}}}`, process.env[k]);
-  process.stdout.write(p);
-' "$kit/adapters/tandem/planner-prompt.md")"
-
-printf '{"claude_code":"%s","node":"%s","model":"%s","tandem_workers":%s}\n' "$(claude --version | head -1)" "$(node --version)" "$model" "$workers" > "$out/versions.json"
-
-args=(-p "$prompt" --output-format stream-json --verbose --dangerously-skip-permissions --mcp-config "$mcp" --model "$model")
-cd "$ws"
-claude "${args[@]}" > "$out/stream.jsonl"
+exec "$here/run.sh" "$task" "${3:-${EVAL_WS:?EVAL_WS is not set}}"

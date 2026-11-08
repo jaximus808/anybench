@@ -3,5 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["src", "test", "vitest.config.ts", "examples/http-agent"]
+  "include": ["src", "test", "vitest.config.ts", "examples/http-agent"],
+  "exclude": ["test/fixtures/harness-tdm41/kit"]
 }

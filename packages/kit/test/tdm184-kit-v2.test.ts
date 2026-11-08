@@ -53,7 +53,8 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
     expect(models[0]).toBe("anthropic/claude-sonnet-4.6");
     for (const c of kit.contenders) expect(c.driver.env?.CC_MODEL, c.id).toBe(models[0]);
     // The drivers refuse to run without it rather than fall back to the CLI's default model.
-    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/driver.sh"])
+    // (Tandem's driver.sh execs run.sh, the harness runner, TDM-41.)
+    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/run.sh"])
       expect(readKitTdm184(d), d).toMatch(/CC_MODEL:\?/);
   });
 
@@ -66,17 +67,21 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
     const tandem = kit.contenders.find((c) => c.id === "tandem")!;
     const mcp = tandem.versions?.TANDEM_MCP_VERSION;
     expect(isPinnedVersion(mcp!)).toBe(true);
-    for (const s of [
-      "adapters/tandem/install.sh",
-      "adapters/tandem/healthcheck.sh",
-      "adapters/tandem/driver.sh",
-    ])
+    for (const s of ["adapters/tandem/install-tandem.sh", "adapters/tandem/healthcheck.sh"])
       expect(readKitTdm184(s), s).toContain(`\${TANDEM_MCP_VERSION:-${mcp}}`);
+    const server = tandem.versions?.TANDEM_VERSION;
+    expect(isPinnedVersion(server!)).toBe(true);
+    for (const s of ["adapters/tandem/install-tandem.sh", "adapters/tandem/healthcheck.sh"])
+      expect(readKitTdm184(s), s).toContain(`\${TANDEM_VERSION:-${server}}`);
     // No script installs whatever is newest.
-    for (const s of ["install.sh", "healthcheck.sh", "driver.sh"].flatMap((f) => [
-      `adapters/claude-code/${f}`,
-      `adapters/tandem/${f}`,
-    ]))
+    for (const s of [
+      ...["install.sh", "healthcheck.sh", "driver.sh"].flatMap((f) => [
+        `adapters/claude-code/${f}`,
+        `adapters/tandem/${f}`,
+      ]),
+      "adapters/tandem/install-tandem.sh",
+      "adapters/tandem/run.sh",
+    ])
       expect(readKitTdm184(s), s).not.toMatch(/latest/);
   });
 
@@ -115,7 +120,7 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
     expect(kit.env?.network?.allow).toContain("api.vetta.sh");
     expect(kit.env?.network?.allow).not.toContain("api.anthropic.com");
     // Both drivers source the proxy env file, keep the kit's settings over it, and drop any direct key.
-    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/driver.sh"]) {
+    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/run.sh"]) {
       const text = readKitTdm184(d);
       expect(text, d).toMatch(/AB_TOKEN_SOURCE:-\}" == naive_proxy/);
       expect(text, d).toMatch(/unset ANTHROPIC_API_KEY/);

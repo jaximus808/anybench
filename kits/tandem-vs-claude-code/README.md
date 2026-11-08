@@ -125,8 +125,21 @@ It runs in `node:22` with `--network none`: the oracle passes 42/42 hidden tests
 42/42. See `PROOF.md`. Schema and layout checks run in `pnpm -r test`
 (`packages/kit/test/tdm128-*.test.ts`, `packages/bench/test/tdm128-*.test.ts`).
 
+## The Tandem adapter (TDM-41)
+
+`adapters/tandem/driver.sh run` execs `run.sh`, configured by the flat `harness.yaml`. It starts a fresh
+Tandem server per trial (own port and data dir), runs `tandem-mcp init --write`, starts the approver
+sidecar for `human_in_loop.policy` (`eval-approver` from @anybench/approver, else a built-in one for
+`auto` / `human-sim`), then a planner and `$TANDEM_WORKERS` workers as headless Claude Code sessions.
+It stops when every approved epic has drained, or at the hard timeout. Outputs: `tandem/` (board
+and `/api/metrics` dumps, `tandem.db`, `approvals.jsonl`, one stream-json per session, `run.json`)
+and the scrubbed workspace in `workspace/` for the scoring computer. `install-tandem.sh` pins the
+server (sha256-checked) and the gateway. The collectors are in `packages/kit/src/drivers/harness/`.
+Details and the docker-local run: `docs/findings/harness-driver-tandem.md`.
+
 ## Not covered here
 
-The adapters (`adapters/*/driver.sh`) are written for the coding-agent and harness drivers (tickets
-4.7, 4.9) and the approver sidecar (5.7). They have not been run against real Claude Code or Tandem:
-that happens in the smoke run and in 14.4.
+The claude-code adapter (`adapters/claude-code/driver.sh`) is written for the coding-agent driver
+(ticket 4.7). Neither adapter has run against real Claude Code yet (the harness driver's
+docker-local proof uses a Claude Code stand-in against a real Tandem): that happens in the smoke
+run and in 14.4.

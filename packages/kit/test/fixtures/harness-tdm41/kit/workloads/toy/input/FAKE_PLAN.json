@@ -1,0 +1,15 @@
+{
+  "title": "Toy math",
+  "tickets": [
+    {
+      "title": "add",
+      "file": "src/add.ts",
+      "content": "export const add = (a: number, b: number): number => a + b;\n"
+    },
+    {
+      "title": "mul",
+      "file": "src/mul.ts",
+      "content": "export const mul = (a: number, b: number): number => a * b;\n"
+    }
+  ]
+}

@@ -70,6 +70,7 @@ import {
   type TrialState,
 } from "@anybench/core";
 import type { ComputerRegistry } from "@anybench/envs";
+import { contenderDriverEnv } from "@anybench/kit";
 import {
   decodeText,
   isProviderError,
@@ -531,6 +532,8 @@ export function trialJobFromKit(
   kit: KitSpec,
   contenderId: string,
   workloadId: string,
+  /** One `vary` setup's env (`expandVarySetups` in @anybench/kit), e.g. `{ TANDEM_WORKERS: "3" }`. */
+  setup?: Readonly<Record<string, string>>,
 ): TrialPrepared["job"] {
   const contender = kit.contenders.find((c) => c.id === contenderId);
   if (!contender) throw new Error(`kit has no contender ${contenderId}`);
@@ -555,7 +558,10 @@ export function trialJobFromKit(
       max_bytes: kit.transfer.max_mb * 1024 * 1024,
       plans: {},
     },
-    env: { ...d.env },
+    // What the kit says the adapters get (TDM-41): `versions`, `driver.model`, a harness's
+    // human_in_loop and cap (anybench.yaml never reaches the subject computer), driver.env, and
+    // the `vary` setup, in that precedence.
+    env: contenderDriverEnv(kit, contender.id, workload.id, setup),
   };
 }
 

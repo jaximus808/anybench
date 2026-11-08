@@ -74,7 +74,7 @@ describe("kits/tandem-vs-claude-code (pinned by TDM-184 [16.13])", () => {
       ["version_unpinned", "contenders[1].install.script"],
       ["model_unpinned", "contenders[1].driver"],
       ["ref_unpinned", "contenders[2].source.ref"],
-      ["version_unpinned", "contenders[2].install.script"],
+      // TDM-41: install-tandem.sh pins the Tandem server and gateway; only claude-code@latest is left.
       ["version_unpinned", "contenders[2].install.script"],
       ["model_unpinned", "contenders[2].driver"],
       ["caps_unequal", "contenders[2].driver.token_cap_tokens"],
@@ -83,7 +83,7 @@ describe("kits/tandem-vs-claude-code (pinned by TDM-184 [16.13])", () => {
     const text = r.lines.join("\n");
     expect(text).toMatch(/driver\.model is not set/);
     expect(text).toMatch(/installs @anthropic-ai\/claude-code@latest unless CLAUDE_CODE_VERSION/);
-    expect(text).toMatch(/installs @jaximus\/tandem-mcp@latest unless TANDEM_MCP_VERSION/);
+    expect(text).not.toMatch(/tandem-mcp@latest/);
     expect(text).toMatch(/ref 'main' of jaximus808\/tandem/);
     expect(text).toMatch(/claude-code-solo 8000000, claude-code-subagents 8000000, tandem 5000000/);
     expect(text).toMatch(/'llm-reviewer' must reach every contender or none/);

@@ -1,0 +1,87 @@
+# Toy harness kit for the TDM-41 [4.9] tests: Tandem with 2 workers builds a two-function module.
+# The test copies kits/tandem-vs-claude-code/adapters/tandem/ in as adapters/tandem/ (the real
+# adapter), and puts a fake `claude` on PATH (../fake-claude/), so no model is called.
+schema_version: 2
+
+subject:
+  kind: harness
+  name: tandem
+  summary: Tandem with N workers on a toy two-ticket task.
+  better_means: [more hidden tests pass]
+
+contenders:
+  - id: tandem
+    role: subject
+    source: { github: jaximus808/tandem, ref: 05b4a022651f4823dbe00e2748df5862d9c32164 }
+    driver:
+      type: harness
+      verbs:
+        run: adapters/tandem/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 600
+      model: claude-opus-4-5-20251101
+      token_cap_tokens: 1000000
+      env:
+        TANDEM_WORKERS: "2"
+        CC_MODEL: claude-opus-4-5-20251101
+    version: tandem@0.2.0
+    versions:
+      { CLAUDE_CODE_VERSION: "2.1.311", TANDEM_VERSION: "0.2.0", TANDEM_MCP_VERSION: "3.2.0" }
+
+workloads:
+  - id: toy
+    title: Add add() and mul()
+    input: workloads/toy/input/
+    instruction: workloads/toy/instruction.md
+    timeout_s: 600
+
+gates:
+  - id: hidden-tests
+    kind: hidden-tests
+    check: gates/hidden-tests/check.sh
+    reference: gates/hidden-tests/tests/
+    timeout_s: 120
+
+requirements:
+  - id: tests-pass
+    type: measured
+    title: Hidden tests pass
+    metric: gate_pass_rate
+    unit: ratio
+    better: higher
+    gate_id: hidden-tests
+  - id: wall
+    type: measured
+    title: Wall-clock time to finish
+    metric: wall_s
+    unit: s
+    better: lower
+    gate_id: hidden-tests
+
+proof:
+  oracle:
+    id: reference
+    dir: proof/oracle/
+    gates: [hidden-tests]
+    description: The two functions, written by hand.
+  do_less:
+    - id: no-op
+      dir: proof/do_less/no-op/
+      contender: tandem
+      driver_patch: proof/do_less/no-op/driver.sh
+      description: Touches nothing; must fail the hidden tests and show 0 claims.
+
+vary:
+  TANDEM_WORKERS: [2]
+human_in_loop: { kind: tandem, policy: auto }
+secrets: []
+collect: []
+transfer: { max_mb: 50 }
+scoring:
+  weights: { tests-pass: 80, wall: 20 }
+repeats: 1
+schedule: { order_seed: 1 }
+env:
+  profile: agent-cc
+  resources: { vcpu: 2, memory_gb: 4, disk_gb: 10 }
+  toolchains: [{ name: node, version: "22" }]
+  network: { allow: [api.anthropic.com] }

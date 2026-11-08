@@ -136,7 +136,7 @@ contenders:
         ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
         ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
     version: tandem@0.2.0
-    versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0" }
+    versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0", TANDEM_VERSION: "0.2.0" }
 
 workloads:
   - id: todo-api
