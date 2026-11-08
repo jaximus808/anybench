@@ -246,6 +246,11 @@ export interface MutateOptions {
   perOperatorPerFile?: number;
   /** At most this many mutants in total (default 24). */
   max?: number;
+  /**
+   * TDM-60: only mutate these 1-based lines of these files (mined tasks: the lines the fix
+   * changed; the rest of the file is the repo as it was, covered by PASS_TO_PASS, not the task).
+   */
+  lines?: ReadonlyMap<string, ReadonlySet<number>>;
 }
 
 /** Spread `n` picks over `xs` (first, last and evenly between), keeping order. */
@@ -271,7 +276,9 @@ export function mutateSource(file: string, content: string, opts: MutateOptions 
   ];
   const out: Mutant[] = [];
   const perLine = new Map<string, number>();
-  for (const g of groups) {
+  const only = opts.lines?.get(file);
+  for (const all of groups) {
+    const g = opts.lines ? all.filter((s) => only?.has(s.line) === true) : all;
     for (const s of spread(g, per)) {
       const mutated = s.apply(lines).join("\n");
       if (mutated === content) continue;

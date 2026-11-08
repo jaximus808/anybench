@@ -55,17 +55,24 @@ export async function noLeakIssues(dir: string, spec: KitSpec): Promise<string[]
   const issues: string[] = [];
   const workloadFiles = await listFiles(dir, KIT_LAYOUT.workloadsDir);
   const scoringRoots = [KIT_LAYOUT.referenceDir, KIT_LAYOUT.gatesDir, KIT_LAYOUT.proofOracleDir];
-  const scoring: { rel: string; sha: string; size: number }[] = [];
+  const workloadIds = new Set(spec.workloads.map((w) => w.id));
+  // A scoring file belongs to the workload whose id is one of its path segments (gates/<g>/<id>/,
+  // reference/<g>/<id>/, proof/oracle/<id>/), else to every workload. A later task's starting
+  // repo may legitimately hold an EARLIER task's fix, so files are compared per workload.
+  const scoring: { rel: string; sha: string; workload: string | null }[] = [];
   for (const root of scoringRoots) {
     for (const rel of await listFiles(dir, root)) {
       const data = await readFile(path.join(dir, rel));
-      if (data.byteLength >= 16) scoring.push({ rel, sha: sha256Hex(data), size: data.byteLength });
+      if (data.byteLength < 16) continue;
+      const workload = rel.split("/").find((seg) => workloadIds.has(seg)) ?? null;
+      scoring.push({ rel, sha: sha256Hex(data), workload });
     }
   }
-  const scoringShas = new Map(scoring.map((s) => [s.sha, s.rel]));
 
   for (const rel of workloadFiles) {
-    const inner = rel.split("/").slice(2).join("/"); // drop workloads/<id>/
+    const parts = rel.split("/");
+    const wid = parts[1] ?? "";
+    const inner = parts.slice(2).join("/"); // drop workloads/<id>/
     if (ANSWER_NAME.test(inner) || ANSWER_FILE.test(inner)) {
       issues.push(
         `${rel}: answer-bearing name under workloads/ (answers live in reference/ or gates/ only)`,
@@ -73,8 +80,10 @@ export async function noLeakIssues(dir: string, spec: KitSpec): Promise<string[]
       continue;
     }
     const data = await readFile(path.join(dir, rel));
-    const hit = data.byteLength >= 16 ? scoringShas.get(sha256Hex(data)) : undefined;
-    if (hit) issues.push(`${rel}: identical to the scoring file ${hit}`);
+    if (data.byteLength < 16) continue;
+    const sha = sha256Hex(data);
+    const hit = scoring.find((x) => x.sha === sha && (x.workload === null || x.workload === wid));
+    if (hit) issues.push(`${rel}: identical to the scoring file ${hit.rel}`);
   }
 
   // Hidden-test details in instructions.

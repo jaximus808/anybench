@@ -676,3 +676,9 @@ export function parseTestRun(kind: TestRunnerKind, input: ParseRunInput): Parsed
     }
   }
 }
+
+/**
+ * TDM-60: the parser internals the generated mined-task gate embeds (as their compiled source),
+ * so the scoring computer grades with exactly the parsers the miner verified the task with.
+ */
+export const MINE_PARSER_INTERNALS = { relTo, yamlMessage, TAP_SUMMARY_RE, MESSAGE_CAP } as const;

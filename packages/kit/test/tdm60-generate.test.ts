@@ -260,7 +260,7 @@ describe("TDM-60 no-leak lint", () => {
     await mkdir(path.join(dir, "reference/same-output/literal-search"), { recursive: true });
     const answer = "tree/src/power.c:1:PM_RESUME\ntree/src/power.c:2:PM_RESUME\n";
     await writeFile(path.join(dir, "reference/same-output/literal-search/stdout.txt"), answer);
-    await writeFile(path.join(dir, "workloads/regex-search/input/copy.txt"), answer);
+    await writeFile(path.join(dir, "workloads/literal-search/input/copy.txt"), answer);
     const v = await validateGeneratedKit(dir);
     expect(v.ok).toBe(false);
     expect(v.issues).toEqual(

@@ -924,6 +924,24 @@ async function oracleSources(kit: LoadedKit, oracle: ProofOverlay, workloadId: s
   return out;
 }
 
+/**
+ * TDM-60: `proof/mutation/<workload>.json` ({"files": {"<path>": [1-based lines]}}) limits the
+ * mutants to the lines the oracle changed (mined tasks). Absent: every line is a candidate.
+ */
+async function mutationLines(
+  kit: LoadedKit,
+  workloadId: string,
+): Promise<Map<string, Set<number>> | null> {
+  const file = path.join(kit.dir, KIT_LAYOUT.proofDir, "mutation", `${workloadId}.json`);
+  if (!existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(await readFile(file, "utf8")) as { files?: Record<string, number[]> };
+    return new Map(Object.entries(raw.files ?? {}).map(([f, ls]) => [f, new Set(ls)]));
+  } catch {
+    return null;
+  }
+}
+
 const sameBytes = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -941,7 +959,8 @@ async function mutationRun(
   ) => Promise<{ verdicts: Verdicts | null; infra: string | null }>,
   infra: string[],
 ): Promise<ProofSuiteReport["mutation"]> {
-  // The first workload whose oracle passed and ships source files under proof/oracle/<workload>/.
+  // The first workload whose oracle passed, ships source files under proof/oracle/<workload>/ and
+  // yields at least one mutant.
   for (const r of oracleRes) {
     if (!r.outcome?.bundle || !allPass(r.verdicts, hiddenGates)) continue;
     const sources = await oracleSources(kit, oracle, r.req.workloadId);
@@ -957,9 +976,13 @@ async function mutationRun(
     const texts = new Map(
       [...placed.keys()].map((f) => [f, new TextDecoder().decode(sources.get(f)!)] as const),
     );
+    const lines = await mutationLines(kit, r.req.workloadId);
     const mutants: Mutant[] = mutateOracle(texts, {
       max: deps.mutation?.max ?? DEFAULT_MAX_MUTANTS,
+      ...(lines ? { lines } : {}),
     });
+    // TDM-60: a multi-task kit whose first oracle offers no mutable statement tries the next one.
+    if (mutants.length === 0) continue;
     const outcomes = await Promise.all(
       mutants.map(async (m) => {
         const files = new Map(bundle);
