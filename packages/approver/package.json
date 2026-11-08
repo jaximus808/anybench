@@ -12,6 +12,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "eval-approver": "./dist/bin.js"
+  },
   "files": [
     "dist"
   ],
@@ -22,6 +25,7 @@
   },
   "dependencies": {
     "@anybench/core": "workspace:*",
-    "@anybench/naive": "workspace:*"
+    "@anybench/naive": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
