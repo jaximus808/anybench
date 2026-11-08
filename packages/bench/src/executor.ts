@@ -23,11 +23,25 @@
 //   record machine / exit code / bundle key, hand the trial to the gate (`collected`) → destroy
 //   the computer, or keep it for the next trial in the same paid block.
 //
-// Failures and retries:
+// Failures and retries. Everything the runner reports (ingest edges, status.json) is writable by
+// the agent under test, and failed_infra is retried and never billed, so a runner's word can
+// never cause a retry or an unbilled end:
 //   - failed_subject (the runner says so, e.g. wall-clock or token cap) is final, never retried.
-//   - failed_infra (computer gone, runner died, heartbeat lost, over the deadline, provider error)
-//     destroys the computer and retries after trialRetryDelayMs as a NEW attempt: attempt + 1,
-//     so the runner token changes and the old runner's batches are refused.
+//   - A failure the RUNNER claims (a failed_infra edge, status.result.outcome failed_infra, or a
+//     final phase with no outcome) is final too: failed_subject with failure_class
+//     `runner:<class>`.
+//   - A `cancelled` the runner claims is honoured only when the run really is cancelled
+//     (store.cancelState) or this execution wrote ~/.anybench/cancel; otherwise it is
+//     failed_subject with failure_class `unrequested_cancel`.
+//   - Only failures the WORKER observes are failed_infra: provider errors, the computer gone or
+//     destroyed (provider inspect), the deadline, prepare, heartbeat_lost, runner_start and
+//     runner_lost. They destroy the computer and retry after trialRetryDelayMs as a NEW attempt:
+//     attempt + 1, so the runner token changes and the old runner's batches are refused.
+//     Caveat: heartbeat_lost, runner_start and runner_lost can still be caused by the subject
+//     killing the runner (or the whole machine); that costs it a retry, not a free result, and
+//     the report shows attempts per trial (follow-up logged).
+//   - The deadline runs from trials.started_at (set when the attempt leaves `queued`), so a
+//     re-attach never restarts it.
 //   - Attempts are clamped to the DB: core allows TRIAL_MAX_INFRA_RETRIES = 3 retries (4 tries),
 //     but `trials_attempt_check` is `attempt between 1 and 3`, so TRIAL_MAX_ATTEMPTS = 3 (2
 //     retries). Raising the DB check (a migration) lifts the clamp with no change here.
@@ -327,7 +341,14 @@ export type ExecuteOutcome =
       kept_computer_id: string | null;
     }
   /** failed_infra with tries left: run again (retryNow) at `retry_at` (epoch ms). */
-  | { kind: "retry"; trial: ExecTrial; retry_at: number; next_attempt: number }
+  | {
+      kind: "retry";
+      trial: ExecTrial;
+      retry_at: number;
+      /** trialRetryDelayMs(attempt): how long after this outcome the retry is due. */
+      delay_ms: number;
+      next_attempt: number;
+    }
   /** Another live execution holds the lease. */
   | { kind: "busy"; trial: ExecTrial | null }
   /** We lost the lease mid-flight (someone took it over); we stopped without touching anything. */
@@ -454,7 +475,10 @@ export function planTransition(
   return { ok: true, next, from: r.from, to: r.to, event };
 }
 
-/** The trial state a runner status points at (untrusted: it only names a target). */
+/**
+ * The trial state a runner status CLAIMS (untrusted: the subject can write status.json). The
+ * executor never honours a claimed failed_infra or cancelled as such; see the header.
+ */
 export function trialTargetOfStatus(status: RunnerStatus): {
   to: TrialState;
   reason?: string;
@@ -470,7 +494,12 @@ export function trialTargetOfStatus(status: RunnerStatus): {
     if (outcome === "failed_subject") return { to: "failed_subject", ...extra };
     if (outcome === "cancelled" || status.phase === "cancelled")
       return { to: "cancelled", ...extra };
-    return { to: "failed_infra", reason: extra.reason ?? `runner ended ${status.phase}`, ...extra };
+    return {
+      to: "failed_infra",
+      reason: extra.reason ?? `runner ended ${status.phase}`,
+      failure_class:
+        status.result?.failure_class ?? (status.result ? "failed_infra" : "no_outcome"),
+    };
   }
   return {
     to: TRIAL_STATE_BY_RUNNER_PHASE[status.phase as keyof typeof TRIAL_STATE_BY_RUNNER_PHASE],
@@ -588,6 +617,8 @@ class TrialExecution {
   private prepared: TrialPrepared | null = null;
   private computer: { id: string; info: ComputerInfo } | null = null;
   private seenRunnerEdges: RunnerEdge[] = [];
+  /** This execution wrote ~/.anybench/cancel: a runner-reported `cancelled` is ours. */
+  private cancelWritten = false;
 
   constructor(
     private readonly deps: ExecutorDeps,
@@ -615,8 +646,17 @@ class TrialExecution {
     try {
       outcome = await this.drive();
     } catch (err) {
-      if (err instanceof Stop) outcome = { kind: err.kind, trial: this.trial };
-      else throw err;
+      if (err instanceof Stop) {
+        outcome = { kind: err.kind, trial: this.trial };
+      } else {
+        // Unexpected (store down, a bug): release so the job's retry or the next sweep can take the
+        // trial at once, instead of leaving it unwatched (no cancel, kill switch or deadline).
+        clearInterval(refresher);
+        await store.releaseLease(this.trialId, this.owner).catch((e: unknown) => {
+          this.deps.logger?.warn({ err: e, trialId: this.trialId }, "lease release failed");
+        });
+        throw err;
+      }
     } finally {
       clearInterval(refresher);
       this.opts.signal?.removeEventListener("abort", onAbort);
@@ -1101,27 +1141,39 @@ class TrialExecution {
       return;
     }
     const reason = target.reason ?? `runner reported ${target.to}`;
-    const fc = target.failure_class ? { failure_class: target.failure_class } : {};
     const from = this.t.state;
     if (from === target.to || isTerminalTrialState(from) || from === "failed_infra") return;
-    const emit = !this.runnerEdgeSeen(from, target.to);
-    if (target.to === "failed_subject") {
-      const moved = await this.move(
-        { type: "fail_subject", reason, ...fc },
-        { failure_class: target.failure_class ?? "subject" },
-        emit,
+    if (target.to === "cancelled") {
+      if (this.cancelWritten || (await this.deps.store.cancelState(this.t)).cancelled) {
+        const emit = !this.runnerEdgeSeen(from, "cancelled");
+        await this.move({ type: "cancel", reason }, undefined, emit);
+        return;
+      }
+      // Nobody asked: the subject cancelled itself. Its result, billed, never retried.
+      await this.failSubject(
+        `runner reported cancelled, but no cancel was requested (${reason})`,
+        "unrequested_cancel",
       );
-      // fail_subject is not legal from this state: never let the subject's side be blamed then.
-      if (!moved) await this.move({ type: "fail_infra", reason, failure_class: "runner_edge" });
-    } else if (target.to === "failed_infra") {
-      await this.move(
-        { type: "fail_infra", reason, ...fc },
-        { failure_class: target.failure_class ?? "runner" },
-        emit,
-      );
-    } else if (target.to === "cancelled") {
-      await this.move({ type: "cancel", reason }, undefined, emit);
+      return;
     }
+    if (target.to === "failed_subject") {
+      const emit = !this.runnerEdgeSeen(from, "failed_subject");
+      await this.failSubject(reason, target.failure_class ?? "subject", emit);
+      return;
+    }
+    if (target.to === "failed_infra") {
+      // Only the worker decides that a failure is infra (and so retried, unbilled).
+      await this.failSubject(reason, `runner:${target.failure_class ?? "failed_infra"}`);
+    }
+  }
+
+  /** failed_subject from the store's state (legal from installing … reviewing). */
+  private async failSubject(reason: string, failureClass: string, emit = true): Promise<void> {
+    await this.move(
+      { type: "fail_subject", reason, failure_class: failureClass },
+      { failure_class: failureClass },
+      emit,
+    );
   }
 
   private async applyRunnerEdges(): Promise<void> {
@@ -1129,7 +1181,7 @@ class TrialExecution {
     for (const e of edges.slice(this.seenRunnerEdges.length)) {
       this.seenRunnerEdges.push(e);
       await this.applyTarget(e);
-      if (isTerminalTrialState(this.t.state) || this.t.state === "failed_infra") return;
+      if (isTerminalTrialState(this.state())) return;
     }
   }
 
@@ -1154,7 +1206,9 @@ class TrialExecution {
     }
 
     const staleMs = this.timing.staleMs ?? Math.max(30_000, 3 * job.heartbeat_s * 1000 + 15_000);
-    const deadlineAt = this.now() + (this.timing.deadlineMs ?? defaultTrialDeadlineMs)(job);
+    // From the attempt's stored start, so a re-attach after a crash never restarts the clock.
+    const startedAt = this.t.started_at?.getTime() ?? this.now();
+    const deadlineAt = startedAt + (this.timing.deadlineMs ?? defaultTrialDeadlineMs)(job);
     const watchStart = this.now();
     let lastSig = "";
     let lastProgress = this.now();
@@ -1170,11 +1224,6 @@ class TrialExecution {
       await this.deps.registry.touch(computer.id).catch(() => undefined);
 
       await this.applyRunnerEdges();
-      if (this.state() === "failed_infra")
-        throw new InfraFailure(
-          "runner reported an infra failure",
-          this.t.failure_class ?? "runner",
-        );
       if (isTerminalTrialState(this.state())) return this.finish(status);
 
       status = await this.readStatus();
@@ -1185,12 +1234,6 @@ class TrialExecution {
           lastProgress = this.now();
         }
         await this.applyTarget(trialTargetOfStatus(status));
-        if (this.state() === "failed_infra") {
-          throw new InfraFailure(
-            status.result?.reason ?? "runner failed",
-            this.t.failure_class ?? "runner",
-          );
-        }
         if (isFinalRunnerPhase(status.phase) || isTerminalTrialState(this.state())) {
           return this.finish(status);
         }
@@ -1218,6 +1261,7 @@ class TrialExecution {
         this.paths().cancelFile,
         `cancel ${new Date(this.now()).toISOString()}\n`,
       );
+      this.cancelWritten = true;
     } catch {
       // the computer may already be gone; destroy follows
     }
@@ -1317,6 +1361,7 @@ class TrialExecution {
       kind: "retry",
       trial: this.t,
       retry_at: this.now() + trialRetryDelayMs(this.t.attempt),
+      delay_ms: trialRetryDelayMs(this.t.attempt),
       next_attempt: this.t.attempt + 1,
     };
   }
@@ -1334,6 +1379,7 @@ class TrialExecution {
         kind: "retry",
         trial: this.t,
         retry_at: this.now() + trialRetryDelayMs(this.t.attempt),
+        delay_ms: trialRetryDelayMs(this.t.attempt),
         next_attempt: this.t.attempt + 1,
       };
     }
@@ -1345,6 +1391,7 @@ class TrialExecution {
       { type: "retry", attempt: this.t.attempt },
       {
         computer_id: null,
+        started_at: null,
         failure_class: null,
         exit_code: null,
         ended_at: null,
@@ -1441,7 +1488,6 @@ export interface TrialLauncherOptions {
  */
 export function createTrialLauncher(deps: ExecutorDeps, options: TrialLauncherOptions = {}) {
   const blocks = new Map<string, string>();
-  const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? defaultSleep;
   return {
     blocks,
@@ -1475,7 +1521,7 @@ export function createTrialLauncher(deps: ExecutorDeps, options: TrialLauncherOp
             return { state: out.state, cost_micro_usd: out.cost_micro_usd };
           case "retry":
             blocks.delete(ctx.computer_key);
-            await sleep(Math.max(0, out.retry_at - now()));
+            await sleep(out.delay_ms);
             retryNow = true;
             break;
           default:

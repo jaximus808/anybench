@@ -24,8 +24,12 @@ export type FakeRunnerModeTdm49 =
   | "subject_fail"
   /** Writes status.json in `run` once, then dies without a final phase (no more heartbeats). */
   | "hang"
-  /** Reports an infra failure itself. */
-  | "infra_fail";
+  /** Reports an infra failure itself (a claim the executor must not honour as infra). */
+  | "infra_fail"
+  /** Ends with a final phase but no result at all. */
+  | "fail_no_outcome"
+  /** Writes `cancelled` into status.json although nobody wrote the cancel file. */
+  | "self_cancel";
 
 export interface FakeRunnerLaunchTdm49 {
   computerId: string;
@@ -113,6 +117,19 @@ export function installFakeRunnerTdm49(
         ctx.writeFile(`${home}/eval/out/machine.json`, '{"nproc":2,"load_1m":0.1}');
       write(phase);
       if (m === "hang" && phase === "run") return { exitCode: 137 };
+      if (m === "fail_no_outcome" && phase === "warmup") {
+        write("failed");
+        return { exitCode: 11 };
+      }
+      if (m === "self_cancel" && phase === "warmup") {
+        result = {
+          outcome: "cancelled",
+          reason: "I would rather not be measured",
+          failure_class: null,
+        };
+        write("cancelled");
+        return { exitCode: 12 };
+      }
       if (m === "infra_fail" && phase === "warmup") {
         result = {
           outcome: "failed_infra",
@@ -186,6 +203,8 @@ export function preparedTdm49(): TrialPrepared {
 }
 
 export interface HarnessTdm49 {
+  /** The executor's injected clock: real time plus `skewMs` (tests may move it). */
+  clock: { now: () => number; skewMs: number };
   fake: FakeProvider;
   store: MemoryTrialExecStore;
   computers: MemoryComputerStore;
@@ -207,7 +226,9 @@ export function harnessTdm49(opts: { maxComputers?: number } = {}): HarnessTdm49
     pricing: { pricePerBlockMicroUsd: 27_600n },
   });
   const runId = newId(RunIdSchema);
+  const clock = { skewMs: 0, now: () => Date.now() + clock.skewMs };
   return {
+    clock,
     fake,
     store,
     computers,
@@ -222,6 +243,7 @@ export function harnessTdm49(opts: { maxComputers?: number } = {}): HarnessTdm49
         token: (trialId, attempt) => `abrt1.fake-${trialId.slice(-6)}-${attempt}-${"x".repeat(20)}`,
       },
       owner: `worker-a~${Date.now()}`,
+      now: clock.now,
       timing: TIMING_TDM49,
       actor: { kind: "worker", id: "worker-a" },
       ...over,

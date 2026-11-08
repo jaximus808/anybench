@@ -233,7 +233,8 @@ describe("executor: retries", () => {
     expect(DB_MAX_TRIAL_ATTEMPTS).toBe(3);
     expect(TRIAL_MAX_ATTEMPTS).toBe(3);
     const h = harnessTdm49();
-    const launches = installFakeRunnerTdm49(h.fake, () => "infra_fail");
+    // A worker-observed failure every time: the runner hangs (heartbeat lost).
+    const launches = installFakeRunnerTdm49(h.fake, () => "hang");
     const trialId = h.newTrial();
     const delays: number[] = [];
     const launcher = createTrialLauncher(
@@ -255,7 +256,7 @@ describe("executor: retries", () => {
     expect(t.attempt).toBe(3);
     expect(t.state).toBe("failed_infra");
     expect(t.ended_at).not.toBeNull();
-    expect(t.failure_class).toBe("start");
+    expect(t.failure_class).toBe("heartbeat_lost");
     expect(h.creates()).toBe(3);
   });
 
@@ -302,6 +303,56 @@ describe("executor: retries", () => {
       computer_id: null,
     });
   });
+
+  it("a failure the runner claims (status.json outcome failed_infra) is the subject's: final, billed, no retry", async () => {
+    const h = harnessTdm49();
+    const launches = installFakeRunnerTdm49(h.fake, () => "infra_fail");
+    const trialId = h.newTrial();
+    const launcher = createTrialLauncher(h.deps());
+    const res = await launcher.launch(
+      { trial_id: trialId },
+      { computer_key: "k", position_in_block: 0, block_size: 1 },
+    );
+    expect(res.state).toBe("failed_subject");
+    expect(res.cost_micro_usd).toBe(27_600n);
+    expect(launches).toHaveLength(1);
+    expect(await h.store.get(trialId)).toMatchObject({
+      state: "failed_subject",
+      attempt: 1,
+      failure_class: "runner:start",
+    });
+  });
+
+  it("a final runner phase with no outcome is the subject's too (runner:no_outcome)", async () => {
+    const h = harnessTdm49();
+    const launches = installFakeRunnerTdm49(h.fake, () => "fail_no_outcome");
+    const trialId = h.newTrial();
+    const out = await executeTrial(h.deps(), trialId);
+    expect(out).toMatchObject({ kind: "final", state: "failed_subject" });
+    expect(launches).toHaveLength(1);
+    expect((await h.store.get(trialId))!.failure_class).toBe("runner:no_outcome");
+  });
+
+  it("a failed_infra edge pushed through ingest is the subject's: runner:<class>, no retry", async () => {
+    const h = harnessTdm49();
+    h.fake.onExec(/\.anybench\/bin\/runner' --trial/, () => ({ exitCode: 0 }));
+    const trialId = h.newTrial();
+    const p = executeTrial(
+      h.deps({ timing: { ...TIMING_TDM49, startTimeoutMs: 20_000 } }),
+      trialId,
+    );
+    await waitForTdm49(() => h.fake.detached().length === 1);
+    h.store.pushRunnerEdge(trialId, 1, {
+      from: "installing",
+      to: "failed_infra",
+      reason: "out of disk, honest",
+      failure_class: "disk",
+    });
+    const out = await p;
+    expect(out).toMatchObject({ kind: "final", state: "failed_subject" });
+    expect(await h.store.get(trialId)).toMatchObject({ attempt: 1, failure_class: "runner:disk" });
+    expect(h.fake.detached()).toHaveLength(1);
+  });
 });
 
 describe("executor: cancellation", () => {
@@ -339,13 +390,56 @@ describe("executor: cancellation", () => {
 
   it("a failed_infra trial waiting for its retry is cancelled with its run", async () => {
     const h = harnessTdm49();
-    installFakeRunnerTdm49(h.fake, () => "infra_fail");
+    installFakeRunnerTdm49(h.fake, () => "hang");
     const trialId = h.newTrial();
     expect((await executeTrial(h.deps(), trialId)).kind).toBe("retry");
     h.store.cancelledRuns.set(h.runId, "user cancelled");
     const out = await executeTrial(h.deps(), trialId, { retryNow: true });
     expect(out).toMatchObject({ kind: "final", state: "cancelled" });
     expect((await h.store.get(trialId))!.attempt).toBe(1);
+  });
+
+  it("a runner that writes cancelled into status.json unasked fails as the subject (unrequested_cancel)", async () => {
+    const h = harnessTdm49();
+    const launches = installFakeRunnerTdm49(h.fake, () => "self_cancel");
+    const trialId = h.newTrial();
+    const out = await executeTrial(h.deps(), trialId);
+    expect(out).toMatchObject({ kind: "final", state: "failed_subject" });
+    expect(out.kind === "final" && out.cost_micro_usd).toBe(27_600n);
+    expect(launches).toHaveLength(1);
+    expect(await h.store.get(trialId)).toMatchObject({
+      state: "failed_subject",
+      attempt: 1,
+      failure_class: "unrequested_cancel",
+    });
+  });
+
+  it("a cancelled edge pushed through ingest unasked fails as the subject; a requested one cancels", async () => {
+    const h = harnessTdm49();
+    h.fake.onExec(/\.anybench\/bin\/runner' --trial/, () => ({ exitCode: 0 }));
+    const timing = { ...TIMING_TDM49, startTimeoutMs: 20_000 };
+    const unasked = h.newTrial();
+    const p1 = executeTrial(h.deps({ timing }), unasked);
+    await waitForTdm49(() => h.fake.detached().length === 1);
+    h.store.pushRunnerEdge(unasked, 1, { from: "installing", to: "cancelled" });
+    expect(await p1).toMatchObject({ kind: "final", state: "failed_subject" });
+    expect((await h.store.get(unasked))!.failure_class).toBe("unrequested_cancel");
+
+    // The same edge while the run really is cancelled is honoured. The cancel lands exactly when
+    // ingest delivers the edge, so the poll loop's own check (which runs first) has not seen it:
+    // only the edge path can cancel, and it writes no worker event for the runner's edge.
+    const asked = h.newTrial();
+    const realEdges = h.store.runnerEdges.bind(h.store);
+    h.store.runnerEdges = async (t) => {
+      if (t.id === asked && h.fake.detached().length === 2) {
+        h.store.cancelledRuns.set(h.runId, "user cancelled");
+        return [{ from: "installing", to: "cancelled" }];
+      }
+      return realEdges(t);
+    };
+    const out2 = await executeTrial(h.deps({ timing }), asked);
+    expect(out2).toMatchObject({ kind: "final", state: "cancelled" });
+    expect(phaseEdgesTdm49(h.store, asked)).not.toContain("installing→cancelled");
   });
 });
 
@@ -419,6 +513,45 @@ describe("executor: runner edges and packed blocks", () => {
     await new Promise((r) => setTimeout(r, 120));
     expect(h.store.trials.get(trialId)!.lease_until!.getTime()).toBeGreaterThan(first);
     await p;
+  });
+
+  it("an unexpected error releases the lease, so the next execution is not busy", async () => {
+    const h = harnessTdm49();
+    installFakeRunnerTdm49(h.fake, () => "ok");
+    const trialId = h.newTrial();
+    const real = h.store.cancelState.bind(h.store);
+    let thrown = false;
+    h.store.cancelState = async (t) => {
+      if (!thrown) {
+        thrown = true;
+        throw new Error("db connection reset");
+      }
+      return real(t);
+    };
+    await expect(executeTrial(h.deps(), trialId)).rejects.toThrow("db connection reset");
+    expect((await h.store.get(trialId))!.lease_owner).toBeNull();
+    const out = await executeTrial(h.deps({ owner: "worker-b~2" }), trialId);
+    expect(out.kind).toBe("collected");
+  });
+
+  it("the deadline runs from started_at: a re-attach does not restart it", async () => {
+    const h = harnessTdm49();
+    installFakeRunnerTdm49(h.fake, () => "ok", 60);
+    const trialId = h.newTrial();
+    const timing = { ...TIMING_TDM49, deadlineMs: () => 500 };
+    const kill = new AbortController();
+    const a = executeTrial(h.deps({ owner: "worker-a~1", timing }), trialId, {
+      signal: kill.signal,
+    });
+    await waitForTdm49(() => h.store.trials.get(trialId)!.state === "warming");
+    kill.abort();
+    await a;
+    const startedAt = h.store.trials.get(trialId)!.started_at!.getTime();
+    await waitForTdm49(() => Date.now() > startedAt + 550);
+    h.store.deadOwners.add("worker-a~1");
+    const out = await executeTrial(h.deps({ owner: "worker-b~2", timing }), trialId);
+    expect(out.kind).toBe("retry");
+    expect((await h.store.get(trialId))!.failure_class).toBe("deadline");
   });
 });
 
