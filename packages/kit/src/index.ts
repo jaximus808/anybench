@@ -8,3 +8,5 @@ export * from "./yaml-source.js";
 export * from "./manifest.js";
 export * from "./validate.js";
 export * from "./load.js";
+// Drivers, one directory per driver.type (TDM-40 http-agent, ...).
+export * from "./drivers/index.js";

@@ -1,0 +1,12 @@
+{
+  "id": "order-status",
+  "title": "Status of a shipped order",
+  "turns": [
+    {
+      "user": "What's the status of order 1042?",
+      "expect": { "contains": ["shipped", "2026-11-12"] }
+    }
+  ],
+  "expected": { "outcome": "resolved" },
+  "tools": [{ "name": "lookup_order", "args": { "order_id": "1042" } }]
+}

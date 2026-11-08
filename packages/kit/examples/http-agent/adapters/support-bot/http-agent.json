@@ -1,0 +1,17 @@
+{
+  "method": "POST",
+  "request": {
+    "history": "full",
+    "body": { "conversation_id": "{{conversation_id}}", "messages": "{{messages}}" }
+  },
+  "response": {
+    "reply": "reply",
+    "session_id": "session_id",
+    "tool_calls": "tool_calls",
+    "outcome": "outcome",
+    "cost_micro_usd": "usage.cost_micro_usd",
+    "input_tokens": "usage.input_tokens",
+    "output_tokens": "usage.output_tokens"
+  },
+  "timeout_ms": 10000
+}

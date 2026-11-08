@@ -1,0 +1,87 @@
+# Example kit for driver.type: http-agent (TDM-40 [4.8]). Validate with: anybench kit validate packages/kit/examples/http-agent
+# The subject is a tiny stub support agent (adapters/support-bot/server.ts) that answers correctly.
+schema_version: 2
+
+subject:
+  kind: agent
+  name: support-bot
+  summary: A customer-support chat agent behind a JSON chat API that answers order questions.
+  better_means:
+    - right answers to labeled support questions
+    - lower p95 reply latency
+    - lower cost per conversation
+
+contenders:
+  - id: support-bot
+    role: subject
+    source: { upload: [adapters/support-bot/server.ts] }
+    driver:
+      type: http-agent
+      verbs:
+        start: adapters/support-bot/driver.sh start
+        ready: adapters/support-bot/driver.sh ready
+        run: adapters/support-bot/driver.sh run {in} {out}
+        stop: adapters/support-bot/driver.sh stop
+      wall_clock_cap_s: 300
+      max_turns: 6
+    version: support-bot@stub
+
+workloads:
+  - id: support-basics
+    title: Order status, follow-ups, refunds and a price quote (5 labeled conversations)
+    timeout_s: 120
+
+collectors: [machine, time, proxy-calls]
+
+gates:
+  - id: labeled-answers
+    kind: labeled-answers
+    description: Every conversation's labeled turns, final answer, outcome and tool calls match.
+    timeout_s: 120
+
+requirements:
+  - id: latency
+    type: measured
+    title: p95 reply latency per turn
+    metric: latency_p95_ms
+    unit: ms
+    better: lower
+    gate_id: labeled-answers
+  - id: cost
+    type: measured
+    title: Agent-reported cost for the conversation set
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    gate_id: labeled-answers
+
+proof:
+  oracle:
+    id: reference-answers
+    dir: proof/oracle/
+    contender: support-bot
+    env: { STUB_AGENT_MODE: oracle }
+    description: Answers from the order table the labels were written from; must pass every conversation.
+  do_less:
+    - id: canned-answers
+      dir: proof/do_less/canned/
+      contender: support-bot
+      env: { STUB_AGENT_MODE: canned }
+      description: Returns one cached reply for every turn, so labeled-answers must fail.
+  regression:
+    id: slow-replies
+    dir: proof/regression/
+    contender: support-bot
+    env: { STUB_AGENT_DELAY_MS: "250" }
+    description: Same answers 250 ms later; must score lower on p95 latency.
+
+collect: ["transcripts/", "*.jsonl", "labeled-answers.json"]
+
+scoring:
+  weights: { latency: 60, cost: 40 }
+repeats: 5
+
+env:
+  profile: base
+  resources: { vcpu: 2, memory_gb: 4, disk_gb: 20 }
+  toolchains: [{ name: node, version: "22" }]
