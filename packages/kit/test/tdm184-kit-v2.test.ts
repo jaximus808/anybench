@@ -43,13 +43,14 @@ const readKitTdm184 = (p: string) => readFileSync(join(KIT_TDM184, p), "utf8");
 describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
   const kit = kitTdm184();
 
-  it("every contender runs the same dated model, passed to Claude Code as CC_MODEL", () => {
+  it("every contender runs the same pinned Naïve model id, passed to Claude Code as CC_MODEL", () => {
     const models = kit.contenders.map((c) =>
       isAgentDriver(c.driver) ? c.driver.model : undefined,
     );
     expect(new Set(models).size).toBe(1);
     expect(isPinnedModelId(models[0]!)).toBe(true);
-    expect(models[0]).toMatch(/-\d{8}$/);
+    // A Naïve proxy id (the proxy refuses Anthropic ids such as claude-sonnet-4-6), not an alias.
+    expect(models[0]).toBe("anthropic/claude-sonnet-4.6");
     for (const c of kit.contenders) expect(c.driver.env?.CC_MODEL, c.id).toBe(models[0]);
     // The drivers refuse to run without it rather than fall back to the CLI's default model.
     for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/driver.sh"])
@@ -77,6 +78,50 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
       `adapters/tandem/${f}`,
     ]))
       expect(readKitTdm184(s), s).not.toMatch(/latest/);
+  });
+
+  // Founder decision (TDM-184): every contender is paid through the Naïve model proxy with the same
+  // settings (docs/findings/claude-code-naive-proxy.md): effort naive-min, thinking off.
+  it("every contender gets its tokens from the Naïve proxy with identical proxy settings", () => {
+    const PROXY_KEYS_TDM184 = [
+      "AB_TOKEN_SOURCE",
+      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      "MAX_THINKING_TOKENS",
+      "CLAUDE_CODE_MODEL_CAPABILITIES",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+    ];
+    const proxy = kit.contenders.map((c) =>
+      Object.fromEntries(PROXY_KEYS_TDM184.map((k) => [k, c.driver.env?.[k]])),
+    );
+    for (const p of proxy) expect(p).toEqual(proxy[0]);
+    expect(proxy[0]).toEqual({
+      AB_TOKEN_SOURCE: "naive_proxy",
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+      MAX_THINKING_TOKENS: "0",
+      CLAUDE_CODE_MODEL_CAPABILITIES:
+        "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "anthropic/claude-sonnet-4.6",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "anthropic/claude-sonnet-4.6",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "anthropic/claude-sonnet-4.6",
+      ANTHROPIC_SMALL_FAST_MODEL: "anthropic/claude-sonnet-4.6",
+    });
+    // Claude Code 2.1.319 is the version verified on the proxy (TDM-16).
+    for (const c of kit.contenders) expect(c.versions?.CLAUDE_CODE_VERSION, c.id).toBe("2.1.319");
+    // No Anthropic key, and only the proxy host for model traffic.
+    expect(kit.secrets).toEqual([]);
+    expect(kit.env?.network?.allow).toContain("api.vetta.sh");
+    expect(kit.env?.network?.allow).not.toContain("api.anthropic.com");
+    // Both drivers source the proxy env file, keep the kit's settings over it, and drop any direct key.
+    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/driver.sh"]) {
+      const text = readKitTdm184(d);
+      expect(text, d).toMatch(/AB_TOKEN_SOURCE:-\}" == naive_proxy/);
+      expect(text, d).toMatch(/unset ANTHROPIC_API_KEY/);
+      expect(text, d).toMatch(/export ANTHROPIC_MODEL="\$model"/);
+    }
+    expect(readKitTdm184("README.md")).toMatch(/effort: naive-min, thinking: off/);
   });
 
   it("pins Tandem to a commit SHA", () => {

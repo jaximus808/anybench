@@ -7,7 +7,8 @@
 # become the user-level Claude Code config (so nothing is written into the graded workspace);
 # CC_DISALLOWED_TOOLS (optional, e.g. "Task Agent") is passed to --disallowedTools; CC_MODEL
 # (required) is the pinned model id; CC_MAX_TURNS is optional. CLAUDE_MD_OVERLAY (optional, kit-relative) is appended to CLAUDE.md (planted regression).
-# Runner env: EVAL_OUT (outputs), EVAL_SECRETS (a file that sets ANTHROPIC_API_KEY; sourced, never echoed).
+# Runner env: EVAL_OUT (outputs), EVAL_SECRETS (optional secrets file; sourced, never echoed).
+# AB_TOKEN_SOURCE=naive_proxy (the kit sets it) sources the Naïve proxy env file (below).
 #
 # Writes $EVAL_OUT/stream.jsonl (stream-json: tokens, turns, cost) and $EVAL_OUT/versions.json.
 set -euo pipefail
@@ -25,6 +26,26 @@ setup="${CC_SETUP:?CC_SETUP is not set}"
 model="${CC_MODEL:?CC_MODEL is not set: the kit pins the model in driver.env}"
 
 if [[ -n "${EVAL_SECRETS:-}" ]]; then set -a; . "$EVAL_SECRETS"; set +a; fi
+
+# Tokens from the Naïve model proxy (AB_TOKEN_SOURCE=naive_proxy, docs/findings/claude-code-naive-proxy.md).
+# The worker writes a per-trial proxy:write key to $HOME/.anybench/proxy.env (0600); it is sourced,
+# never echoed and never on an argv. The kit's proxy settings (driver.env) win over the file's, so
+# every contender runs the same model with effort naive-min and thinking off, and no direct
+# Anthropic key can bypass the proxy.
+if [[ "${AB_TOKEN_SOURCE:-}" == naive_proxy ]]; then
+  proxy_env="${NAIVE_PROXY_ENV:-$HOME/.anybench/proxy.env}"
+  [[ -f "$proxy_env" ]] || { echo "AB_TOKEN_SOURCE=naive_proxy but $proxy_env is missing" >&2; exit 2; }
+  pinned=()
+  for k in CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS MAX_THINKING_TOKENS CLAUDE_CODE_MODEL_CAPABILITIES \
+    ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL; do
+    [[ -n "${!k:-}" ]] && pinned+=("$k=${!k}")
+  done
+  set -a; . "$proxy_env"; set +a
+  for kv in "${pinned[@]}"; do export "${kv?}"; done
+  export ANTHROPIC_MODEL="$model"
+  unset ANTHROPIC_API_KEY
+  : "${ANTHROPIC_BASE_URL:?$proxy_env sets no ANTHROPIC_BASE_URL}" "${ANTHROPIC_AUTH_TOKEN:?$proxy_env sets no ANTHROPIC_AUTH_TOKEN}"
+fi
 
 cfg="$HOME/.claude"
 mkdir -p "$cfg"

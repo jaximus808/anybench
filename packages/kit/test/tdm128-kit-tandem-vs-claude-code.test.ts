@@ -113,7 +113,8 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
     expect(Object.values(kit.scoring.weights).reduce((a, b) => a + b, 0)).toBe(100);
     expect(kit.proof.oracle?.gates).toEqual(["hidden-tests", "api-load"]);
     expect(kit.proof.do_less.map((d) => d.id)).toEqual(["do-nothing"]);
-    expect(kit.secrets).toEqual(["ANTHROPIC_API_KEY"]);
+    // Tokens come from the Naïve proxy (TDM-184), so the kit needs no Anthropic key.
+    expect(kit.secrets).toEqual([]);
   });
 
   it("every path the kit names exists, and every script is executable", () => {

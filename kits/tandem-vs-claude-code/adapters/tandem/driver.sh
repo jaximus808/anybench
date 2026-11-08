@@ -28,6 +28,26 @@ code="${TANDEM_CANVAS_CODE:?TANDEM_CANVAS_CODE is not set (the approver sidecar 
 
 if [[ -n "${EVAL_SECRETS:-}" ]]; then set -a; . "$EVAL_SECRETS"; set +a; fi
 
+# Tokens from the Naïve model proxy (AB_TOKEN_SOURCE=naive_proxy, docs/findings/claude-code-naive-proxy.md).
+# The worker writes a per-trial proxy:write key to $HOME/.anybench/proxy.env (0600); it is sourced,
+# never echoed and never on an argv. The kit's proxy settings (driver.env) win over the file's, so
+# every contender runs the same model with effort naive-min and thinking off, and no direct
+# Anthropic key can bypass the proxy.
+if [[ "${AB_TOKEN_SOURCE:-}" == naive_proxy ]]; then
+  proxy_env="${NAIVE_PROXY_ENV:-$HOME/.anybench/proxy.env}"
+  [[ -f "$proxy_env" ]] || { echo "AB_TOKEN_SOURCE=naive_proxy but $proxy_env is missing" >&2; exit 2; }
+  pinned=()
+  for k in CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS MAX_THINKING_TOKENS CLAUDE_CODE_MODEL_CAPABILITIES \
+    ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL; do
+    [[ -n "${!k:-}" ]] && pinned+=("$k=${!k}")
+  done
+  set -a; . "$proxy_env"; set +a
+  for kv in "${pinned[@]}"; do export "${kv?}"; done
+  export ANTHROPIC_MODEL="$model"
+  unset ANTHROPIC_API_KEY
+  : "${ANTHROPIC_BASE_URL:?$proxy_env sets no ANTHROPIC_BASE_URL}" "${ANTHROPIC_AUTH_TOKEN:?$proxy_env sets no ANTHROPIC_AUTH_TOKEN}"
+fi
+
 mcp="$out/tandem/mcp.json"
 mkdir -p "$out/tandem"
 printf '{"mcpServers":{"tandem":{"command":"npx","args":["-y","@jaximus/tandem-mcp@%s"]}}}\n' "${TANDEM_MCP_VERSION:-3.2.0}" > "$mcp"

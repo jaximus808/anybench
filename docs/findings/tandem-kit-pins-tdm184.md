@@ -33,7 +33,10 @@ npm view @anthropic-ai/claude-code dist-tags --json
 { "stable": "2.1.311", "latest": "2.1.319", "next": "2.1.319" }
 ```
 
-The kit pins Claude Code `2.1.311`, the `stable` dist-tag on that day.
+The first phase-1 commit pinned Claude Code `2.1.311` (the `stable` dist-tag). After the founder's
+Naïve-proxy decision the kit pins `2.1.319`, the version verified on the proxy
+(TDM-16, `docs/findings/claude-code-naive-proxy.md`); its binary is where
+`CLAUDE_CODE_MODEL_CAPABILITIES` was found.
 
 ## Model id
 
@@ -48,6 +51,21 @@ older models have dated ids. Every model from 4.6 on (`claude-opus-4-6` … `cla
 | Claude Haiku 4.5 | `claude-haiku-4-5-20251001` | Active |
 | Claude Sonnet 4.5 | `claude-sonnet-4-5-20250929` | Deprecated, retires 2026-11-30 |
 
-So the newest model the kit can pin today is `claude-opus-4-5-20251101`, and that is what it pins.
-To benchmark on a current model, `UNDATED_MODEL_SNAPSHOTS` in `packages/kit/src/comparability.ts`
-has to list the undated current ids (it is the extension point for undated snapshot ids).
+## Model id on the Naïve proxy (what the kit pins)
+
+After the founder's decision that every contender runs through the Naïve model proxy, the kit pins
+`anthropic/claude-sonnet-4.6`, a Naïve id (the proxy refuses Anthropic ids such as
+`claude-sonnet-4-6`). `isPinnedModelId` accepts it as is: the dated-suffix rule applies only to
+ids that start with `claude-`, `gpt-` or `o<digit>`, and a provider-prefixed id passes when it is
+not an alias (`~anthropic/claude-sonnet-latest` is refused by the `-latest` rule) and has a digit.
+
+```sh
+node -e 'import("./packages/kit/dist/index.js").then(async (k) => { const r = await k.validateKitDir("kits/tandem-vs-claude-code"); console.log(r.ok, r.errors.length, r.warnings.map((w) => w.code)); })'
+```
+
+```
+true 0 [ 'unused_dir' ]
+```
+
+The one warning is followup 23 (the shared `adapters/claude-code/` folder has no contender of that
+id).

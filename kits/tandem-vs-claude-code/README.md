@@ -24,10 +24,14 @@ a `vary` key expands only the contenders whose `driver.env` declares it (`tandem
 `validateKitDir` refuses a kit whose setups differ in anything but what is under test. Here every
 setup runs:
 
-- the same dated model, `claude-opus-4-5-20251101` (`driver.model`, passed to Claude Code as
-  `CC_MODEL`; the drivers refuse to run without it);
-- the same Claude Code, `2.1.311` (`versions.CLAUDE_CODE_VERSION`, also the install scripts'
-  default, so a runner that doesn't export `versions` still installs it);
+- the same model, `anthropic/claude-sonnet-4.6` (a Naïve proxy id: the proxy refuses Anthropic's
+  own ids). It is `driver.model`, passed to Claude Code as `CC_MODEL` and also set as every
+  `ANTHROPIC_DEFAULT_*_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, so subagents and background calls
+  run it too. The drivers refuse to run without it;
+- the same Claude Code, `2.1.319` (`versions.CLAUDE_CODE_VERSION`, also the install scripts'
+  default, so a runner that doesn't export `versions` still installs it). It is the version
+  verified on the Naïve proxy (TDM-16) and the one that reads `CLAUDE_CODE_MODEL_CAPABILITIES`;
+- the same token source: the Naïve model proxy (below);
 - Tandem at commit `05b4a02` (tag `v0.2.0`) and `@jaximus/tandem-mcp@3.2.0` (tag `mcp-v3.2.0`, the same commit);
 - the same caps: 3600 s wall clock and 8,000,000 tokens;
 - no assist only one setup gets: approvals are automatic, since A and B have no approval step
@@ -35,8 +39,21 @@ setup runs:
 
 The contender order rotates per round (`schedule.order_seed`).
 
-Current Claude models (4.6 and later) have no dated snapshot ids, and the validator only accepts a
-dated `claude-*` id, so the newest model this kit can pin today is Opus 4.5.
+### Tokens: the Naïve model proxy (founder decision)
+
+Every contender is paid through Naïve's Anthropic-compatible proxy
+(`docs/findings/claude-code-naive-proxy.md`), with the same settings in each `driver.env`:
+`AB_TOKEN_SOURCE=naive_proxy`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`, `MAX_THINKING_TOKENS=0`
+and `CLAUDE_CODE_MODEL_CAPABILITIES=-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking`.
+The worker provisions a per-trial `proxy:write` key into `$HOME/.anybench/proxy.env`
+(`provisionClaudeCodeProxyEnv` in packages/naive); the drivers source it, keep the kit's settings
+over the file's, and unset any `ANTHROPIC_API_KEY`, so no contender can bypass the proxy. The kit
+has no secrets, and the only model host on the allow-list is `api.vetta.sh`.
+
+**Disclosure (goes with every result from this kit):**
+`tokens: naive-proxy, effort: naive-min, thinking: off`. The proxy refuses client-chosen effort and extended thinking, so every setup runs
+the model at its lowest published effort with thinking off. That is not first-party Claude Code at
+its default effort: results compare these setups with each other, under the same handicap.
 
 ## Tasks
 

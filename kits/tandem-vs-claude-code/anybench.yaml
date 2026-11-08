@@ -11,7 +11,8 @@ subject:
     Tandem is a shared task board where a planner splits work into tickets and N Claude Code
     workers claim them, with approvals. This kit compares Tandem with 1, 3 and 5 workers against plain
     Claude Code working alone and Claude Code with subagents, on three coding tasks graded by
-    hidden tests.
+    hidden tests. Every setup runs anthropic/claude-sonnet-4.6 on Claude Code 2.1.319 through the
+    Naïve model proxy, at effort naive-min with thinking off.
   better_means:
     - more trials pass every hidden test
     - finishes sooner (wall clock)
@@ -26,6 +27,13 @@ subject:
 # same pinned model (driver.model, passed to Claude Code as CC_MODEL), the same pinned Claude Code
 # (versions.CLAUDE_CODE_VERSION, also the install scripts' default), the same caps, and no assist
 # that only one of them gets (approvals are automatic: human_in_loop.policy auto).
+#
+# Tokens: every contender is paid through the Naïve model proxy (founder decision, TDM-184), with
+# identical proxy settings in driver.env. The proxy refuses client-chosen effort and extended
+# thinking, so every trial runs at effort naive-min with thinking off. The model id is Naïve's
+# (`anthropic/claude-sonnet-4.6`; the proxy refuses Anthropic's own ids). Claude Code 2.1.319 is
+# the version the proxy was verified with (TDM-16), and the one that reads
+# CLAUDE_CODE_MODEL_CAPABILITIES.
 contenders:
   - id: claude-code-solo
     name: "A · Claude Code solo"
@@ -41,14 +49,24 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: claude-opus-4-5-20251101
+      model: anthropic/claude-sonnet-4.6
       token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-solo
-        CC_MODEL: claude-opus-4-5-20251101
+        CC_MODEL: anthropic/claude-sonnet-4.6
+        # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
+        # same for every contender: effort naive-min, thinking off.
+        AB_TOKEN_SOURCE: naive_proxy
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+        MAX_THINKING_TOKENS: "0"
+        CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
         # Claude Code calls its subagent tool Task in older versions and Agent in newer ones.
         CC_DISALLOWED_TOOLS: "Task Agent"
-    versions: { CLAUDE_CODE_VERSION: "2.1.311" }
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
     found_by: "researcher: the plain default (subagents removed)"
 
   - id: claude-code-subagents
@@ -67,12 +85,22 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: claude-opus-4-5-20251101
+      model: anthropic/claude-sonnet-4.6
       token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-subagents
-        CC_MODEL: claude-opus-4-5-20251101
-    versions: { CLAUDE_CODE_VERSION: "2.1.311" }
+        CC_MODEL: anthropic/claude-sonnet-4.6
+        # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
+        # same for every contender: effort naive-min, thinking off.
+        AB_TOKEN_SOURCE: naive_proxy
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+        MAX_THINKING_TOKENS: "0"
+        CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
     found_by: "user: the setup Tandem has to beat"
 
   - id: tandem
@@ -91,14 +119,24 @@ contenders:
       verbs:
         run: adapters/tandem/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: claude-opus-4-5-20251101
+      model: anthropic/claude-sonnet-4.6
       token_cap_tokens: 8000000
       env:
         # Default for the key `vary` sets; only drivers that declare a vary key are expanded by it.
         TANDEM_WORKERS: "3"
-        CC_MODEL: claude-opus-4-5-20251101
+        CC_MODEL: anthropic/claude-sonnet-4.6
+        # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
+        # same for every contender: effort naive-min, thinking off.
+        AB_TOKEN_SOURCE: naive_proxy
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+        MAX_THINKING_TOKENS: "0"
+        CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
     version: tandem@0.2.0
-    versions: { CLAUDE_CODE_VERSION: "2.1.311", TANDEM_MCP_VERSION: "3.2.0" }
+    versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0" }
 
 workloads:
   - id: todo-api
@@ -230,7 +268,9 @@ human_in_loop:
   # approval step), which the comparability rules refuse unless every contender gets it.
   policy: auto
 
-secrets: [ANTHROPIC_API_KEY]
+# No Anthropic key: tokens come from the Naïve proxy. The worker provisions a per-trial
+# proxy:write key into $HOME/.anybench/proxy.env (packages/naive provisionClaudeCodeProxyEnv).
+secrets: []
 
 collect:
   - stream.jsonl
@@ -261,6 +301,6 @@ env:
   toolchains:
     - { name: node, version: "22" }
   network:
-    # The agents need the model API and npm (snapshot build only). Gates run offline.
-    allow: [api.anthropic.com, registry.npmjs.org, github.com, "*.githubusercontent.com"]
+    # The agents need the Naïve model proxy and npm (snapshot build only). Gates run offline.
+    allow: [api.vetta.sh, registry.npmjs.org, github.com, "*.githubusercontent.com"]
   region: us-east
