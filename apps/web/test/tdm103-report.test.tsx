@@ -184,11 +184,14 @@ describe("Results fetch (through the API client)", () => {
         </LiveApiContext.Provider>,
       );
     });
-    // The report, then (once it renders) where the time went.
-    expect(calls).toEqual([
-      `https://api.test/runs/${TDM103_RUN_ID}/report`,
-      `https://api.test/runs/${TDM103_RUN_ID}/trace-summary`,
-    ]);
+    // The report first, then (once it renders) the scoreboard's trials and the trace summary.
+    expect(calls[0]).toBe(`https://api.test/runs/${TDM103_RUN_ID}/report`);
+    expect(new Set(calls.slice(1))).toEqual(
+      new Set([
+        `https://api.test/runs/${TDM103_RUN_ID}/trials?limit=200`,
+        `https://api.test/runs/${TDM103_RUN_ID}/trace-summary`,
+      ]),
+    );
     expect((await screen.findByTestId("results-headline")).textContent).toMatch(/^Result on wall/);
   });
 

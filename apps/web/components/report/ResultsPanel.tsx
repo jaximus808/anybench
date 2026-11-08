@@ -23,6 +23,18 @@ import { describeApiError } from "../../lib/live/useLiveRun";
 import { perTaskRows, proofBasis, resultRows, splitAnswer } from "./model";
 import styles from "./report.module.css";
 import { TimeBreakdownSection } from "../trace/TimeBreakdown";
+import { ScoreboardSection } from "./Scoreboard";
+
+/** The verdict wording reads as a shrug; the numbers above it carry the point. */
+function plain(text: string): string {
+  return text.replace(/no detectable difference/g, "not significant");
+}
+
+/** The first sentence leads; the statistical detail after it stays, smaller. */
+function leadSentence(text: string): [string, string] {
+  const m = /^(.+?[.)])(\s+(?=[A-Z]).*)$/s.exec(text);
+  return m ? [m[1]!, m[2]!] : [text, ""];
+}
 
 export type ResultsState =
   | { kind: "loading" }
@@ -155,174 +167,191 @@ function ReportBody({ report, runId }: { report: Report; runId: string }) {
   const rows = resultRows(report);
   const taskRows = perTaskRows(report);
   const setups = report.contenders;
+  const [lead, rest] = leadSentence(plain(headline));
 
   return (
     <div className={styles.body}>
       <p className={styles.headline} data-testid="results-headline">
-        {headline}
+        {lead}
+        {rest ? <span className={styles.headRest}>{rest}</span> : null}
       </p>
 
-      {rows.length ? (
-        <>
-          <h3 className={styles.subTitle}>By requirement</h3>
-          <RequirementCharts report={report} />
-        </>
-      ) : null}
+      <ScoreboardSection
+        runId={runId}
+        setups={setups.map((c) => ({
+          id: c.contender_id,
+          name: c.name,
+          baseline: c.role === "baseline",
+        }))}
+      />
 
-      {rows.length ? (
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th scope="col">Requirement</th>
-                {setups.map((c) => (
-                  <th scope="col" key={c.contender_id} className={styles.numCol}>
-                    {c.name}
-                    {c.role === "baseline" ? <small> baseline</small> : null}
-                  </th>
-                ))}
-                <th scope="col">Verdict vs baseline (CI of the difference)</th>
-                <th scope="col">Smallest detectable difference</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.requirementId} data-requirement={row.requirementId}>
-                  <th scope="row">
-                    <span className={styles.reqTitle}>{row.title}</span>
-                    <span className={styles.reqId}>
-                      {row.requirementId} · {row.type}
-                    </span>
-                  </th>
-                  {setups.map((c) => {
-                    const cell = row.cells.find((x) => x.contenderId === c.contender_id);
-                    return (
-                      <td key={c.contender_id} className={styles.numCol}>
-                        {cell ? (
-                          <>
-                            <span className={styles.value} data-gated={cell.gated || undefined}>
-                              {cell.value}
-                            </span>
-                            <span className={styles.n}>
-                              {cell.n !== null ? `n=${cell.n}` : "n=–"}
-                              {cell.survivorship ? " · solved only" : ""}
-                            </span>
-                          </>
-                        ) : (
-                          <span className={styles.n}>–</span>
-                        )}
-                      </td>
-                    );
-                  })}
-                  <td>
-                    {row.verdicts.length ? (
-                      <ul className={styles.verdicts}>
-                        {row.verdicts.map((v) => (
-                          <li key={v.contenderId}>
-                            {row.verdicts.length > 1 || setups.length > 2 ? (
-                              <span className={styles.who}>{v.name}: </span>
-                            ) : null}
-                            <span className={styles.verdict} data-verdict={v.verdict}>
-                              {v.word}
-                            </span>{" "}
-                            <span className={styles.ci}>{v.ci}</span>
-                            {v.claim === "these_tasks" ? (
-                              <span className={styles.note}> on these {v.tasks} tasks only</span>
-                            ) : null}
-                            {v.downgraded ? (
-                              <span className={styles.note}> (downgraded: {v.downgraded})</span>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <span className={styles.n}>no comparison</span>
-                    )}
-                  </td>
-                  <td>
-                    {row.verdicts.length ? (
-                      <ul className={styles.verdicts}>
-                        {row.verdicts.map((v) => (
-                          <li key={v.contenderId} className={styles.ci}>
-                            {row.verdicts.length > 1 ? `${v.name}: ` : ""}
-                            {v.mde}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <span className={styles.n}>–</span>
-                    )}
-                  </td>
+      <details className={styles.stats}>
+        <summary>
+          Statistics: significance tests, confidence intervals, per-requirement charts
+        </summary>
+
+        {rows.length ? (
+          <>
+            <h3 className={styles.subTitle}>By requirement</h3>
+            <RequirementCharts report={report} />
+          </>
+        ) : null}
+
+        {rows.length ? (
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th scope="col">Requirement</th>
+                  {setups.map((c) => (
+                    <th scope="col" key={c.contender_id} className={styles.numCol}>
+                      {c.name}
+                      {c.role === "baseline" ? <small> baseline</small> : null}
+                    </th>
+                  ))}
+                  <th scope="col">Verdict vs baseline (CI of the difference)</th>
+                  <th scope="col">Smallest detectable difference</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className={styles.empty}>No requirement was scored.</p>
-      )}
-
-      {report.per_task ? (
-        <div className={styles.perTask} data-testid="results-per-task">
-          <h3 className={styles.subTitle}>Per task</h3>
-          {report.per_task.headline.map((h) => (
-            <p key={h} className={styles.headline} data-testid="results-per-task-headline">
-              {h}
-            </p>
-          ))}
-          <p className={styles.note} data-testid="results-per-task-scope">
-            {report.per_task.scope} Each task’s repeats are the unit; Holm across{" "}
-            {report.per_task.family} task × requirement tests.
-          </p>
-          <TaskCharts report={report} />
-          {taskRows.length ? (
-            <div className={styles.tableWrap}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th scope="col">Requirement</th>
-                    <th scope="col">Task</th>
-                    <th scope="col">Verdict vs baseline (CI of the difference)</th>
-                    <th scope="col">Smallest detectable difference</th>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.requirementId} data-requirement={row.requirementId}>
+                    <th scope="row">
+                      <span className={styles.reqTitle}>{row.title}</span>
+                      <span className={styles.reqId}>
+                        {row.requirementId} · {row.type}
+                      </span>
+                    </th>
+                    {setups.map((c) => {
+                      const cell = row.cells.find((x) => x.contenderId === c.contender_id);
+                      return (
+                        <td key={c.contender_id} className={styles.numCol}>
+                          {cell ? (
+                            <>
+                              <span className={styles.value} data-gated={cell.gated || undefined}>
+                                {cell.value}
+                              </span>
+                              <span className={styles.n}>
+                                {cell.n !== null ? `n=${cell.n}` : "n=–"}
+                                {cell.survivorship ? " · solved only" : ""}
+                              </span>
+                            </>
+                          ) : (
+                            <span className={styles.n}>–</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td>
+                      {row.verdicts.length ? (
+                        <ul className={styles.verdicts}>
+                          {row.verdicts.map((v) => (
+                            <li key={v.contenderId}>
+                              {row.verdicts.length > 1 || setups.length > 2 ? (
+                                <span className={styles.who}>{v.name}: </span>
+                              ) : null}
+                              <span className={styles.verdict} data-verdict={v.verdict}>
+                                {v.word}
+                              </span>{" "}
+                              <span className={styles.ci}>{v.ci}</span>
+                              {v.claim === "these_tasks" ? (
+                                <span className={styles.note}> on these {v.tasks} tasks only</span>
+                              ) : null}
+                              {v.downgraded ? (
+                                <span className={styles.note}> (downgraded: {v.downgraded})</span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className={styles.n}>no comparison</span>
+                      )}
+                    </td>
+                    <td>
+                      {row.verdicts.length ? (
+                        <ul className={styles.verdicts}>
+                          {row.verdicts.map((v) => (
+                            <li key={v.contenderId} className={styles.ci}>
+                              {row.verdicts.length > 1 ? `${v.name}: ` : ""}
+                              {v.mde}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className={styles.n}>–</span>
+                      )}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {taskRows.flatMap((row) =>
-                    row.cells.map((cell, i) => (
-                      <tr
-                        key={`${row.requirementId}:${cell.contenderId}:${cell.workloadId}`}
-                        data-requirement={row.requirementId}
-                        data-task={cell.workloadId}
-                      >
-                        {i === 0 ? (
-                          <th scope="row" rowSpan={row.cells.length}>
-                            <span className={styles.reqTitle}>{row.title}</span>
-                            <span className={styles.reqId}>{row.requirementId}</span>
-                          </th>
-                        ) : null}
-                        <td>
-                          {setups.length > 2 ? `${cell.name}: ` : ""}
-                          {cell.workloadId}
-                        </td>
-                        <td>
-                          <span className={styles.verdict} data-verdict={cell.verdict}>
-                            on {cell.workloadId}: {cell.word}
-                          </span>{" "}
-                          <span className={styles.ci}>{cell.ci}</span>
-                          {cell.downgraded ? (
-                            <span className={styles.note}> (downgraded: {cell.downgraded})</span>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className={styles.empty}>No requirement was scored.</p>
+        )}
+
+        {report.per_task ? (
+          <div className={styles.perTask} data-testid="results-per-task">
+            <h3 className={styles.subTitle}>Per task</h3>
+            {report.per_task.headline.map((h) => (
+              <p key={h} className={styles.headline} data-testid="results-per-task-headline">
+                {plain(h)}
+              </p>
+            ))}
+            <p className={styles.note} data-testid="results-per-task-scope">
+              {report.per_task.scope} Each task’s repeats are the unit; Holm across{" "}
+              {report.per_task.family} task × requirement tests.
+            </p>
+            <TaskCharts report={report} />
+            {taskRows.length ? (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th scope="col">Requirement</th>
+                      <th scope="col">Task</th>
+                      <th scope="col">Verdict vs baseline (CI of the difference)</th>
+                      <th scope="col">Smallest detectable difference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {taskRows.flatMap((row) =>
+                      row.cells.map((cell, i) => (
+                        <tr
+                          key={`${row.requirementId}:${cell.contenderId}:${cell.workloadId}`}
+                          data-requirement={row.requirementId}
+                          data-task={cell.workloadId}
+                        >
+                          {i === 0 ? (
+                            <th scope="row" rowSpan={row.cells.length}>
+                              <span className={styles.reqTitle}>{row.title}</span>
+                              <span className={styles.reqId}>{row.requirementId}</span>
+                            </th>
                           ) : null}
-                        </td>
-                        <td className={styles.ci}>{cell.mde}</td>
-                      </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+                          <td>
+                            {setups.length > 2 ? `${cell.name}: ` : ""}
+                            {cell.workloadId}
+                          </td>
+                          <td>
+                            <span className={styles.verdict} data-verdict={cell.verdict}>
+                              on {cell.workloadId}: {cell.word}
+                            </span>{" "}
+                            <span className={styles.ci}>{cell.ci}</span>
+                            {cell.downgraded ? (
+                              <span className={styles.note}> (downgraded: {cell.downgraded})</span>
+                            ) : null}
+                          </td>
+                          <td className={styles.ci}>{cell.mde}</td>
+                        </tr>
+                      )),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
 
       <TimeBreakdownSection
         runId={runId}
