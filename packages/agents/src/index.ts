@@ -7,3 +7,5 @@ export { syncMain, type SyncCliIo } from "./sync-cli.js";
 export * from "./understander.js";
 // TDM-60 [6.6]: the kit designer role: design / fix / repair inputs, the structured draft.
 export * from "./kit-designer.js";
+// TDM-187 [16.16]: the skeptic role's input (no score field), output, verification and model rule.
+export * from "./skeptic.js";

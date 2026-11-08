@@ -76,6 +76,9 @@ describe.skipIf(!available)("kit designer stage (TDM-60)", () => {
   let userId: string;
   let ingest: RepoIngest;
   const naive = new FakeNaive();
+  // TDM-187: the default skeptic runs on every validated kit; its model finds nothing here, so
+  // the verdict is the deterministic checks' (no block on a generated cli kit).
+  naive.scriptDefault("skeptic", { output: { verdict: "pass", summary: "", findings: [] } });
   const cacheDir = mkdtempSync(path.join(tmpdir(), "tdm60-cache-"));
   const genDir = mkdtempSync(path.join(tmpdir(), "tdm60-gen-"));
 

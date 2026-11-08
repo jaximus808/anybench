@@ -14,7 +14,8 @@
 //        writes `<ANYBENCH_GENERATED_KITS_DIR>/<run>/v<n>/`, validates it (loadKit + comparability
 //        + no-leak lint). Validation issues → the designer is re-asked ONCE (mode "fix") with
 //        them; still invalid → needs_human with the issues.
-//     4. The skeptic seam (TDM-187: a different model family reviews the kit before proof).
+//     4. The skeptic (TDM-187, orchestrator/skeptic.ts kitSkeptic): a different model family reviews
+//        the kit before proof; blocks are re-asked once as fix issues (repair), else the run holds.
 //     5. → {spec, files_dir}: advance.ts stores the kit row (file:// files_url), env_build and the
 //        proof stage read the files; a failed proof comes back here as a repair (×2, advance.ts).
 import { existsSync } from "node:fs";
@@ -65,8 +66,12 @@ export const KIT_DESIGNER_FIX_ATTEMPTS = 1;
 /** The TDM-187 seam: a second opinion on a validated kit, before it goes to env build + proof. */
 export type KitSkeptic = (
   ctx: StageContext,
-  kit: { spec: KitSpec; dir: string; draft: KitDesignerOutput },
-) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  kit: { spec: KitSpec; dir: string; draft: KitDesignerOutput; attempt?: number },
+) => Promise<
+  | { ok: true }
+  // `repair`: the blocking findings, re-asked as fix issues (findings only, never scores).
+  | { ok: false; reason: string; repair?: string[] }
+>;
 
 /** Until TDM-187: no second opinion. */
 export const noSkeptic: KitSkeptic = async () => ({ ok: true });
@@ -260,7 +265,12 @@ export function naiveKitDesigner(opts: KitDesignerOptions): AgentStagePort["desi
         );
         continue;
       }
-      const second = await skeptic(ctx, { spec: built.spec, dir, draft: current });
+      const second = await skeptic(ctx, { spec: built.spec, dir, draft: current, attempt });
+      if (!second.ok && second.repair && attempt < KIT_DESIGNER_FIX_ATTEMPTS) {
+        issues = second.repair;
+        await say(ctx, `kit v${version} draft ${attempt + 1}: the skeptic asked for a repair`);
+        continue;
+      }
       if (!second.ok) return stageHold(`the kit skeptic refused the kit: ${second.reason}`);
       const subject = built.spec.contenders.find((c) => c.role === "subject");
       await say(

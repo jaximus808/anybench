@@ -35,6 +35,7 @@ import type { Config } from "../config.js";
 import { runAgentStage } from "../jobs/agent-session.js";
 import { curatedKitStages, isTandemRepo } from "./curated.js";
 import { naiveKitDesigner, type KitDesignerOptions } from "./kit-designer.js";
+import { kitSkeptic } from "./skeptic.js";
 import {
   stageFail,
   stageHold,
@@ -165,6 +166,8 @@ export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort 
       ...(opts.ingestCacheDir ? { ingestCacheDir: opts.ingestCacheDir } : {}),
       ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
       ...(opts.ingest ? { ingest: opts.ingest } : {}),
+      // TDM-187: the independent skeptic between kit validation and proof.
+      skeptic: kitSkeptic({ db: opts.db, client: opts.client }),
       ...opts.kitDesigner,
     });
   return {

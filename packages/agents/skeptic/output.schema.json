@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["pass", "repair", "hold"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check": {
+            "type": "string",
+            "enum": [
+              "solution_leakage",
+              "answer_in_workloads",
+              "noop_passable",
+              "weak_do_less",
+              "one_sided_assist",
+              "one_sided_weight",
+              "contamination",
+              "comparability",
+              "ungated_measure",
+              "too_few_tasks",
+              "kit_invalid",
+              "other"
+            ]
+          },
+          "severity": { "type": "string", "enum": ["block", "warn"] },
+          "evidence": { "type": "string" },
+          "quote": { "type": "string" },
+          "why": { "type": "string" }
+        },
+        "required": ["check", "severity", "evidence", "quote", "why"]
+      }
+    }
+  },
+  "required": ["verdict", "summary", "findings"]
+}

@@ -18,3 +18,5 @@ export * from "./proof/index.js";
 export * from "./mine/index.js";
 // TDM-60 [6.6]: generated kits (draft schema, pins, materializer, no-leak lint).
 export * from "./generate/index.js";
+// TDM-187 [16.16]: the skeptic's deterministic checks, finding shape and model-family rule.
+export * from "./skeptic/index.js";

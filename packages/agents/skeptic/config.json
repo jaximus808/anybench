@@ -1,0 +1,13 @@
+{
+  "role": "skeptic",
+  "model": "openai/gpt-5-mini",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench skeptic (E16 16.16): audits every test plan for leakage, no-op passes, one-sided help or weights, contamination and too-small claims, on a model family independent of the kit designer and every contender.",
+  "budget": {
+    "cap_micro_usd": 5000000,
+    "max_task_micro_usd": 150000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}
