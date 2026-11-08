@@ -329,7 +329,11 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus, slots }: Fi
       id: `bin.${bin}`,
       at: [x0 + 10, y0 + 4],
       anchor: "start",
-      title: bin === "pass" ? "PASSED GATE" : bin === "fail" ? "FAILED GATE" : "OURS · NOT BILLED",
+      title:
+        bin === "pass" ? "PASSED GATE" : bin === "fail" ? "FAILED GATE" : "REQUEUED · NOT BILLED",
+      ...(bin === "infra" && counts.infra > 0
+        ? { sub: "our failure, retrying on a fresh computer" }
+        : {}),
       count: counts[bin],
       tone: bin === "pass" ? "pass" : bin === "fail" ? "fail" : "muted",
     });

@@ -116,7 +116,9 @@ async function expectCountersMatch(rec: ReturnType<typeof recordRun>, seq: numbe
   await waitFor(() => {
     expect(counter("trials done")).toBe(`${c.done}/${c.total}trials done`);
     expect(counter("running now")).toBe(`${c.running}running now`);
-    expect(counter("our failures, not billed")).toBe(`${c.infra}our failures, not billed`);
+    expect(counter("requeued (our failures, not billed)")).toBe(
+      `${c.infra}requeued (our failures, not billed)`,
+    );
     expect(spendText()).toContain(formatUsd(f.spent));
   });
 }

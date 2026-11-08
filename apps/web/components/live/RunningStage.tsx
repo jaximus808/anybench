@@ -64,7 +64,7 @@ export function RunningStage({
           </dd>
         </div>
         <div data-tone="infra">
-          <dt>ours, not billed</dt>
+          <dt>requeued, not billed</dt>
           <dd className="num" key={c.infra}>
             {c.infra}
           </dd>

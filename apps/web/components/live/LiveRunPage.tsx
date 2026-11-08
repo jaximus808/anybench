@@ -417,7 +417,7 @@ export function LiveRunView({
                 {chip("active", "running now", counts.running)}
                 {chip("passed", "passed gate", counts.passed)}
                 {chip("failed", "failed", counts.failed)}
-                {chip("infra", "our failures, not billed", counts.infra)}
+                {chip("infra", "requeued (our failures, not billed)", counts.infra)}
               </div>
               <TrialMatrix
                 live={live}
@@ -430,7 +430,7 @@ export function LiveRunView({
                 <li data-tone="active">running</li>
                 <li data-tone="passed">passed gate</li>
                 <li data-tone="failed">failed</li>
-                <li data-tone="infra">our failure, not billed</li>
+                <li data-tone="infra">requeued: our failure, not billed</li>
               </ul>
             </section>
           </div>

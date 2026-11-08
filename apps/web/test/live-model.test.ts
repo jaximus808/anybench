@@ -109,7 +109,7 @@ describe("live model", () => {
     expect(pass).toBeTruthy();
     if (!pass || pass.type !== "trial.gate") return;
     const base = applyEvents(initLive(demo.snapshot), all.slice(0, all.indexOf(pass) + 1));
-    const tid = pass.source_id;
+    const tid = pass.source_id!;
     expect(base.trials[tid]!.gate?.passed).toBe(true);
     const na = {
       ...pass,
