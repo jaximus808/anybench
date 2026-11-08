@@ -179,7 +179,7 @@ describe.skipIf(!available)("demo proof, scoring and summary", () => {
   it("the Tandem repo: curated proof, fake trials, scoreKit, the summary, delivered; GET /runs/:id/report", async () => {
     const { w, queue } = worker(() => curatedKitStages(), pipeline());
     const id = await createRun(queue, {
-      question: "Does Tandem beat Claude Code?",
+      question: "Smoke test: does Tandem beat Claude Code?",
       source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
     });
     await drainTdm54(w, queue);

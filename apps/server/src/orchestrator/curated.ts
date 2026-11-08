@@ -44,6 +44,16 @@ export function wantsFullBenchmark(question: string): boolean {
   return /full\s+benchmark/i.test(question);
 }
 
+/** The 3-trial smoke cut when the question says "smoke" (any case). */
+export function wantsSmoke(question: string): boolean {
+  return /\bsmoke\b/i.test(question);
+}
+
+/** The head-to-head profile's contenders: plain Claude Code vs Tandem. */
+export const HEAD_TO_HEAD_CONTENDERS = ["claude-code-solo", "tandem"] as const;
+/** Repeats per task in the head-to-head profile. */
+export const HEAD_TO_HEAD_REPEATS = 5;
+
 /** Trials the scheduler will plan for a kit (warm-ups included). */
 export function trialCount(spec: KitSpec): number {
   return expandTrials(expandTrialsInputFromKit("count", spec)).length;
@@ -71,6 +81,36 @@ export function smokeProfile(
     return {
       ok: false,
       reason: `the smoke profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
+    };
+  }
+  return { ok: true, spec: r.data };
+}
+
+/**
+ * The head-to-head profile, the Tandem repo's default: A (Claude Code solo) vs Tandem ×3 on all
+ * three tasks, 5 repeats each, no warm-up: 30 trials, paired by task. It answers "is Tandem better
+ * than plain Claude Code?" with enough trials for wall clock and cost to say something; the
+ * subagents setup and Tandem ×1/×5 stay in the full kit. Re-validated after the cut.
+ */
+export function headToHeadProfile(
+  spec: KitSpec,
+): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
+  const keep = new Set<string>(HEAD_TO_HEAD_CONTENDERS);
+  const cut = {
+    ...spec,
+    contenders: spec.contenders.filter((c) => keep.has(c.id)),
+    repeats: HEAD_TO_HEAD_REPEATS,
+    schedule: { ...spec.schedule, warmups: 0 },
+    vary: { ...spec.vary, TANDEM_WORKERS: [3] },
+  };
+  if (cut.contenders.length !== keep.size) {
+    return { ok: false, reason: "the curated Tandem kit is missing a head-to-head contender" };
+  }
+  const r = safeParseKitSpec(cut);
+  if (!r.success) {
+    return {
+      ok: false,
+      reason: `the head-to-head profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
     };
   }
   return { ok: true, spec: r.data };
@@ -189,14 +229,24 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
         await say(ctx, "kit_designer", `full profile: ${trialCount(kit.spec)} trials`);
         return stageOk({ spec: kit.spec, files_dir });
       }
-      const smoke = smokeProfile(kit.spec);
-      if (!smoke.ok) return stageHold(smoke.reason);
+      if (wantsSmoke(ctx.run.question)) {
+        const smoke = smokeProfile(kit.spec);
+        if (!smoke.ok) return stageHold(smoke.reason);
+        await say(
+          ctx,
+          "kit_designer",
+          `smoke profile: ${trialCount(smoke.spec)} trials (${SMOKE_WORKLOAD}, 1 repeat, no warm-up, TANDEM_WORKERS=3); ask for a "full benchmark" for the whole kit`,
+        );
+        return stageOk({ spec: smoke.spec, files_dir });
+      }
+      const h2h = headToHeadProfile(kit.spec);
+      if (!h2h.ok) return stageHold(h2h.reason);
       await say(
         ctx,
         "kit_designer",
-        `smoke profile: ${trialCount(smoke.spec)} trials (${SMOKE_WORKLOAD}, 1 repeat, no warm-up, TANDEM_WORKERS=3); ask for a "full benchmark" for the whole kit`,
+        `head-to-head profile: ${trialCount(h2h.spec)} trials (Claude Code solo vs Tandem ×3, ${h2h.spec.workloads.length} tasks × ${HEAD_TO_HEAD_REPEATS} repeats, no warm-up); say "smoke" for a 3-trial check or "full benchmark" for the whole kit`,
       );
-      return stageOk({ spec: smoke.spec, files_dir });
+      return stageOk({ spec: h2h.spec, files_dir });
     },
 
     async analyze(ctx, input) {

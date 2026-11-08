@@ -43,7 +43,12 @@ import {
 import { KitLoadError, loadKit } from "@anybench/kit";
 import { z } from "zod";
 import { isProven, kitSpecHash, proofOf } from "../routes/kits.js";
-import { CURATED_TANDEM_KIT, defaultKitsDir, smokeProfile } from "./curated.js";
+import {
+  CURATED_TANDEM_KIT,
+  defaultKitsDir,
+  headToHeadProfile,
+  smokeProfile,
+} from "./curated.js";
 import {
   RunStageOutputsShape,
   stageHold,
@@ -108,9 +113,13 @@ export function curatedProof(opts: { kitsDir?: string } = {}): PipelinePort["pro
       if (!(err instanceof KitLoadError)) throw err;
       return hold(PROOF_SUITE_UNAVAILABLE);
     }
-    const smoke = smokeProfile(curated);
-    const hashes = new Set([kitSpecHash(curated), ...(smoke.ok ? [kitSpecHash(smoke.spec)] : [])]);
-    // Only the kit that was proven offline (or its smoke cut): an edited kit is a different kit.
+    // Only the kit that was proven offline (or its smoke / head-to-head cut): an edited kit is a
+    // different kit. The cuts drop setups, tasks or repeats; every task and check they keep is proven.
+    const cuts = [smokeProfile(curated), headToHeadProfile(curated)];
+    const hashes = new Set([
+      kitSpecHash(curated),
+      ...cuts.flatMap((c) => (c.ok ? [kitSpecHash(c.spec)] : [])),
+    ]);
     if (!hashes.has(kitSpecHash(input.kit))) return hold(PROOF_SUITE_UNAVAILABLE);
 
     const signoff = TANDEM_PROOF_SIGNOFF;

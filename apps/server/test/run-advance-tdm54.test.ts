@@ -45,6 +45,8 @@ import {
   defaultKitsDir,
   isTandemRepo,
   smokeProfile,
+  headToHeadProfile,
+  wantsSmoke,
   trialCount,
   wantsFullBenchmark,
 } from "../src/orchestrator/curated.js";
@@ -559,7 +561,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       }) as never,
     );
     const id = await createRun(r.queue, {
-      question: "Does Tandem beat Claude Code?",
+      question: "Smoke: does Tandem beat Claude Code?",
       source: { kind: "github", github: "https://github.com/Jaximus808/Tandem.git", ref: "main" },
     });
     await drainTdm54(w, r.queue);
@@ -624,7 +626,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     }
   }, 60_000);
 
-  it("CuratedKitStage: the Tandem kit defaults to the 3-trial smoke profile; 'full benchmark' gets all of it", async () => {
+  it("CuratedKitStage: the Tandem kit defaults to head-to-head (30 trials); 'smoke' gets 3 trials, 'full benchmark' all of it", async () => {
     const full = await loadKit(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
     const smoke = smokeProfile(full.spec);
     expect(smoke.ok).toBe(true);
@@ -639,9 +641,21 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect(trialCount(full.spec)).toBeGreaterThan(3);
     expect(wantsFullBenchmark("Run the FULL Benchmark please")).toBe(true);
     expect(wantsFullBenchmark("Does Tandem beat Claude Code?")).toBe(false);
+    expect(wantsSmoke("smoke test: does Tandem run?")).toBe(true);
+    expect(wantsSmoke("Does Tandem beat Claude Code?")).toBe(false);
+    const h2h = headToHeadProfile(full.spec);
+    expect(h2h.ok).toBe(true);
+    if (!h2h.ok) return;
+    expect(h2h.spec.contenders.map((c) => c.id).sort()).toEqual(["claude-code-solo", "tandem"]);
+    expect(h2h.spec.workloads.map((w) => w.id).sort()).toEqual(
+      ["auth-refactor", "bug-hunt", "todo-api"].sort(),
+    );
+    expect(h2h.spec).toMatchObject({ repeats: 5, schedule: { warmups: 0 } });
+    expect(trialCount(h2h.spec)).toBe(30);
 
     for (const [question, expected] of [
-      ["Does Tandem beat Claude Code?", "smoke profile: 3 trials"],
+      ["smoke: does Tandem run?", "smoke profile: 3 trials"],
+      ["Does Tandem beat Claude Code?", "head-to-head profile: 30 trials"],
       [
         "full benchmark: does Tandem beat Claude Code?",
         `full profile: ${trialCount(full.spec)} trials`,
@@ -680,7 +694,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       );
       const stored = safeParseKitSpec(kit!.spec);
       expect(stored.success && trialCount(stored.data)).toBe(
-        expected.startsWith("smoke") ? 3 : trialCount(full.spec),
+        expected.startsWith("smoke") ? 3 : expected.startsWith("head") ? 30 : trialCount(full.spec),
       );
     }
   }, 60_000);
