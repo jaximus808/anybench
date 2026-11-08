@@ -294,6 +294,9 @@ importers:
       '@anybench/naive':
         specifier: workspace:*
         version: link:../naive
+      '@anybench/providers':
+        specifier: workspace:*
+        version: link:../providers
       yaml:
         specifier: ^2.9.1
         version: 2.9.1

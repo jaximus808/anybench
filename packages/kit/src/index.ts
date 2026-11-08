@@ -14,3 +14,5 @@ export * from "./drivers/index.js";
 export * from "./comparability.js";
 // TDM-44 [4.12]: the six proof checks and their runner port.
 export * from "./proof/index.js";
+// TDM-186 [16.15]: task mining from the repo's history.
+export * from "./mine/index.js";
