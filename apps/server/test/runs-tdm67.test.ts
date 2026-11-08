@@ -23,6 +23,7 @@ import {
   forceRunStateTdm67,
   kitSpecTdm67,
   runsAppTdm67,
+  seedApiKeyTdm67,
   seedKitTdm67,
   seedUserTdm67,
   type RunsAppTdm67,
@@ -576,6 +577,67 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     } finally {
       await dbh.close();
     }
+  });
+
+  it("API key scopes: run-scoped keys see only their runs; runs:read keys cannot write", async () => {
+    const mine = await newRun();
+    const other = await newRun();
+    await forceRunStateTdm67(db.db, mine.id, "kit_draft");
+    await forceRunStateTdm67(db.db, other.id, "kit_draft");
+    const kitOther = (
+      (await raw(h, alice, "PATCH", `/runs/${other.id}/kit`, { spec: kitSpecTdm67() })).json as {
+        kit: { id: string };
+      }
+    ).kit.id;
+    await raw(h, alice, "PATCH", `/runs/${mine.id}/kit`, { spec: kitSpecTdm67() });
+
+    // A read+write key limited to `mine`.
+    const scoped = clientFor(
+      h,
+      await seedApiKeyTdm67(db.db, alice, ["runs:read", "runs:write"], [mine.id]),
+    );
+    expect((await scoped.runs.get({ params: { id: mine.id } })).run.id).toBe(mine.id);
+    await expectApiError(scoped.runs.get({ params: { id: other.id } }), 403, "forbidden");
+    await expectApiError(scoped.runs.cancel({ params: { id: other.id }, body: {} }), 403);
+    await expectApiError(scoped.runs.go({ params: { id: other.id } }), 403);
+    await expectApiError(scoped.kits.get({ params: { id: kitOther as never } }), 403);
+    await expectApiError(
+      scoped.kits.createVersion({
+        params: { id: kitOther as never },
+        body: { spec: kitSpecTdm67() },
+      }),
+      403,
+    );
+    expect((await scoped.runs.list()).items.map((r) => r.id)).toEqual([mine.id]);
+    expect((await scoped.kits.list()).items.every((k) => k.run_id === mine.id)).toBe(true);
+    await expectApiError(scoped.runs.create({ body: githubBody }), 403, "forbidden");
+    await expectApiError(scoped.scan.list(), 403, "forbidden");
+
+    // A runs:read key (all runs) reads but cannot POST, PATCH, go or cancel.
+    const reader = clientFor(h, await seedApiKeyTdm67(db.db, alice, ["runs:read"]));
+    expect((await reader.runs.get({ params: { id: other.id } })).run.id).toBe(other.id);
+    expect((await reader.runs.list()).items.map((r) => r.id)).toContain(other.id);
+    const before = (await a.runs.list({ query: { limit: 200 } })).items.length;
+    const denied = await expectApiError(reader.runs.create({ body: githubBody }), 403, "forbidden");
+    expect(denied.message).toContain("runs:write");
+    expect((await a.runs.list({ query: { limit: 200 } })).items.length).toBe(before);
+    await expectApiError(reader.runs.cancel({ params: { id: other.id }, body: {} }), 403);
+    await expectApiError(reader.scan.create({ body: { github_owner: "jaximus808" } }), 403);
+    await expectApiError(
+      reader.kits.createVersion({
+        params: { id: kitOther as never },
+        body: { spec: kitSpecTdm67() },
+      }),
+      403,
+    );
+    expect((await reader.scan.list()).items).toBeDefined();
+
+    // A key with neither scope (events only) is refused everywhere here; a bad key is a 401.
+    const events = clientFor(h, await seedApiKeyTdm67(db.db, alice, ["events:read"]));
+    await expectApiError(events.runs.get({ params: { id: mine.id } }), 403);
+    await expectApiError(events.runs.list(), 403);
+    const bogus = clientFor(h, `ab_test_${"x".repeat(43)}`);
+    await expectApiError(bogus.runs.list(), 401, "unauthorized");
   });
 
   it("keeps kits and events owned by the run's owner", async () => {

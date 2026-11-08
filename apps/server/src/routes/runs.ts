@@ -13,6 +13,8 @@
 //
 // Tenancy: every read and write goes through scopedDb(actor), so RLS limits a user to their own
 // runs and a foreign or unknown run id is a 404 (no existence leak).
+// Auth (TDM-66 requireScope): GET routes need `runs:read`, writes need `runs:write`; a key limited
+// to specific runs gets 403 on any other run id, only lists its own runs, and cannot create runs.
 //
 // Go and the billing gate: `deps.billingGate(actor, estimate)` (lib/billing-gate.ts). Its default
 // allows only under BILLING_MODE=off; in test/live it answers the contract's 402
@@ -58,11 +60,12 @@ import {
   isoOrNull,
   parseOrFail,
   send,
-  withActor,
+  runLimited,
   type ActorContext,
   type ActorEnv,
   type RouteActor,
 } from "../lib/api-route.js";
+import { requireScope, runIdsOf } from "../lib/auth-key.js";
 import type { BillingGate } from "../lib/billing-gate.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
@@ -307,9 +310,12 @@ async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
 export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
   const r = new Hono<ActorEnv>();
   // Per route, not r.use: this router shares the /runs mount with the events router.
-  const auth = withActor(deps);
+  const read = requireScope(deps, "runs:read");
+  const write = requireScope(deps, "runs:write");
+  const readRun = requireScope(deps, "runs:read", { runIdParam: "id" });
+  const writeRun = requireScope(deps, "runs:write", { runIdParam: "id" });
 
-  r.get("/", auth, async (c) => {
+  r.get("/", read, async (c) => {
     const route = contract.list;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -318,6 +324,11 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     if (cursor === null)
       return fail(c, "validation_failed", "invalid cursor", ["query.cursor: invalid cursor"]);
     const where: SQL[] = [];
+    // A run-scoped API key lists only its own runs (RLS already limits it to the owner's).
+    const allowed = runIdsOf(c.get("actor"));
+    if (allowed !== null && allowed.length === 0)
+      return send(c, route, { items: [], next_cursor: null });
+    if (allowed !== null) where.push(inArray(runs.id, [...allowed]));
     if (query.state) where.push(inArray(runs.state, query.state));
     if (cursor)
       where.push(
@@ -340,8 +351,10 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     });
   });
 
-  r.post("/", auth, async (c) => {
+  r.post("/", write, async (c) => {
     const route = contract.create;
+    if (runLimited(c.get("actor")))
+      return fail(c, "forbidden", "an API key limited to specific runs cannot create runs");
     const parsed = await parseOrFail(c, route, {
       "idempotency-key": c.req.header("idempotency-key"),
     });
@@ -454,7 +467,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     return send(c, route, { run: toRun(created.run) });
   });
 
-  r.get("/:id", auth, async (c) => {
+  r.get("/:id", readRun, async (c) => {
     const route = contract.get;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -473,7 +486,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
   // Ticket alias (TDM-67) for editing the run's current kit. The registry route is
   // kits.createVersion (POST /kits/:id/versions); this one also works before a kit exists
   // (creates version 1). Same body and response as kits.createVersion.
-  r.patch("/:id/kit", auth, async (c) => {
+  r.patch("/:id/kit", writeRun, async (c) => {
     const kitRoute = apiRoutes.kits.createVersion;
     const idOk = RunIdSchema.safeParse(c.req.param("id"));
     if (!idOk.success)
@@ -502,7 +515,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     return send(c, kitRoute, { kit: result.kit });
   });
 
-  r.post("/:id/go", auth, async (c) => {
+  r.post("/:id/go", writeRun, async (c) => {
     const route = contract.go;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -548,7 +561,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     return send(c, route, { run: toRun(moved.run) });
   });
 
-  r.post("/:id/cancel", auth, async (c) => {
+  r.post("/:id/cancel", writeRun, async (c) => {
     const route = contract.cancel;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;

@@ -13,7 +13,8 @@
 // to `proof`, so the gate lives on Go.
 //
 // Every read and write runs through scopedDb(actor): RLS hides other users' kits, so a foreign
-// kit id is a 404.
+// kit id is a 404. Auth (TDM-66 requireScope): reads and validate need `runs:read`, new versions
+// `runs:write`; a key limited to specific runs sees only those runs' kits (403 for any other).
 import { createHash } from "node:crypto";
 import {
   apiRoutes,
@@ -29,7 +30,7 @@ import {
   type ProofCheckResult,
   type RunState,
 } from "@anybench/core";
-import { and, desc, eq, max, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, max, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { DbTx } from "../db/client.js";
@@ -43,12 +44,13 @@ import {
   fail,
   iso,
   parseOrFail,
+  runAllowed,
   send,
-  withActor,
   type ActorContext,
   type ActorEnv,
   type RouteActor,
 } from "../lib/api-route.js";
+import { requireScope, runIdsOf } from "../lib/auth-key.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
 import type { AppDeps } from "../types.js";
@@ -134,7 +136,8 @@ export async function toKitDetail(tx: DbTx, row: KitRow): Promise<KitDetail> {
 // New kit version (shared with PATCH /runs/:id/kit)
 
 export type NewKitVersionResult =
-  { ok: true; kit: KitDetail } | { ok: false; code: "not_found" | "conflict"; message: string };
+  | { ok: true; kit: KitDetail }
+  | { ok: false; code: "not_found" | "conflict" | "forbidden"; message: string };
 
 /**
  * Store `spec` as the next version of `runId`'s kit and point the run at it. Locks the run row,
@@ -215,9 +218,11 @@ export function kitSpecIssues(
 
 export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
   const r = new Hono<ActorEnv>();
-  r.use(withActor(deps));
+  const read = requireScope(deps, "runs:read");
+  const write = requireScope(deps, "runs:write");
+  const wrongRun = (c: ActorContext) => fail(c, "forbidden", "API key is not valid for this run");
 
-  r.get("/", async (c) => {
+  r.get("/", read, async (c) => {
     const route = contract.list;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -226,6 +231,10 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     if (cursor === null)
       return fail(c, "validation_failed", "invalid cursor", ["query.cursor: invalid cursor"]);
     const where: SQL[] = [];
+    const allowed = runIdsOf(c.get("actor"));
+    if (allowed !== null && allowed.length === 0)
+      return send(c, route, { items: [], next_cursor: null });
+    if (allowed !== null) where.push(inArray(kits.runId, [...allowed]));
     if (query.run_id) where.push(eq(kits.runId, query.run_id));
     if (cursor)
       where.push(
@@ -248,7 +257,7 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     });
   });
 
-  r.post("/validate", async (c) => {
+  r.post("/validate", read, async (c) => {
     const route = contract.validate;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -260,23 +269,26 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     );
   });
 
-  r.get("/:id", async (c) => {
+  r.get("/:id", read, async (c) => {
     const route = contract.get;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
-    const detail = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
+    const actor = c.get("actor");
+    const detail = await scopedDb(actor, deps.db).transaction(async (tx) => {
       const [row] = await tx
         .select()
         .from(kits)
         .where(eq(kits.id, parsed.request.params.id))
         .limit(1);
-      return row ? toKitDetail(tx, row) : undefined;
+      if (!row) return undefined;
+      return runAllowed(actor, row.runId) ? toKitDetail(tx, row) : ("wrong_run" as const);
     });
     if (!detail) return fail(c, "not_found", "kit not found");
+    if (detail === "wrong_run") return wrongRun(c);
     return send(c, route, { kit: detail });
   });
 
-  r.post("/:id/versions", async (c) => {
+  r.post("/:id/versions", write, async (c) => {
     const route = contract.createVersion;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -290,6 +302,8 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
           .where(eq(kits.id, params.id))
           .limit(1);
         if (!base) return { ok: false, code: "not_found", message: "kit not found" };
+        if (!runAllowed(actor, base.runId))
+          return { ok: false, code: "forbidden", message: "API key is not valid for this run" };
         return insertKitVersion(tx, actor, base.runId, body.spec, body.files_upload_id);
       },
     );
@@ -298,18 +312,19 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
     return send(c, route, { kit: result.kit });
   });
 
-  r.get("/:id/download", async (c) => {
+  r.get("/:id/download", read, async (c) => {
     const parsed = await parseOrFail(c, contract.download);
     if (!parsed.ok) return parsed.response;
-    const found = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
-      const [row] = await tx
-        .select({ id: kits.id })
+    const actor = c.get("actor");
+    const [row] = await scopedDb(actor, deps.db).transaction((tx) =>
+      tx
+        .select({ runId: kits.runId })
         .from(kits)
         .where(eq(kits.id, parsed.request.params.id))
-        .limit(1);
-      return row !== undefined;
-    });
-    if (!found) return fail(c, "not_found", "kit not found");
+        .limit(1),
+    );
+    if (!row) return fail(c, "not_found", "kit not found");
+    if (!runAllowed(actor, row.runId)) return wrongRun(c);
     return fail(c, "not_implemented", "kit download needs the artifact store (uploads, [7.4])");
   });
 

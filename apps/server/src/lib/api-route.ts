@@ -1,8 +1,8 @@
 // Small Hono glue over the core route contract (TDM-67), shared by the runs, kits and scan routers.
 //
-// - `withActor(deps)`: authenticates through `deps.authenticate` (the session cookie by default,
-//   TDM-65; the API-key ticket TDM-66 wraps the same port), so routers never read cookies or keys
-//   themselves and stay unchanged when the authenticator grows. Sets `c.get("actor")`.
+// - Auth is TDM-66's `requireScope(deps, scope, {runIdParam})` (lib/auth-key.ts): it sets
+//   `c.get("actor")` (an AuthActor: the user, plus the API key's scopes and run ids if any).
+//   Routes whose path id is not a run id (kits, scans, lists) check `runAllowed` / `runIdsOf`.
 // - `parseOrFail` / `send`: validate the request and the response against the core descriptor.
 //   Every success body passes `encodeRouteResponse`, which throws (500) rather than break the
 //   contract. Errors are core ApiErrorBody JSON.
@@ -17,24 +17,26 @@ import {
   type RouteRequest,
   type RouteResult,
   type RouteSpec,
-  type UserId,
 } from "@anybench/core";
-import type { Context, MiddlewareHandler } from "hono";
+import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { AppDeps, AppEnv } from "../types.js";
+import type { AppEnv } from "../types.js";
+import { actorCanAccessRun, type ActorEnv, type AuthActor } from "./auth-key.js";
 
-/** The caller of a tenant route: always a user (API keys resolve to their owner). */
-export interface RouteActor {
-  kind: "user";
-  userId: UserId;
-}
-
-/** Hono env for routers behind `withActor`. */
-export interface ActorEnv {
-  Variables: AppEnv["Variables"] & { actor: RouteActor };
-}
-
+export type { ActorEnv } from "./auth-key.js";
+/** The caller of a tenant route (TDM-66 AuthActor). */
+export type RouteActor = AuthActor;
 export type ActorContext = Context<ActorEnv>;
+
+/** Whether the actor may touch `runId`: always for a session, only listed runs for a scoped key. */
+export function runAllowed(actor: AuthActor, runId: string): boolean {
+  return actorCanAccessRun(actor, runId);
+}
+
+/** True for an API key limited to specific runs (it may not create runs or scans). */
+export function runLimited(actor: AuthActor): boolean {
+  return actor.apiKey?.runIds != null;
+}
 
 /** JSON error with the core ApiErrorBody shape and the status that code implies. */
 export function fail(
@@ -50,17 +52,6 @@ export function fail(
     }),
     API_ERROR_STATUS[code] as ContentfulStatusCode,
   );
-}
-
-/** 401 without credentials; 403 for a non-user actor (system actors never call tenant routes). */
-export function withActor(deps: Pick<AppDeps, "authenticate">): MiddlewareHandler<ActorEnv> {
-  return async (c, next) => {
-    const actor = deps.authenticate ? await deps.authenticate(c.req.raw) : null;
-    if (!actor) return fail(c, "unauthorized", "sign in or pass an API key");
-    if (actor.kind !== "user") return fail(c, "forbidden", "tenant routes need a user");
-    c.set("actor", { kind: "user", userId: actor.userId.toLowerCase() as UserId });
-    await next();
-  };
 }
 
 /** The request body as JSON: undefined when empty, a 400 marker when it is not JSON. */

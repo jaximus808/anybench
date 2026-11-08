@@ -1,12 +1,18 @@
 // TDM-67 test helpers: an app with a Bearer-<user id> authenticator, a recording job queue and an
 // optional billing gate, plus seeding for users, runs in a given state, and proven kits.
 import { readFileSync } from "node:fs";
-import { PROOF_CHECKS, type KitSpec, type RunState } from "@anybench/core";
+import { PROOF_CHECKS, type ApiKeyScope, type KitSpec, type RunState } from "@anybench/core";
 import { eq } from "drizzle-orm";
 import { createApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { createDb, type Database, type DbHandle } from "../../src/db/client.js";
-import { kits, runs, users } from "../../src/db/schema/index.js";
+import { apiKeys, kits, runs, users } from "../../src/db/schema/index.js";
+import {
+  apiKeyDisplayPrefix,
+  hashApiKey,
+  newApiKeySecret,
+  resolveApiKey,
+} from "../../src/lib/auth-key.js";
 import type { BillingGate } from "../../src/lib/billing-gate.js";
 import type { JobQueue } from "../../src/lib/job-queue.js";
 import type { AppDeps } from "../../src/types.js";
@@ -61,9 +67,12 @@ export function runsAppTdm67(
     logger: silentLoggerTdm14(),
     db: dbh.db,
     sentry: recordingSentryTdm14(),
+    // `Bearer ab_…` is a real API key (TDM-66); any other Bearer value is taken as a user id.
     authenticate: async (req) => {
       const m = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "");
-      return m ? { kind: "user", userId: m[1]! } : null;
+      if (!m) return null;
+      if (m[1]!.startsWith("ab_")) return resolveApiKey({ db: dbh.db, config }, m[1]!);
+      return { kind: "user", userId: m[1]! };
     },
     jobs,
   };
@@ -123,4 +132,23 @@ export async function seedKitTdm67(db: Database, runId: string, proven: boolean)
     .returning({ id: kits.id });
   await db.update(runs).set({ kitId: kit!.id }).where(eq(runs.id, runId));
   return kit!.id;
+}
+
+/** Insert an API key for `userId` and return its secret (as TDM-66 stores it: hash only). */
+export async function seedApiKeyTdm67(
+  db: Database,
+  userId: string,
+  scopes: ApiKeyScope[],
+  runIds: string[] | null = null,
+): Promise<string> {
+  const secret = newApiKeySecret("test");
+  await db.insert(apiKeys).values({
+    ownerId: userId,
+    name: "tdm67",
+    prefix: apiKeyDisplayPrefix(secret),
+    hash: hashApiKey(secret),
+    scopes,
+    runIds,
+  });
+  return secret;
 }

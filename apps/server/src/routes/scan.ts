@@ -6,7 +6,9 @@
 //
 // No GitHub or Naïve call happens here. The understander ([6.2], scan flow [11.7]) picks up queued
 // scans, fills `repos` with one verdict each and sets status/cost/finished_at.
-// RLS (scans_tenant, migration 0003): a foreign scan id is a 404.
+// RLS (scans_tenant, migration 0003): a foreign scan id is a 404. Auth (TDM-66 requireScope):
+// reads need `runs:read`, create `runs:write`; a key limited to specific runs gets 403 (a scan
+// belongs to no run).
 import { apiRoutes, ScanRepoSchema, uuidv7, type Scan } from "@anybench/core";
 import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
@@ -20,10 +22,12 @@ import {
   iso,
   isoOrNull,
   parseOrFail,
+  runLimited,
   send,
-  withActor,
+  type ActorContext,
   type ActorEnv,
 } from "../lib/api-route.js";
+import { requireScope } from "../lib/auth-key.js";
 import type { AppDeps } from "../types.js";
 
 const contract = apiRoutes.scan;
@@ -80,9 +84,15 @@ function queuedRepo(repo: string): ScanRepo {
 
 export function scanRoutes(deps: AppDeps): Hono<ActorEnv> {
   const r = new Hono<ActorEnv>();
-  r.use(withActor(deps));
+  const read = requireScope(deps, "runs:read");
+  const write = requireScope(deps, "runs:write");
+  const notRunLimited = async (c: ActorContext, next: () => Promise<void>) => {
+    if (runLimited(c.get("actor")))
+      return fail(c, "forbidden", "an API key limited to specific runs cannot use scans");
+    await next();
+  };
 
-  r.post("/", async (c) => {
+  r.post("/", write, notRunLimited, async (c) => {
     const route = contract.create;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -111,7 +121,7 @@ export function scanRoutes(deps: AppDeps): Hono<ActorEnv> {
     return send(c, route, { scan: toScan(row!) });
   });
 
-  r.get("/", async (c) => {
+  r.get("/", read, notRunLimited, async (c) => {
     const route = contract.list;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
@@ -141,7 +151,7 @@ export function scanRoutes(deps: AppDeps): Hono<ActorEnv> {
     });
   });
 
-  r.get("/:id", async (c) => {
+  r.get("/:id", read, notRunLimited, async (c) => {
     const route = contract.get;
     const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
