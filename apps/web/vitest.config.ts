@@ -1,4 +1,12 @@
 import { defineConfig, mergeConfig } from "vitest/config";
 import shared from "../../vitest.shared.js";
 
-export default mergeConfig(shared, defineConfig({}));
+export default mergeConfig(
+  shared,
+  defineConfig({
+    test: {
+      include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+      environment: "jsdom",
+    },
+  }),
+);

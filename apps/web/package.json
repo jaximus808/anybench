@@ -2,25 +2,26 @@
   "name": "web",
   "version": "0.0.0",
   "private": true,
-  "description": "web app placeholder (ticket 11.1 turns this into Next.js)",
+  "description": "Anybench web app (Next.js App Router): marketing site, docs, and the signed-in app",
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
     "test": "vitest run"
   },
   "dependencies": {
-    "@anybench/core": "workspace:*"
+    "@anybench/core": "workspace:*",
+    "next": "16.4.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "jsdom": "^30.1.3"
   }
 }
