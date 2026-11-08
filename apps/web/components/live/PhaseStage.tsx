@@ -20,7 +20,8 @@ import {
   type PhaseLine,
   type PhaseView,
 } from "../../lib/live/phase";
-import { PublishButton } from "../bench/PublishDialog";
+import { useLiveApi } from "../../lib/live/client";
+import { SharePanel } from "../publish/SharePanel";
 import { ResultsPanel } from "../report/ResultsPanel";
 import { clock, span, usd } from "./format";
 import { GoFailureText, useGoAction } from "./GoBar";
@@ -377,15 +378,22 @@ function PhaseBody({
     case "running":
       return <RunningStage live={live} nowMs={nowMs} onOpenTrial={onOpenTrial} slots={slots} />;
     case "delivered":
-      return (
-        <>
-          <PublishButton runId={live.runId} runState={live.state} question={live.question} />
-          <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
-        </>
-      );
+      return <DeliveredBody live={live} />;
     default:
       return <AgentStream live={live} state={view.current.state} nowMs={nowMs} />;
   }
+}
+
+// ---- delivered: share the result, then the results --------------------------------------------
+
+function DeliveredBody({ live }: { live: LiveRun }) {
+  const client = useLiveApi();
+  return (
+    <>
+      <SharePanel runId={live.runId} runState={live.state} client={client} />
+      <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
+    </>
+  );
 }
 
 // ---- agent phases: streaming lines --------------------------------------------------------

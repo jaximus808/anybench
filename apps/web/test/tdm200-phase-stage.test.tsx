@@ -166,6 +166,8 @@ describe("phase stage (TDM-200)", () => {
     const hero = await show(live, T0 + demo.durationMs, "ended");
     expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Delivered");
     expect(await within(hero).findByTestId("results")).toBeTruthy();
+    // Sharing on a delivered run goes through the publish SharePanel.
+    expect(await within(hero).findByTestId("share-panel")).toBeTruthy();
     expect(screen.getByTestId("phase-rail").querySelectorAll('li[data-state="done"]')).toHaveLength(
       11,
     );
