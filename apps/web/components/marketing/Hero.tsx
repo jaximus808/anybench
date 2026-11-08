@@ -21,8 +21,8 @@ export function Hero() {
         <p className={styles.heroSub}>
           Point Anybench at an agent, a harness or any other software. Agents work out what it
           should be compared against and write a benchmark that measures the real work. Naïve&apos;s
-          cloud computers run it. You get a score for each contender, the reasons behind it, and
-          proof the test was fair.
+          cloud computers run it. You get a verdict on each comparison and the reasons behind it,
+          and proof the test was fair.
         </p>
         <EarlyAccessForm />
       </div>
@@ -47,7 +47,7 @@ export function Hero() {
           <div>
             <dt>elapsed</dt>
             <dd>
-              23<small> min</small>
+              1<small> h </small>20<small> min</small>
             </dd>
           </div>
         </dl>

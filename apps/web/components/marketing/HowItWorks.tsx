@@ -18,8 +18,8 @@ const STEPS = [
     body: "Every contender on identical fresh computers, many times over.",
   },
   {
-    title: "Get the score and the why",
-    body: "A score for each contender, where it wins and loses, and what explains it.",
+    title: "Get the verdict and the why",
+    body: "A verdict on each comparison and the reasons behind it: where it wins, where it loses, and what explains it.",
   },
 ];
 

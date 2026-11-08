@@ -18,7 +18,7 @@ const SECTION_HEADINGS = [
   "Five steps from your repo to an answer",
   "Three kinds of project, one way in",
   "What using it looks like",
-  "The benchmark that skips the work",
+  "A faster number only counts if the screen is right",
   "Or type /anybench in Claude Code",
   "Connect GitHub, and it proposes a benchmark for every repo",
   "It knows what to compare against, and it can't be gamed",
@@ -69,19 +69,34 @@ describe("landing page (TDM-99)", () => {
       expect(container.querySelector(`#${id}`)?.tagName).toBe("SECTION");
   });
 
-  it("states the founder's pricing: $2 per run, compute at cost + 50%, own key, $5 credit", () => {
+  it("states the founder's cost-plus pricing, with the cancel and pipeline-failure rules", () => {
     render(<HomePage />);
     const pricing = screen.getByRole("region", { name: "Pay for what runs" });
     const text = pricing.textContent ?? "";
     expect(text).toContain("$2per benchmark run");
-    expect(text).toContain("Plus computer time at cost + 50%, plus model tokens on your own key.");
-    expect(text).toContain("about $0.08 per vCPU-hour, billed in 10-minute blocks");
-    expect(text).toContain("Infrastructure failures are never billed.");
+    expect(text).toContain(
+      "Plus computer time at Naïve's cost + 50%, plus model tokens on your own key.",
+    );
+    expect(text).toContain(
+      "Naïve's cost + 50%: about $0.0756 per vCPU-hour + $0.0243 per GiB-hour, billed in 10-minute blocks.",
+    );
+    expect(text).toContain("If our infrastructure or pipeline fails the run, nothing is billed.");
+    expect(text).toContain("If you cancel mid-run, you pay for the compute used, but no run fee.");
     expect(text).toContain("$5 free credit when you sign up");
     expect(text).toContain("Billed monthly by usage, to the card on file.");
     expect(text).toContain(
-      "estimateA Tandem vs Claude Code benchmark (60 agent trials, ~30 min each) is about $19 plus your tokens; a typical CLI or API benchmark is $2–4.",
+      "estimate60 trials × ~30 min on 4 vCPU / 8 GiB ≈ $15 compute + $2 run fee ≈ $17, plus your tokens.",
     );
+  });
+
+  it("uses one cost and duration model everywhere ($17 for 60 trials, about 2 h)", () => {
+    const { container } = render(<HomePage />);
+    const text = container.textContent ?? "";
+    // Pricing estimate, the Test plan screen and the /anybench transcript.
+    expect(text.match(/≈ \$15 compute \+ \$2 run fee ≈ \$17/g)).toHaveLength(3);
+    expect(text).toContain("about 2 h, 14 at a time");
+    expect(text).not.toMatch(/\$19|40 min|\$40–120|\$0\.08 per vCPU/);
+    expect(text).toContain("$1.58 tokens");
   });
 
   it("carries no trace of the old per-trial price", () => {
@@ -96,8 +111,68 @@ describe("landing page (TDM-99)", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("example numbers");
     expect(text).toContain("example report · made-up numbers");
-    expect(text).toContain("illustrative, not a real run");
+    expect(text).toContain("hypothetical, not a real run");
     expect(text).toContain("example scan");
+  });
+
+  it("example report follows plan.md 17.2: verdicts with n, no composite, no human minutes", () => {
+    render(<HomePage />);
+    const panel = screen.getByRole("tabpanel"); // Results is selected by default
+    const text = panel.textContent ?? "";
+    expect(text).toContain(
+      "On these 3 tasks, Tandem ×3 solves faster than Claude Code with subagents (−9 min, 95% CI −14 to −3). Pass rate: no detectable difference at n=15 per setup (+13 pts, CI −19 to +42; smallest detectable ≈45 pts). ×5 vs ×3: no detectable difference.",
+    );
+    expect(text).toMatch(/\b(better|worse|no detectable difference)\b/);
+    expect(text).toContain("n=");
+    expect(text).toContain("11/15, Wilson 48–89%");
+    expect(text).toContain("Trials passed");
+    expect(text).toContain("Time to solve (failures counted at the cap)");
+    expect(text).toContain("Cost per solved task (all spend ÷ solved)");
+    expect(text).toContain("Simulated approvals");
+    expect(text).toContain(
+      "looked worse in this sample (2/5 vs 3/5), no detectable difference at n=5",
+    );
+    expect(text).not.toMatch(/Human minutes|points above|% faster|Score|Tasks solved|Median time/);
+    expect(text).not.toMatch(/How C got/);
+  });
+
+  it("never claims a difference without a verdict anywhere on the page", () => {
+    const { container } = render(<HomePage />);
+    const text = container.textContent ?? "";
+    expect(text).not.toMatch(/points above|% faster|Human minutes/);
+    expect(text).not.toMatch(/score for each contender/i);
+    expect(text).toContain("a verdict on each comparison and the reasons behind it");
+    expect(metadata.description).toContain(
+      "a verdict on each comparison and the reasons behind it",
+    );
+  });
+
+  it("calls the bug-hunt task a planted bug, never your repo's history", () => {
+    const { container } = render(<HomePage />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("planted bug");
+    expect(text).not.toMatch(/3f2a1c|reverted commit|from your repo's history|from your commit/i);
+  });
+
+  it("states only linkable facts about Velocitty; the chart is a labelled hypothetical", () => {
+    const { container } = render(<HomePage />);
+    const section = screen.getByRole("region", {
+      name: "A faster number only counts if the screen is right",
+    });
+    const text = section.textContent ?? "";
+    expect(text).toContain(
+      "Added automated Ghostty throughput comparisons with raw samples and generated charts.",
+    );
+    expect([...section.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
+      "https://github.com/valvesky/velocitty/releases/tag/v1.3.0",
+    ]);
+    expect(text).toContain("Example: a terminal that drops output");
+    expect(text).toContain("hypothetical, not a real run");
+    // No deleted post, no invented mechanism, no numbers attributed to the project.
+    const page = container.textContent ?? "";
+    expect(page).not.toMatch(/Hashimoto|x\.com|read the source|64 KiB|1 MiB|velocitty 1\.3/i);
+    const chart = section.querySelector("figure")?.textContent ?? "";
+    expect(chart).not.toMatch(/velocitty|ghostty|alacritty/i);
   });
 
   it("shows the four product screens, Results first, and switches with the keyboard", () => {

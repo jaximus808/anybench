@@ -169,21 +169,20 @@ const TASKS = [
   ],
   [
     "bug-hunt",
-    "Fix the bug from your commit 3f2a1c",
-    "Taken from your repo's history. The tests in that commit become the grader.",
+    "Fix a planted bug in the session middleware",
+    "A bug planted on purpose, with hidden tests that catch it. Every setup gets the same broken repo.",
   ],
 ] as const;
 
 const REQUIREMENTS = [
-  ["measured", "Hidden tests pass (42 tests across 3 tasks)", "all pass", 50],
-  ["measured", "API p95 latency at 50 requests/s (todo-api)", "under 120 ms", 10],
-  ["measured", "Wall-clock time to finish", "lower is better", 10],
-  ["measured", "Cost per task (tokens × price)", "lower is better", 10],
+  ["measured", "Hidden tests pass (42 tests across 3 tasks)", "all pass"],
+  ["measured", "API p95 latency at 50 requests/s (todo-api)", "under 120 ms"],
+  ["measured", "Time to solve (failures counted at the cap)", "lower is better · cap 45 min"],
+  ["measured", "Cost per solved task (all spend ÷ solved)", "lower is better"],
   [
     "reviewed",
     "Code quality: follows the repo's patterns, handles errors, tests check real behavior, no dead code",
     "4-point rubric",
-    20,
   ],
 ] as const;
 
@@ -195,6 +194,11 @@ const CHECKS = [
   "baseline in range",
 ];
 
+/**
+ * Illustrative cost model, kept consistent everywhere it appears: about $1.60 of
+ * tokens and $0.25 of compute (30 min on 4 vCPU / 8 GiB) per trial, 14 trials at a
+ * time. 60 trials ≈ $15 compute + $2 run fee ≈ $17, plus ≈ $96 of tokens.
+ */
 function PlanPane() {
   return (
     <>
@@ -215,7 +219,7 @@ function PlanPane() {
       <div className={styles.reqs}>
         <div className={styles.reqhead}>
           <span className={styles.lbl}>Requirements</span>
-          <span className={styles.muted}>The weights make up the score. Edit any line.</span>
+          <span className={styles.muted}>Each one gets its own verdict. Edit any line.</span>
         </div>
         <div className={styles.scroll} role="group" aria-label="Requirements" tabIndex={0}>
           <table className={styles.table}>
@@ -224,13 +228,10 @@ function PlanPane() {
                 <th scope="col">Type</th>
                 <th scope="col">Requirement</th>
                 <th scope="col">Target</th>
-                <th scope="col" className={styles.num}>
-                  Weight
-                </th>
               </tr>
             </thead>
             <tbody>
-              {REQUIREMENTS.map(([type, req, target, weight]) => (
+              {REQUIREMENTS.map(([type, req, target]) => (
                 <tr key={req}>
                   <td>
                     <span
@@ -241,16 +242,15 @@ function PlanPane() {
                   </td>
                   <td>{req}</td>
                   <td>{target}</td>
-                  <td className={styles.num}>{weight}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <p className={styles.reqnote}>
-          A separate review model scores reviewed requirements against the written rubric. Every
-          score quotes the lines of code it&apos;s based on, and a sample is scored twice to check
-          that it&apos;s consistent.
+          Power: at 3 tasks × 5 runs, the smallest detectable pass-rate difference is ≈45 pts. Add
+          runs to detect smaller ones. Reviewed requirements are scored by separate review models
+          against the written rubric, and every score quotes the lines of code it&apos;s based on.
         </p>
       </div>
       <div className={styles.checks}>
@@ -263,8 +263,8 @@ function PlanPane() {
       </div>
       <div className={styles.estimate}>
         <span>
-          <b>60 trials</b> · about 40 min · about $19 for the run and computer time · $40–120 in
-          tokens on your key
+          <b>60 trials</b> · about 2 h, 14 at a time · ≈ $15 compute + $2 run fee ≈ $17 · tokens ≈
+          $96 on your key
         </span>
         <span className={styles.fakeBtn}>Run 60 trials</span>
       </div>
@@ -273,20 +273,25 @@ function PlanPane() {
 }
 
 const FEED: Line[] = [
-  [["23:04", "d"], ["  C · todo-api · run 3        "], ["passed", "g"], ["  11m 40s · $3.80"]],
   [
-    ["23:03", "d"],
+    ["1:19", "d"],
+    ["  C · todo-api · run 3        "],
+    ["passed", "g"],
+    ["  11m 40s · $1.58 tokens"],
+  ],
+  [
+    ["1:18", "d"],
     ["  D · auth-refactor · run 2   "],
     ["failed", "r"],
     ["  merge conflict in src/session.ts"],
   ],
   [
-    ["23:02", "d"],
+    ["1:17", "d"],
     [
       '  reviewer                    rejected "add a Redis cache" (not in the spec) · C · todo-api · run 4',
     ],
   ],
-  [["23:01", "d"], ["  B · bug-hunt · run 5        started on a fresh Naïve computer"]],
+  [["1:16", "d"], ["  B · bug-hunt · run 5        started on a fresh Naïve computer"]],
 ];
 
 function RunPane() {
@@ -303,13 +308,14 @@ function RunPane() {
           <small>on Naïve computers</small>
         </div>
         <div>
-          <span className={styles.lbl}>Spent</span>
-          <b>$31</b>
+          <span className={styles.lbl}>Tokens spent</span>
+          <b>$61</b>
           <small>of $120 cap</small>
         </div>
         <div>
           <span className={styles.lbl}>Elapsed</span>
-          <b>23 min</b>
+          <b>1 h 20 min</b>
+          <small>of about 2 h</small>
         </div>
       </div>
       <RunGrid compact />
@@ -321,12 +327,50 @@ function RunPane() {
   );
 }
 
-const RESULTS = [
-  ["A · claude code solo", 54, "8/15", "140 ms", "31 min", "$5.10", "0"],
-  ["B · claude code + subagents", 61, "9/15", "118 ms", "22 min", "$5.80", "0"],
-  ["C · tandem ×3", 74, "11/15", "96 ms", "13 min", "$4.90", "6"],
-  ["D · tandem ×5", 66, "10/15", "101 ms", "12 min", "$6.70", "7"],
-] as const;
+/** Example verdict wording; every phrase used here must stay a plan.md 17.2 verdict. */
+export const EXAMPLE_HEADLINE =
+  "On these 3 tasks, Tandem ×3 solves faster than Claude Code with subagents (−9 min, 95% CI −14 to −3). Pass rate: no detectable difference at n=15 per setup (+13 pts, CI −19 to +42; smallest detectable ≈45 pts). ×5 vs ×3: no detectable difference.";
+
+/** Per-requirement rows: Tandem ×3 (C) against Claude Code + subagents (B). */
+const REQUIREMENT_ROWS: ReadonlyArray<
+  readonly [requirement: string, b: string, c: string, diff: string, verdict: string]
+> = [
+  [
+    "Trials passed (hidden tests)",
+    "9/15, Wilson 36–80%",
+    "11/15, Wilson 48–89%",
+    "+13 pts (CI −19 to +42)",
+    "no detectable difference at n=15",
+  ],
+  [
+    "Time to solve (failures counted at the cap)",
+    "22 min median, n=15",
+    "13 min median, n=15",
+    "−9 min (CI −14 to −3)",
+    "better",
+  ],
+  [
+    "API p95 at 50 requests/s (todo-api)",
+    "118 ms, n=5",
+    "96 ms, n=5",
+    "−22 ms (CI −35 to −8)",
+    "better",
+  ],
+  [
+    "Cost per solved task (all spend ÷ solved)",
+    "$3.08 (9 solved)",
+    "$2.52 (11 solved)",
+    "−$0.56 (CI −$1.40 to +$0.60)",
+    "no detectable difference at n=15",
+  ],
+  [
+    "Simulated approvals",
+    "none (no approval step)",
+    "14, median latency 40 s",
+    "not compared",
+    "not scored",
+  ],
+];
 
 function ResultsPane() {
   return (
@@ -336,52 +380,27 @@ function ResultsPane() {
         <span className={styles.reportQ}>
           Q: does tandem with 3 or 5 workers beat plain claude code with subagents?
         </span>
-        <span className={styles.reportAns}>
-          Tandem ×3 scores 74, 13 points above Claude Code with subagents. It passes more tests,
-          finishes 41% faster and serves the API faster. On the tightly coupled refactor it does
-          worse. ×5 scores lower than ×3.
-        </span>
+        <span className={styles.reportAns}>{EXAMPLE_HEADLINE}</span>
       </div>
       <div className={styles.scroll} role="group" aria-label="Example results" tabIndex={0}>
         <table className={styles.table}>
           <thead>
             <tr>
-              <th scope="col">Setup</th>
-              <th scope="col" className={styles.num}>
-                Score
-              </th>
-              <th scope="col" className={styles.num}>
-                Tasks solved
-              </th>
-              <th scope="col" className={styles.num}>
-                API p95
-              </th>
-              <th scope="col" className={styles.num}>
-                Median time
-              </th>
-              <th scope="col" className={styles.num}>
-                Cost per solved task
-              </th>
-              <th scope="col" className={styles.num}>
-                Human minutes
-              </th>
+              <th scope="col">Requirement</th>
+              <th scope="col">B · claude code + subagents</th>
+              <th scope="col">C · tandem ×3</th>
+              <th scope="col">Difference, 95% CI</th>
+              <th scope="col">Verdict</th>
             </tr>
           </thead>
           <tbody>
-            {RESULTS.map(([setup, score, solved, p95, time, cost, human]) => (
-              <tr key={setup} className={score === 74 ? styles.best : undefined}>
-                <th scope="row">{setup}</th>
-                <td className={styles.num}>
-                  <span className={styles.bar} aria-hidden="true">
-                    <i style={{ width: `${score}%` }} />
-                  </span>
-                  {score}
-                </td>
-                <td className={styles.num}>{solved}</td>
-                <td className={styles.num}>{p95}</td>
-                <td className={styles.num}>{time}</td>
-                <td className={styles.num}>{cost}</td>
-                <td className={styles.num}>{human}</td>
+            {REQUIREMENT_ROWS.map(([req, b, c, diff, verdict]) => (
+              <tr key={req}>
+                <th scope="row">{req}</th>
+                <td>{b}</td>
+                <td>{c}</td>
+                <td>{diff}</td>
+                <td>{verdict}</td>
               </tr>
             ))}
           </tbody>
@@ -389,16 +408,18 @@ function ResultsPane() {
       </div>
       <div className={styles.reportFoot}>
         <span>
-          <b>How C got 74:</b> tests 39/50 · latency 9/10 · time 9/10 · cost 7/10 · code quality
-          10/20 (error handling was weak in 3 of 5 runs, with the lines quoted in the full report).
+          <b>Tandem ×5 vs ×3:</b> no detectable difference at n=15 (10/15 vs 11/15 passed, −7 pts,
+          CI −36 to +24; 12 vs 13 min). <b>Claude Code solo:</b> 8/15 passed, 31 min; compared with
+          subagents, no detectable difference in pass rate at n=15.
         </span>
         <span>
-          <b>Where it breaks:</b> on auth-refactor, Tandem ×3 passed 2/5 against 3/5 for subagents.
-          Workers edited the same files, and 3 of 5 runs hit merge conflicts.
+          <b>Where it breaks:</b> on auth-refactor, Tandem ×3 looked worse in this sample (2/5 vs
+          3/5), no detectable difference at n=5. Workers edited the same files, and 3 of 5 runs hit
+          merge conflicts.
         </span>
         <span className={styles.proof}>
           kit proof: oracle 3/3 · do-less 3/3 caught · smoke pass · planted regression caught ·
-          baseline in range · 60 trials · 95% intervals in the full report
+          baseline in range · 60 trials · Holm-corrected across the report&apos;s comparisons
         </span>
         <div className={styles.actions}>
           <span className={cx(styles.fakeBtn, styles.fakeGhost)}>Share report</span>

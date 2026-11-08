@@ -3,24 +3,32 @@ import { cx } from "./cx";
 import styles from "./marketing.module.css";
 
 /**
- * The centerpiece: a throughput benchmark that rewarded skipping the work, and how
- * an Anybench kit reports the same case. The chart is illustrative (labelled so):
- * throughput relative to Ghostty, with the run that failed the correctness gate
- * struck out and given no score.
+ * The centerpiece: why a speed number needs a correctness gate.
+ *
+ * Founder rules (TDM-99 review): the only facts about Velocitty are what its public
+ * release notes say, quoted and linked. The chart is a labelled hypothetical with
+ * made-up terminals; it attributes no numbers, mechanism or fault to any real project.
  */
+export const VELOCITTY_RELEASE_URL = "https://github.com/valvesky/velocitty/releases/tag/v1.3.0";
+
 const ROWS = [
-  { name: "ghostty", value: 1, label: "1.00×", gate: "screen + scrollback match 10/10 · scored" },
   {
-    name: "alacritty",
+    name: "terminal A",
+    value: 1,
+    label: "1.00×",
+    gate: "screen + scrollback match 10/10 · scored",
+  },
+  {
+    name: "terminal B",
     value: 0.96,
     label: "0.96×",
     gate: "screen + scrollback match 10/10 · scored",
   },
   {
-    name: "velocitty 1.3",
+    name: "terminal C",
     value: 1.9,
     label: "1.9×",
-    gate: "mismatch 7/10 · 412,000 scrollback lines missing",
+    gate: "drops output · mismatch 7/10 · scrollback lines missing",
     cheat: true,
   },
 ] as const;
@@ -30,29 +38,34 @@ export function Velocitty() {
   return (
     <section className={cx(styles.section, styles.gate)} aria-labelledby="velo-h">
       <div className={styles.gateIntro}>
-        <h2 id="velo-h">The benchmark that skips the work</h2>
+        <h2 id="velo-h">A faster number only counts if the screen is right</h2>
         <p>
-          Velocitty 1.3.0 shipped automated throughput comparisons against Ghostty, and the numbers
-          said it was faster. Mitchell Hashimoto read the source and replied:
+          Terminal emulators publish throughput comparisons, and the good ones publish their method
+          and raw data. Velocitty&apos;s v1.3.0 release notes, for example, list this change:
         </p>
-        <blockquote className={styles.quote}>
+        <blockquote className={styles.quote} cite={VELOCITTY_RELEASE_URL}>
           <p>
-            your read loop overwrites a 64 KiB ring. Everything older is discarded unparsed per
-            tick. You&apos;re faster because you&apos;re not actually terminal emulating.
+            Added automated Ghostty throughput comparisons with raw samples and generated charts.
           </p>
-          <footer>Mitchell Hashimoto, on X</footer>
+          <footer>
+            <a href={VELOCITTY_RELEASE_URL}>Velocitty v1.3.0 release notes</a>
+          </footer>
         </blockquote>
-        <p>What the benchmark really measured was how fast the terminal could throw output away.</p>
+        <p>
+          Anybench would run a comparison like that with a correctness gate. After every run, the
+          final screen and the full scrollback are compared with a reference grid, cell by cell. A
+          faster number only counts if the screen and scrollback are right.
+        </p>
       </div>
 
       <figure className={styles.chart} aria-labelledby="velo-chart-title">
         <div className={styles.chartHead}>
-          <span className={styles.example}>illustrative, not a real run</span>
+          <span className={styles.example}>hypothetical, not a real run</span>
           <span id="velo-chart-title" className={styles.chartTitle}>
-            How an Anybench kit reports it
+            Example: a terminal that drops output
           </span>
           <span className={styles.chartSub}>
-            terminal throughput vs ghostty · 150 MB mixed output · 10 runs each
+            made-up terminals · throughput vs terminal A · 150 MB mixed output · 10 runs each
           </span>
         </div>
         <ul className={styles.bars}>
@@ -80,14 +93,14 @@ export function Velocitty() {
           })}
         </ul>
         <p className={styles.chartWhy}>
-          Output older than the 64 KiB read buffer is dropped before parsing. Throughput isn&apos;t
-          comparable until every run matches the reference, so the 1.9× never reaches the report.
+          In this example, terminal C skips part of its input, so its screen and scrollback
+          don&apos;t match the reference. Its 1.9× never reaches the report.
         </p>
       </figure>
 
       <div className={styles.gateLists}>
         <div className={styles.listOut}>
-          <h3>What that benchmark checked</h3>
+          <h3>What a throughput number alone tells you</h3>
           <ul>
             <li>Bytes in per second</li>
             <li>Nothing about whether those bytes ended up on screen</li>
@@ -99,7 +112,7 @@ export function Velocitty() {
             <li>Every terminal gets the same byte stream on identical computers</li>
             <li>
               After each run, the final screen and the full scrollback are compared with a reference
-              parser, cell by cell
+              grid, cell by cell
             </li>
             <li>A run that doesn&apos;t match gets no speed score</li>
             <li>
@@ -110,15 +123,6 @@ export function Velocitty() {
       </div>
 
       <p className={styles.verdict}>No speed number without a correctness gate.</p>
-      <p className={styles.src}>
-        Sources:{" "}
-        <a href="https://github.com/valvesky/velocitty/releases/tag/v1.3.0">
-          Velocitty 1.3.0 release notes
-        </a>{" "}
-        and{" "}
-        <a href="https://x.com/mitchellh/status/2115292243443519571">Hashimoto&apos;s reply on X</a>
-        . The reply itself doesn&apos;t name a version.
-      </p>
     </section>
   );
 }

@@ -908,10 +908,6 @@
   min-width: 640px;
   font-size: 14.5px;
 }
-.num {
-  text-align: right !important;
-  font-variant-numeric: tabular-nums;
-}
 .type {
   font-family: var(--mono);
   font-size: 11px;
@@ -1059,30 +1055,6 @@
 .report .table {
   min-width: 780px;
 }
-.report tr.best th,
-.report tr.best td {
-  background: var(--accent-soft);
-}
-.report tr.best th[scope="row"] {
-  color: var(--fg);
-  font-weight: 600;
-}
-.bar {
-  display: inline-block;
-  width: 64px;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--line);
-  margin-right: 10px;
-  vertical-align: middle;
-  overflow: hidden;
-}
-.bar i {
-  display: block;
-  height: 100%;
-  border-radius: 4px;
-  background: var(--accent);
-}
 .reportFoot {
   padding: 16px 24px 20px;
   border-top: 1px solid var(--line);
@@ -1161,7 +1133,7 @@
 .quote {
   margin: 0;
   padding: 4px 0 4px 20px;
-  border-left: 2px solid var(--g-bad);
+  border-left: 2px solid var(--g-acc);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1368,13 +1340,6 @@
   line-height: 1.1;
   color: #fff;
   max-width: none !important;
-}
-.src {
-  grid-column: 1 / -1;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--g-dim);
-  margin-top: -24px !important;
 }
 
 /* ---------- terminal (/anybench session) ---------- */

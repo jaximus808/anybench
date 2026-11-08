@@ -33,7 +33,7 @@ const ROLES = [
   ],
   [
     "analyst",
-    "Turns trials into scores, the answer and where it breaks",
+    "Turns trials into verdicts, the answer and where it breaks",
     "Reports delivered on time",
   ],
   [

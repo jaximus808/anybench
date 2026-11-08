@@ -3,7 +3,7 @@ import { LandingPage } from "../../components/marketing/LandingPage";
 
 const TITLE = "Anybench: find out if what you built is actually better";
 const DESCRIPTION =
-  "Point Anybench at an agent, a harness or any other software. Agents generate an eval kit with a correctness gate for every number, cloud computers run it, and you get a score for each contender and the reasons behind it.";
+  "Point Anybench at an agent, a harness or any other software. Agents generate an eval kit with a correctness gate for every number, cloud computers run it, and you get a verdict on each comparison and the reasons behind it.";
 
 // The landing page is static: no API calls, no cookies, built once at deploy time.
 export const dynamic = "force-static";
