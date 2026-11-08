@@ -80,6 +80,42 @@ describe("Monid unknown charges", () => {
     expect(c.halted()).toBeUndefined();
   });
 
+  it("a 2xx whose body is not a run (HTML or {}) is an unknown charge: books maxCost and halts", async () => {
+    const rawFetch = (status: number, text: string, contentType: string) => {
+      let n = 0;
+      const fetchFn = async (): Promise<Response> => {
+        n++;
+        return new Response(text, { status, headers: { "content-type": contentType } });
+      };
+      return { fetchFn, count: () => n };
+    };
+    for (const [label, f] of [
+      ["200 HTML", rawFetch(200, "<html><body>ok</body></html>", "text/html")],
+      ["200 {}", rawFetch(200, "{}", "application/json")],
+    ] as const) {
+      const m = createMonidClient({ apiKey: "k", fetch: f.fetchFn });
+      const err = await m.run(req).catch((e: unknown) => e);
+      expect(err, label).toBeInstanceOf(MonidError);
+      expect(err, label).toMatchObject({ code: "BAD_RESPONSE", status: 200, chargeUnknown: true });
+      expect(m.spentMicroUsd(), label).toBe(24_500n);
+      expect(m.halted(), label).toMatch(/BAD_RESPONSE/);
+      await expect(m.run({ ...req, maxCostMicroUsd: 0n })).rejects.toMatchObject({
+        code: "HALTED",
+      });
+      expect(f.count(), label).toBe(1);
+    }
+  });
+
+  it("a 400 without a run body stays settled: nothing booked, not halted", async () => {
+    const { fetchFn } = routerFetch([
+      [/v1\/run$/, () => ({ status: 400, body: { code: 400, message: "bad input" } })],
+    ]);
+    const m = createMonidClient({ apiKey: "k", fetch: fetchFn });
+    await expect(m.run(req)).rejects.toMatchObject({ code: "BAD_REQUEST", chargeUnknown: false });
+    expect(m.spentMicroUsd()).toBe(0n);
+    expect(m.halted()).toBeUndefined();
+  });
+
   it("haltOnUnknownCharge: false still books maxCost but keeps running", async () => {
     let n = 0;
     const { fetchFn } = routerFetch([

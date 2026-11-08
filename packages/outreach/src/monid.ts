@@ -344,7 +344,21 @@ export function createMonidClient(options: MonidClientOptions): MonidClient {
         const looksLikeRun =
           typeof r.body === "object" && r.body !== null && "runId" in r.body && "status" in r.body;
         if (!looksLikeRun) {
-          if (r.status < 500) settled = true; // documented 4xx: nothing was run or charged
+          // Only a documented 4xx means nothing was run or charged. A 2xx/3xx without a run body
+          // (HTML, {}, a proxy page) or any 5xx leaves the charge unknown: fall through to the catch.
+          if (r.status >= 400 && r.status < 500) {
+            settled = true;
+            throw errorFor(r.status, r.body, r.requestId);
+          }
+          if (r.status < 400) {
+            throw new MonidError(
+              `Monid run response: HTTP ${r.status} without a run body`,
+              "BAD_RESPONSE",
+              r.status,
+              undefined,
+              r.requestId,
+            );
+          }
           throw errorFor(r.status, r.body, r.requestId);
         }
         let run = toRun<T>(r.body, outputSchema);
