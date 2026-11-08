@@ -1,0 +1,354 @@
+{
+  "type": "object",
+  "properties": {
+    "driver": {
+      "type": "string",
+      "const": "cli"
+    },
+    "subject": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "better_means": {
+          "minItems": 1,
+          "maxItems": 4,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "required": ["name", "summary", "better_means"],
+      "additionalProperties": false
+    },
+    "contenders": {
+      "minItems": 2,
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["subject", "baseline"]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "binary": {
+            "type": "string"
+          },
+          "install": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "route": {
+                    "type": "string",
+                    "const": "github_release"
+                  },
+                  "repo": {
+                    "type": "string"
+                  },
+                  "tag": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["route", "repo"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "route": {
+                    "type": "string",
+                    "const": "gnu"
+                  },
+                  "package": {
+                    "type": "string",
+                    "enum": ["grep", "findutils", "sed", "gawk", "coreutils", "diffutils", "gzip"]
+                  }
+                },
+                "required": ["route", "package"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "version_command": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "exit_codes": {
+            "default": [0],
+            "minItems": 1,
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "name",
+          "binary",
+          "install",
+          "version_command",
+          "command",
+          "why"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "workloads": {
+      "minItems": 2,
+      "maxItems": 6,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "files": {
+            "minItems": 1,
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string",
+                      "maxLength": 65536
+                    }
+                  },
+                  "required": ["path", "content"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "generate": {
+                      "type": "object",
+                      "properties": {
+                        "lines": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 200000
+                        },
+                        "seed": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 4294967295
+                        },
+                        "words_per_line": {
+                          "default": 10,
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 40
+                        },
+                        "inject": {
+                          "default": [],
+                          "maxItems": 10,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "text": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 500
+                              },
+                              "every": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["text", "every"],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": ["lines", "seed"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["path", "generate"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "replicate": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "params": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": ["string", "number", "boolean"]
+            }
+          }
+        },
+        "required": ["id", "title", "files"],
+        "additionalProperties": false
+      }
+    },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "default": "same-output",
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "sort_lines": {
+          "type": "boolean"
+        },
+        "exit_codes": {
+          "default": [0],
+          "minItems": 1,
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        }
+      },
+      "required": ["description", "sort_lines"],
+      "additionalProperties": false
+    },
+    "do_less_partial": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "args": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": ["id", "description", "args"],
+      "additionalProperties": false
+    },
+    "weights": {
+      "type": "object",
+      "properties": {
+        "wall": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "rss": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": ["wall", "rss"],
+      "additionalProperties": false
+    },
+    "primary": {
+      "default": "wall",
+      "type": "string",
+      "enum": ["wall", "rss"]
+    },
+    "repeats": {
+      "default": 5,
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 20
+    },
+    "hyperfine_runs": {
+      "default": 10,
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 100
+    },
+    "notes": {
+      "default": "",
+      "type": "string",
+      "maxLength": 2000
+    }
+  },
+  "required": [
+    "driver",
+    "subject",
+    "contenders",
+    "workloads",
+    "gate",
+    "do_less_partial",
+    "weights"
+  ],
+  "additionalProperties": false
+}

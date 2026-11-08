@@ -5,3 +5,5 @@ export * from "./sync.js";
 export { syncMain, type SyncCliIo } from "./sync-cli.js";
 // TDM-56 [6.2]: the understander role's input, output schema and code-enforced verdict.
 export * from "./understander.js";
+// TDM-60 [6.6]: the kit designer role: design / fix / repair inputs, the structured draft.
+export * from "./kit-designer.js";

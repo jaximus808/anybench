@@ -1,0 +1,13 @@
+{
+  "role": "kit-designer",
+  "model": "anthropic/claude-sonnet-5.5",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench kit designer (E6 6.6): a structured cli kit draft (contenders, commands, workloads, gate, do-less, weights) that code pins, renders, validates and proves; repairs from proof results only.",
+  "budget": {
+    "cap_micro_usd": 10000000,
+    "max_task_micro_usd": 800000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

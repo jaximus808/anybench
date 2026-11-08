@@ -16,3 +16,5 @@ export * from "./comparability.js";
 export * from "./proof/index.js";
 // TDM-186 [16.15]: task mining from the repo's history.
 export * from "./mine/index.js";
+// TDM-60 [6.6]: generated kits (draft schema, pins, materializer, no-leak lint).
+export * from "./generate/index.js";

@@ -13,7 +13,7 @@ import { FakeProvider } from "@anybench/providers";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentSessions, costEntries, runs } from "../src/db/schema/index.js";
-import { CURATED_KIT_UNAVAILABLE } from "../src/orchestrator/curated.js";
+import { CURATED_KIT_UNAVAILABLE, curatedKitStages } from "../src/orchestrator/curated.js";
 import { FakePipeline } from "../src/orchestrator/fake.js";
 import {
   defaultAgentStages,
@@ -386,7 +386,12 @@ describe.skipIf(!available)("kitBuilderStages on Postgres + FakeNaive (TDM-56)",
       research: null,
       previous: null,
     });
-    expect(held).toEqual({ ok: false, outcome: "needs_human", reason: CURATED_KIT_UNAVAILABLE });
+    // TDM-60: the default designer is the Naïve kit designer; with no understanding it holds.
+    expect(held).toEqual({
+      ok: false,
+      outcome: "needs_human",
+      reason: "the kit designer needs the understanding of the repo",
+    });
     const designed = await kitBuilderStages({
       db: h.db,
       client: naive,
@@ -410,6 +415,9 @@ describe.skipIf(!available)("kitBuilderStages on Postgres + FakeNaive (TDM-56)",
           db: h.db,
           client: naive,
           ingestCacheDir: cacheDir,
+          // This test is about the understand stage: keep kit design the curated hold (the
+          // Naïve kit designer is TDM-60's, tested in kit-designer-tdm60.test.ts).
+          designKit: curatedKitStages().designKit,
         }),
       pipeline: () => new FakePipeline({ digest }),
       billingGate: () => async () => ({ allowed: true }),

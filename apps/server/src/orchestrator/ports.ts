@@ -323,6 +323,8 @@ export const RunStageOutputsShape = z.looseObject({
   score: z.unknown().optional(),
   /** Set when the proof stage accepted a curated kit's signed-off offline proof. */
   proof_basis: ProofBasisSchema.optional(),
+  /** TDM-60: the kit frozen at Go (orchestrator/prereg.ts PreregSchema), checked before trials. */
+  prereg: z.unknown().optional(),
   /** needs_human / paused_budget: the state to resume into. */
   held_from: RunStateSchema.optional(),
   hold_reason: z.string().optional(),

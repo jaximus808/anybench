@@ -41,7 +41,10 @@ import {
   subjectPlan,
 } from "../src/orchestrator/env-build.js";
 
-const CLI = fileURLToPath(new URL("../../../packages/kit/examples/cli/", import.meta.url));
+// PROOF_E2E_KIT_DIR proves another cli kit the same way (TDM-60: a generated kit).
+const CLI =
+  process.env.PROOF_E2E_KIT_DIR ??
+  fileURLToPath(new URL("../../../packages/kit/examples/cli/", import.meta.url));
 const RUN_ID = "0195f3a2-7c1e-7d3a-9b1c-44aa00000044";
 const DOCKER = process.env.PROOF_DOCKER_E2E === "1" && (await dockerLocalAvailable());
 const LIVE =

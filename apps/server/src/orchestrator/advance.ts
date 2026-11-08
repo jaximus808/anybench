@@ -58,6 +58,7 @@ import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { contenders } from "../db/schema/contenders.js";
 import { kits } from "../db/schema/kits.js";
+import { PreregSchema, preregMismatch, preregistrationOf } from "./prereg.js";
 import { projects } from "../db/schema/projects.js";
 import { reports } from "../db/schema/reports.js";
 import { runs } from "../db/schema/runs.js";
@@ -911,10 +912,12 @@ class RunAdvance {
       run.estimateMicroUsd,
     );
     if (!gate.allowed) return this.wait(run.state, `billing gate: ${gate.reason}`);
+    // Plan 17.2 rule 6: freeze the kit (hash, files, weights, primary, repeats) at Go.
+    const prereg = await preregistrationOf(kit.row, kit.spec);
     return this.commit(
       run,
       { type: "go", estimate_fits_budget: true, billing_gate_passed: true },
-      { reason: "auto-go" },
+      { reason: "auto-go", outputs: { prereg } },
     );
   }
 
@@ -923,6 +926,18 @@ class RunAdvance {
     if (!kit) return this.hold(run, "needs_human", "running needs a valid kit");
     let all = await this.store.trials(run.id);
     if (all.length < this.plan(run, kit.spec).length) {
+      // Before any contender trial exists: the kit must still be the one frozen at Go.
+      const frozen = PreregSchema.safeParse(this.outputs(run).prereg);
+      if (frozen.success) {
+        const changed = preregMismatch(frozen.data, await preregistrationOf(kit.row, kit.spec));
+        if (changed) {
+          return this.hold(
+            run,
+            "needs_human",
+            `the kit changed after it was preregistered at Go (${changed}): prove it again before Go`,
+          );
+        }
+      }
       const created = await this.ensureTrials(run, kit);
       if (created === null) return CONTINUE; // the run moved: re-read
       all = await this.store.trials(run.id);

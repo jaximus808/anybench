@@ -10,8 +10,11 @@
 //                   unsupported driver holds ("driver <type> is not supported yet: <why>"),
 //                   needs_hardware holds, skip fails. A broken kit never goes downstream.
 //       research    pass-through for v1 (no baselines), with an event saying so.
-//       designKit   `opts.designKit` (TDM-60 plugs the kit designer in here), else the curated
-//                   stage, which holds with CURATED_KIT_UNAVAILABLE.
+//       designKit   `opts.designKit` when given, else the Naïve kit designer (TDM-60,
+//                   kit-designer.ts): a supported cli → a generated, validated kit written to
+//                   ANYBENCH_GENERATED_KITS_DIR/<run>/v<n> (files_dir); coding-agent / harness hold
+//                   until the history miner lands; an unsupported driver holds with the
+//                   understander's reason.
 //       analyze     the curated stage (not built for other repos: [6.8]).
 //
 // run-advance.ts uses `defaultAgentStages(ctx)`: kitBuilderStages when NAIVE_API_KEY is
@@ -31,6 +34,7 @@ import type { Database } from "../db/client.js";
 import type { Config } from "../config.js";
 import { runAgentStage } from "../jobs/agent-session.js";
 import { curatedKitStages, isTandemRepo } from "./curated.js";
+import { naiveKitDesigner, type KitDesignerOptions } from "./kit-designer.js";
 import {
   stageFail,
   stageHold,
@@ -60,8 +64,10 @@ export interface KitBuilderStagesOptions {
   understanderOverrides?: RoleSpecOverrides;
   /** Re-ingest used on a cache miss (tests). Default ingestGitHubRepo. */
   ingest?: (input: string, opts: GitHubIngestOptions) => Promise<RepoIngest>;
-  /** The kit designer for non-curated repos (TDM-60). Default: the curated stage (holds). */
+  /** Replace the kit designer for non-curated repos. Default: naiveKitDesigner (TDM-60). */
   designKit?: AgentStagePort["designKit"];
+  /** Options for the default kit designer (generated kits dir, budget, model, pins, skeptic). */
+  kitDesigner?: Omit<KitDesignerOptions, "db" | "client">;
 }
 
 async function say(ctx: StageContext, role: string, text: string): Promise<void> {
@@ -151,6 +157,16 @@ export async function naiveUnderstand(
 
 export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort {
   const curated = curatedKitStages(opts.kitsDir ? { kitsDir: opts.kitsDir } : {});
+  const designer =
+    opts.designKit ??
+    naiveKitDesigner({
+      db: opts.db,
+      client: opts.client,
+      ...(opts.ingestCacheDir ? { ingestCacheDir: opts.ingestCacheDir } : {}),
+      ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
+      ...(opts.ingest ? { ingest: opts.ingest } : {}),
+      ...opts.kitDesigner,
+    });
   return {
     async understand(ctx, input) {
       if (isTandemRepo(ctx.run.intake.source)) return curated.understand(ctx, input);
@@ -169,9 +185,9 @@ export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort 
     },
 
     async designKit(ctx, input) {
-      if (isTandemRepo(ctx.run.intake.source) || !opts.designKit)
-        return curated.designKit(ctx, input);
-      return opts.designKit(ctx, input);
+      // The Tandem repo stays curated (its kit and its signed-off proof).
+      if (isTandemRepo(ctx.run.intake.source)) return curated.designKit(ctx, input);
+      return designer(ctx, input);
     },
 
     analyze: (ctx, input) => curated.analyze(ctx, input),
@@ -191,5 +207,8 @@ export function defaultAgentStages(ctx: { db: Database; config: Config }): Agent
     }),
     ...kitsDir,
     ...(config.GITHUB_TOKEN ? { githubToken: config.GITHUB_TOKEN } : {}),
+    ...(config.ANYBENCH_GENERATED_KITS_DIR
+      ? { kitDesigner: { generatedKitsDir: config.ANYBENCH_GENERATED_KITS_DIR } }
+      : {}),
   });
 }
