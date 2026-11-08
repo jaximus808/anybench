@@ -11,3 +11,5 @@ export * from "./kit-designer.js";
 export * from "./skeptic.js";
 // TDM-60 [6.6] step 6: the issue writer (mined tasks → user-style issues from symptoms only).
 export * from "./issue-writer.js";
+// TDM-164 [15.3a]: the outreach scout.
+export * from "./scout.js";

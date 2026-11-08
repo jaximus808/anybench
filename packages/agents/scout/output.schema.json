@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "agent_harness",
+        "http_agent",
+        "cli",
+        "service",
+        "library",
+        "terminal",
+        "web_app",
+        "other"
+      ]
+    },
+    "fit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "fit_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 800
+    },
+    "claims": {
+      "maxItems": 12,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "source_ref": {
+            "type": "string",
+            "pattern": "^([^#\\s]+)#L([1-9]\\d*)$"
+          },
+          "what_it_claims": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "about": {
+            "type": "string",
+            "enum": ["own", "third_party"]
+          }
+        },
+        "required": ["text", "source_ref", "what_it_claims", "about"],
+        "additionalProperties": false
+      }
+    },
+    "what_we_would_measure": {
+      "maxItems": 10,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": [
+              "pass_at_1",
+              "pass_hat_k",
+              "cost_per_solved_task",
+              "time_to_solve",
+              "interventions",
+              "audited_quality",
+              "regressions_pass_to_pass",
+              "merge_conflicts",
+              "speedup_vs_1_worker",
+              "labelled_answer_success",
+              "cost_per_conversation",
+              "latency_p95",
+              "policy_violations",
+              "wall_time_warm",
+              "wall_time_cold",
+              "peak_rss",
+              "startup_time",
+              "latency_p50_p95_p99_open_loop",
+              "max_rps_within_slo",
+              "error_rate",
+              "cold_start",
+              "ops_per_sec_realistic",
+              "allocations",
+              "latency_p99",
+              "throughput_reference_grid",
+              "memory_per_scrollback",
+              "input_latency",
+              "lcp_inp_cls_throttled",
+              "ttfb_p95",
+              "bundle_size"
+            ]
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        },
+        "required": ["metric", "why"],
+        "additionalProperties": false
+      }
+    },
+    "gate": {
+      "minItems": 1,
+      "maxItems": 6,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "compared_against": {
+      "maxItems": 6,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        },
+        "required": ["name", "source", "why"],
+        "additionalProperties": false
+      }
+    },
+    "caveats": {
+      "maxItems": 8,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 400
+      }
+    },
+    "contact_ok": {
+      "type": "boolean"
+    },
+    "why": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    }
+  },
+  "required": [
+    "kind",
+    "fit",
+    "fit_reason",
+    "claims",
+    "what_we_would_measure",
+    "gate",
+    "compared_against",
+    "caveats",
+    "contact_ok",
+    "why"
+  ],
+  "additionalProperties": false
+}

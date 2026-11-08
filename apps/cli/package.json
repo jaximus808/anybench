@@ -26,6 +26,7 @@
   "dependencies": {
     "@anybench/core": "workspace:*",
     "@anybench/kit": "workspace:*",
+    "@anybench/naive": "workspace:*",
     "@anybench/outreach": "workspace:*",
     "pg": "^8.23.1"
   },

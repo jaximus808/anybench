@@ -13,3 +13,5 @@ export * from "./email-finder.js";
 export * from "./store.js";
 export * from "./source.js";
 export * from "./import.js";
+// 15.3a scout: fit score + cited claim brief per lead (TDM-164).
+export * from "./scout.js";

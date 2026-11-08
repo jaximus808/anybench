@@ -2,7 +2,7 @@
   "name": "@anybench/outreach",
   "version": "0.0.0",
   "private": true,
-  "description": "outreach (E15): Monid client, AgentMail via Monid, Context.dev + GitHub lead sourcing, opt-in CSV import",
+  "description": "outreach (E15): Monid client, AgentMail via Monid, Context.dev + GitHub lead sourcing, opt-in CSV import, scout claim briefs (15.3a)",
   "type": "module",
   "exports": {
     ".": {
@@ -25,7 +25,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anybench/agents": "workspace:*",
     "@anybench/core": "workspace:*",
+    "@anybench/kit": "workspace:*",
+    "@anybench/naive": "workspace:*",
     "zod": "^4.6.7"
   }
 }

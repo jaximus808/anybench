@@ -1,0 +1,13 @@
+{
+  "role": "scout",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench outreach scout (E15 15.3a): scores fit and writes a cited claim brief per lead.",
+  "budget": {
+    "cap_micro_usd": 3000000,
+    "max_task_micro_usd": 250000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

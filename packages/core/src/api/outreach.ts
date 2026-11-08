@@ -18,6 +18,8 @@ export const OutreachMessageIdSchema = uuidSchema<"OutreachMessageId">();
 export const LEAD_STATUSES = [
   "new",
   "scored",
+  /** The scout scored it below OUTREACH_FIT_THRESHOLD, or found no verifiable claim (TDM-164). */
+  "skipped",
   "kit_ready",
   "drafted",
   "emailed",
