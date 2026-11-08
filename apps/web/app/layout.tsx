@@ -25,7 +25,7 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_ANYBENCH_WEB_URL ?? "https://anybench.jaxonp.com"),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_ANYBENCH_WEB_URL || "https://anybench.jaxonp.com"),
   title: { default: "Anybench", template: "%s · Anybench" },
   description:
     "Turn any project into a benchmark. Agents generate the eval kit, cloud computers run it, and the report says whether it's better and why.",

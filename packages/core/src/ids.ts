@@ -1,6 +1,5 @@
 // Branded ids. Every entity id is a lowercase UUID (Postgres `uuid`); new ids are UUIDv7 so they
 // sort by creation time. The zod brand makes a RunId unassignable to a TrialId at compile time.
-import { randomFillSync } from "node:crypto";
 import { z } from "zod";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -53,7 +52,9 @@ export type IdSchema = ReturnType<typeof idSchema<string>>;
 /** A fresh UUIDv7 string (RFC 9562): 48-bit unix-ms timestamp, then 74 random bits. */
 export function uuidv7(nowMs: number = Date.now()): string {
   const b = new Uint8Array(16);
-  randomFillSync(b);
+  // Web Crypto: global in Node >= 19 and every browser, so core stays free of node: imports
+  // and the web app's client bundle does not pull in a crypto polyfill.
+  globalThis.crypto.getRandomValues(b);
   let ts = BigInt(Math.trunc(nowMs));
   for (let i = 5; i >= 0; i--) {
     b[i] = Number(ts & 0xffn);
