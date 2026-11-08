@@ -14,9 +14,10 @@
 // the state change and the events commit in one transaction guarded by `state = 'gating'`, so a
 // retried job never writes twice.
 //
-// Our failures are never billed to the contender (see gateTrial): a missing bundle, GateInfraError
-// past GATE_INFRA_MAX_ATTEMPTS job runs, a kit error or a broken check → failed_infra with
-// failure_class infra | kit. Before the cap, GateInfraError throws so graphile-worker retries.
+// Our failures are never billed to the contender, and the contender never gets a free re-roll (see
+// gateTrial): only what is provable without its outputs is ours (missing bundle, GateInfraError
+// past GATE_INFRA_MAX_ATTEMPTS job runs, a kit that doesn't load) → failed_infra, failure_class
+// infra | kit. A check that broke on the outputs is the contender's FAIL plus `trial.kit_suspect`.
 //
 // Enqueue with payload `{trial_id, attempt}` and job key `trialGateJobKey(trialId, attempt)` (the
 // trial executor, [5.4] TDM-49, does this after `collecting`). TRIAL_GATE_JOB, trialGateJobKey and
@@ -34,6 +35,7 @@ import {
 import {
   collectScoringFiles,
   FROZEN_BUNDLE_NAME,
+  classifyGateRecord,
   GateInfraError,
   GateKitError,
   runGates,
@@ -182,11 +184,15 @@ function toEvents(runId: string, drafts: EventDraft[]): AnybenchEvent[] {
  * Score one trial. See the file header.
  *
  * Who pays for a failure:
- *   - the contender: a verdict that fails, a timeout, a contender process left running, outputs
- *     that can't be unpacked → done/reviewing with failure_class "gate" (billable, never a pass);
- *   - us: no out.tar.gz in the store, GateInfraError past GATE_INFRA_MAX_ATTEMPTS → failed_infra,
- *     failure_class "infra"; a GateKitError or a broken check (GateOutcome.kit_fault) →
- *     failed_infra, failure_class "kit". failed_infra is retried by the executor and never billed.
+ *   - the contender: every gate outcome once its outputs were scored → done/reviewing with
+ *     failure_class "gate" when an applicable gate failed (billable, never a pass). That includes
+ *     a check that broke on the contender's outputs (GateOutcome.kit_suspect): those also get a
+ *     `trial.kit_suspect` event for a refund by hand, never an unbilled re-run (a contender could
+ *     provoke a fragile check on purpose);
+ *   - us, only for what is provable without the contender's outputs: no out.tar.gz in the store,
+ *     GateInfraError past GATE_INFRA_MAX_ATTEMPTS → failed_infra, failure_class "infra"; a kit that
+ *     doesn't load or a GateKitError (raised before any output is touched) → failed_infra,
+ *     failure_class "kit". failed_infra is retried by the executor and never billed.
  */
 export async function gateTrial(
   deps: GateTrialDeps,
@@ -350,21 +356,11 @@ export async function gateTrial(
     throw err;
   }
 
-  const kitFaults = Object.entries(record.gates).filter(([, o]) => o.kit_fault);
-  if (kitFaults.length > 0) {
-    return failInfra(
-      "kit",
-      `broken check: ${kitFaults.map(([id, o]) => `${id}: ${o.result.reason}`).join("; ")}`,
-      record,
-    );
-  }
-
   const command = reviewed ? ({ type: "advance" } as const) : ({ type: "skip_review" } as const);
   const t = transitionTrial("gating", command);
   if (!t.ok) throw new Error(t.error.message);
-  const failedApplicable = Object.values(record.gates).some(
-    (o) => o.result.applicable && !o.result.pass,
-  );
+  const { failureClass, kitSuspects } = classifyGateRecord(record);
+  const failedApplicable = failureClass !== null;
   const at = now();
   const scored = record;
 
@@ -406,11 +402,24 @@ export async function gateTrial(
           timed_out: o.timed_out,
           duration_ms: o.duration_ms,
           evidence: o.result.evidence,
+          kit_suspect: o.kit_suspect,
           sandbox: scored.sandbox,
           scoring_computer_id: scored.scoring_computer?.computer_id ?? null,
         },
       },
     }));
+    for (const k of kitSuspects) {
+      drafts.push({
+        type: "trial.kit_suspect",
+        source: "trial",
+        source_id: trial.id,
+        severity: "warn",
+        actor,
+        cost_delta_micro_usd: 0n,
+        at: at.toISOString(),
+        payload: { gate: k.gate, status: k.status, reason: k.reason },
+      });
+    }
     drafts.push(phase("gating", t.to, at));
     await appendEvents(tx, runId, toEvents(trial.runId, drafts));
     return true;

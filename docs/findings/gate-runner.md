@@ -110,16 +110,69 @@ The e2e (15 tests) now also covers these cheaters, all FAIL with `kit_fault: fal
 The `clean-room` gate checks every isolation property above from inside, and passes for every
 contender, cheaters included.
 
-## Who pays
+## Who pays (review round 3)
 
-These end in `failed_infra`, which is retried and never billed:
+These end in `failed_infra` (retried, never billed). Only failures that can be proven without the
+contender's outputs count here:
 
 - out.tar.gz not in the store: `failure_class infra`.
 - GateInfraError on the 3rd job run (`GATE_INFRA_MAX_ATTEMPTS`): `failure_class infra`.
-- A kit error, or a broken check (non-zero exit with no verdict, no or invalid gate.json, the
-  check's own process left running): `failure_class kit`.
+- A kit that doesn't load, or a GateKitError, which is raised before any output is touched (for
+  example a check script missing from the bundle): `failure_class kit`.
 
-Everything else that fails is the contender's: `failure_class gate`.
+Every outcome after the outputs were scored is the contender's: `failure_class gate`, counted
+and billed. That includes a check that broke on them: non-zero exit with no verdict, no or invalid
+gate.json, a lingering abgate process, or a lost status file. These set
+`GateOutcome.kit_suspect` and emit a `trial.kit_suspect` event (gate, status, reason) so a
+refund can be decided by hand. They are never a re-run, and they never erase another gate's FAIL.
+The reviewer's repro shows why. A contender shipped `workspace/.hidden-tests` as a regular file,
+the old harness check's `cp -R` aborted under `set -e`, and that would have been a free re-roll.
+The e2e `planted-tests-file` cheater now:
+
+- gets a FAIL verdict from the hardened check (`copy-tests`, the same pattern as the harness
+  example);
+- gets a counted `kit_suspect` FAIL from a deliberately fragile copy (`copy-tests-fragile`);
+- ends up `classifyGateRecord(...).failureClass === "gate"`.
+
+The harness example check (`packages/kit/examples/harness/gates/hidden-tests/check.sh`) now:
+
+- does `rm -rf "$ws/.hidden-tests"` before copying;
+- has an EXIT trap that writes a FAIL verdict whenever it would exit without one, once the outputs
+  are involved;
+- runs `node --test ".hidden-tests/**/*.test.js"`. Node 26 treats a bare directory argument as a
+  module path: `MODULE_NOT_FOUND`, so the old `node --test .hidden-tests/` failed even the oracle;
+- `packages/kit/test/tdm51-harness-check.test.ts` runs it on the host: oracle passes; a planted
+  file, decoy tests or no workspace all FAIL with exit 0.
+
+Two bash traps found on the way:
+
+- An apostrophe inside `${VAR:?message}` opens a quote (`unexpected EOF while looking for matching
+  "'"`), so that message must not contain one.
+- `bash -n` every check.
+
+## Rules for check authors
+
+- **Write only under `$1` (your private copy) and `$3` (the verdict).** Never write into
+  `$AB_RUN_DIR` after contender code has run there through `$AB_RUN`. abrun owns its files there
+  and can plant symlinks, and a write by the check (abgate) would follow them into abgate's own
+  files, the verdict dir included. `fs.protected_symlinks` doesn't help: it only covers sticky
+  *world*-writable dirs, and these are `1775`. Copying tests in *before* running contender code
+  is fine. The copy is `rm -rf` (which never follows a symlink) and then `cp -R`.
+- Run contender code only as `"$AB_RUN" <cmd>`, from a cwd under `$AB_RUN_DIR`.
+- Every path that involves the outputs must end with a verdict. A verdict-less exit counts against
+  the contender anyway, and only flags `kit_suspect`.
+
+## Process counting: threads, not just pids
+
+The leftover-process check counts **tasks**: `/proc/<pid>/task/<tid>`, owner uid plus `State`. A
+thread-group leader that called `pthread_exit` shows `State: Z` on `/proc/<pid>` while its other
+threads keep running. Counting only pids would miss such a "zombie leader". True zombies are
+excluded (State Z or X): they run no code and hold no file descriptors.
+
+Setup also refuses to proceed (an infra error) if either sandbox uid can become root:
+`runuser -u <uid> -- su root -c true` must fail, and so must `runuser -u <uid> -- sudo -n true`
+when sudo exists. Naïve images give their own user passwordless sudo, and a broad sudoers rule
+would leak it.
 
 ## Limits
 

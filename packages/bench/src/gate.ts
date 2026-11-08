@@ -167,12 +167,15 @@ export const GateOutcomeSchema = z.object({
   /** Last lines of the check's stdout+stderr (untrusted text, for the reason drawer). */
   log_tail: z.string(),
   /**
-   * The FAIL is the kit's (or our) fault, not the contender's: the check broke (non-zero exit with
-   * no verdict, no or invalid gate.json, the check's own process left running) or the gate was
-   * lost. Contender code can't touch the verdict dir, so these never come from the contender.
-   * The trial.gate job turns them into failed_infra / failure_class "kit" (never billed).
+   * The FAIL may be the kit's fault rather than the contender's: the check broke (non-zero exit
+   * with no verdict, no or invalid gate.json, the check's own process left running) or the gate's
+   * status was lost. It still counts as the contender's FAIL (failure_class "gate", billed): the
+   * contender's outputs can provoke a fragile check (e.g. a file where the check expects a dir),
+   * so turning these into an unbilled re-run would hand cheaters a free re-roll. The trial.gate
+   * job emits `trial.kit_suspect` for each, for a refund by hand. Only failures provable without
+   * the contender's outputs (GateKitError before outputs are touched, GateInfraError) are ours.
    */
-  kit_fault: z.boolean(),
+  kit_suspect: z.boolean(),
 });
 export type GateOutcome = z.infer<typeof GateOutcomeSchema>;
 
@@ -223,6 +226,25 @@ export function trialGateSummary(record: TrialGateRecord): GateResult {
       ? `${applicable.length}/${applicable.length} gates passed`
       : failed.map(([id, o]) => `${id}: ${o.result.reason}`).join("; ");
   return { pass: failed.length === 0, applicable: true, reason, evidence };
+}
+
+/**
+ * How a scored trial is classified. Every gate outcome is the contender's (a FAIL counts and is
+ * billed); `kitSuspects` lists the FAILs that may be the kit's, for `trial.kit_suspect` events and
+ * a refund by hand. A suspect gate never erases another gate's FAIL, and never becomes a re-run.
+ */
+export function classifyGateRecord(record: TrialGateRecord): {
+  failureClass: "gate" | null;
+  kitSuspects: { gate: string; status: GateOutcomeStatus; reason: string }[];
+} {
+  const outcomes = Object.entries(record.gates);
+  const failed = outcomes.some(([, o]) => o.result.applicable && !o.result.pass);
+  return {
+    failureClass: failed ? "gate" : null,
+    kitSuspects: outcomes
+      .filter(([, o]) => o.kit_suspect)
+      .map(([gate, o]) => ({ gate, status: o.status, reason: o.result.reason })),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -348,6 +370,12 @@ export function uidGateSandbox(opts: { user?: string; runUser?: string } = {}): 
         // Self-test: the check uid becomes the run uid, and the run uid can't become the check uid.
         `[ "$(cd / && runuser -u ${user} -- ${sq(paths.root)}/run-bin/ab-run id -un </dev/null 2>/dev/null)" = ${runUser} ] \\`,
         `  || { echo "${user} cannot run code as ${runUser}" >&2; exit 1; }`,
+        // Neither sandbox uid may become root (su to root, or sudo: Naïve images give their own
+        // user passwordless sudo, and a broad sudoers rule would hand it to ours too).
+        `for u in ${user} ${runUser}; do`,
+        `  if runuser -u "$u" -- su root -s /bin/sh -c true </dev/null >/dev/null 2>&1; then echo "$u can su to root" >&2; exit 1; fi`,
+        `  if command -v sudo >/dev/null 2>&1 && runuser -u "$u" -- sudo -n true </dev/null >/dev/null 2>&1; then echo "$u can sudo" >&2; exit 1; fi`,
+        `done`,
         `if runuser -u ${runUser} -- su ${user} -s /bin/bash -c true </dev/null >/dev/null 2>&1; then echo "${runUser} can become ${user}" >&2; exit 1; fi`,
       ].join("\n"),
     runAs: () =>
@@ -561,8 +589,10 @@ function gateScript(ctx: ScriptCtx, gate: Gate, workloadId: string, trialId: str
     ') </dev/null >"$LOG" 2>&1',
     "rc=$?",
     // Anything of either uid still running now is a fail (counted before it is killed).
-    'count() { local n=0 d st; for d in /proc/[0-9]*; do [ "$(stat -c %u "$d" 2>/dev/null)" = "$1" ] || continue;',
-    '  st="$(awk \'/^State:/{print $2; exit}\' "$d/status" 2>/dev/null)"; case "$st" in ""|Z|X) ;; *) n=$((n + 1)) ;; esac; done; echo "$n"; }',
+    // Per task (thread), not per process: a leader that exited while its other threads run shows
+    // State Z on /proc/<pid> but its threads are live under /proc/<pid>/task/<tid>.
+    'count() { local n=0 t st; for t in /proc/[0-9]*/task/[0-9]*; do [ "$(stat -c %u "$t" 2>/dev/null)" = "$1" ] || continue;',
+    '  st="$(awk \'/^State:/{print $2; exit}\' "$t/status" 2>/dev/null)"; case "$st" in ""|Z|X) ;; *) n=$((n + 1)) ;; esac; done; echo "$n"; }',
     'alive_check="$(count "$(id -u "$U")")"',
     'alive_run=0; if [ -n "$RU" ]; then alive_run="$(count "$(id -u "$RU")")"; fi',
     ctx.sandbox.killAll(),
@@ -629,11 +659,11 @@ function failOutcome(
   status: Exclude<GateOutcomeStatus, "verdict">,
   reason: string,
   extra: Partial<
-    Pick<GateOutcome, "exit_code" | "timed_out" | "duration_ms" | "log_tail" | "kit_fault">
+    Pick<GateOutcome, "exit_code" | "timed_out" | "duration_ms" | "log_tail" | "kit_suspect">
   > = {},
 ): GateOutcome {
   return {
-    kit_fault: extra.kit_fault ?? false,
+    kit_suspect: extra.kit_suspect ?? false,
     result: { pass: false, applicable: true, reason: clip(reason, REASON_MAX_CHARS), evidence: [] },
     status,
     exit_code: extra.exit_code ?? null,
@@ -659,7 +689,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "timeout",
       `gate ${input.gateId}: no result from the scoring computer within ${input.timeoutS}s (fail closed)`,
-      { timed_out: true, log_tail: logTail, kit_fault: true },
+      { timed_out: true, log_tail: logTail, kit_suspect: true },
     );
   }
   const base = { exit_code: status.rc, duration_ms: status.duration_ms, log_tail: logTail };
@@ -681,7 +711,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "lingering",
       `gate ${input.gateId}: ${who} still running when the check exited (fail closed)`,
-      { ...base, kit_fault: aliveRun === 0 },
+      { ...base, kit_suspect: aliveRun === 0 },
     );
   }
   if (status.rc !== 0) {
@@ -689,7 +719,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "check_failed",
       `gate ${input.gateId}: check exited ${status.rc} (fail closed${wrote ? "; its gate.json is ignored" : "; no verdict: a broken check"})`,
-      { ...base, kit_fault: !wrote },
+      { ...base, kit_suspect: !wrote },
     );
   }
   if (status.verdict !== "present" || input.verdictText === null) {
@@ -705,7 +735,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "no_verdict",
       `gate ${input.gateId}: ${why[status.verdict] ?? "no verdict"} (fail closed)`,
-      { ...base, kit_fault: true },
+      { ...base, kit_suspect: true },
     );
   }
   let raw: unknown;
@@ -715,7 +745,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "invalid_verdict",
       `gate ${input.gateId}: gate.json is not JSON (${(e as Error).message}) (fail closed)`,
-      { ...base, kit_fault: true },
+      { ...base, kit_suspect: true },
     );
   }
   const parsed = GateResultSchema.safeParse(raw);
@@ -726,7 +756,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "invalid_verdict",
       `gate ${input.gateId}: gate.json is invalid: ${issues} (fail closed)`,
-      { ...base, kit_fault: true },
+      { ...base, kit_suspect: true },
     );
   }
   const r = parsed.data;
@@ -742,7 +772,7 @@ export function normalizeVerdict(input: {
     status: "verdict",
     ...base,
     timed_out: false,
-    kit_fault: false,
+    kit_suspect: false,
   };
 }
 

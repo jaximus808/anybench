@@ -68,6 +68,11 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     evidence_url: "https://storage.example/evidence.json",
     details: { failed: ["a", "b", "c"] },
   }),
+  "trial.kit_suspect": tdm8Event("trial.kit_suspect", {
+    gate: "tests_pass",
+    status: "check_failed",
+    reason: "gate tests_pass: check exited 1 (fail closed; no verdict: a broken check)",
+  }),
   "agent.tool.started": tdm8Event(
     "agent.tool.started",
     { agent_role: "researcher", naive_seq: 12, tool: "web_search", tool_use_id: "tu_1" },
@@ -148,7 +153,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(18);
+    expect(EVENT_TYPES).toHaveLength(19);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

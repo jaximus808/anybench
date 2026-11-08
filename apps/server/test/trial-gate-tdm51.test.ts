@@ -269,32 +269,44 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     const gate = row!.gate as TrialGateRecord;
     expect(gate.gates["sum-tests"]).toMatchObject({
       status: "verdict",
-      kit_fault: false,
+      kit_suspect: false,
       result: { pass: false, reason: "1/3 hidden cases fail" },
     });
   });
 
-  it("a broken check (no verdict) is the kit's fault: failed_infra, failure_class kit, never billed", async () => {
+  it("a check that broke on the outputs is the contender's counted FAIL plus trial.kit_suspect, never a re-roll", async () => {
     const s = await seedTdm51(h.db, true);
     const t = await trialTdm51(h.db, s, "gating");
     const fake = fakeScoringTdm51({
       "sum-tests": null,
-      "db-state": JSON.stringify({ pass: true, reason: "ok", evidence: [] }),
+      "db-state": JSON.stringify({ pass: false, reason: "db rows differ", evidence: [] }),
     });
     const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
-    expect(report).toMatchObject({ outcome: "failed_infra", failureClass: "kit" });
+    expect(report).toMatchObject({ outcome: "scored", to: "reviewing" });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
-    expect(row!.state).toBe("failed_infra");
-    expect(row!.failureClass).toBe("kit");
-    // The record is kept for diagnosis; it is never a pass.
+    expect(row!.state).toBe("reviewing");
+    expect(row!.failureClass).toBe("gate");
     const gate = row!.gate as TrialGateRecord;
-    expect(gate.gates["sum-tests"]).toMatchObject({ status: "no_verdict", kit_fault: true });
-    const phase = (await eventsOf(s.runId)).filter((e) => e.type === "trial.phase").at(-1)!;
-    expect(phase.payload).toMatchObject({
-      from: "gating",
-      to: "failed_infra",
-      failure_class: "kit",
+    expect(gate.gates["sum-tests"]).toMatchObject({
+      status: "no_verdict",
+      kit_suspect: true,
+      result: { pass: false },
     });
+    // The suspect gate does not erase the other gate's real FAIL.
+    expect(gate.gates["db-state"]).toMatchObject({
+      status: "verdict",
+      kit_suspect: false,
+      result: { pass: false, reason: "db rows differ" },
+    });
+    const evs = await eventsOf(s.runId);
+    const suspects = evs.filter((e) => e.type === "trial.kit_suspect");
+    expect(suspects).toHaveLength(1);
+    expect(suspects[0]!.payload).toMatchObject({ gate: "sum-tests", status: "no_verdict" });
+    expect(
+      evs.some(
+        (e) => e.type === "trial.phase" && (e.payload as { to: string }).to === "failed_infra",
+      ),
+    ).toBe(false);
   });
 
   it("a kit error (check not in the bundle) is failure_class kit, before any computer", async () => {

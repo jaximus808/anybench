@@ -20,6 +20,7 @@ import { createComputerRegistry, MemoryComputerStore } from "@anybench/envs";
 import { DockerLocalProvider, dockerLocalAvailable } from "@anybench/providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  classifyGateRecord,
   collectScoringFiles,
   runGates,
   trialGateSummary,
@@ -37,6 +38,8 @@ const GATES: Gate[] = [
   { id: "sum-tests", kind: "hidden-tests", timeout_s: 8 },
   { id: "db-state", kind: "db-state", timeout_s: 30 },
   { id: "clean-room", kind: "custom", timeout_s: 30 },
+  { id: "copy-tests", kind: "hidden-tests", timeout_s: 10 },
+  { id: "copy-tests-fragile", kind: "hidden-tests", timeout_s: 10 },
 ];
 
 const HONEST = "echo $(( $1 + $2 ))\n";
@@ -125,6 +128,11 @@ const CONTENDERS: Record<string, (dir: string) => Promise<void>> = {
       ].join("\n"),
     );
     await put(d, "workspace/sum.sh", "(setsid bash ./forge.sh >/dev/null 2>&1 &)\necho 0\n");
+  },
+  // The reviewer's re-roll: ships .hidden-tests as a FILE so a fragile check's `cp -R` aborts.
+  "planted-tests-file": async (d) => {
+    await put(d, "workspace/sum.sh", WRONG);
+    await put(d, "workspace/.hidden-tests", "not a directory\n");
   },
   // Points its answer at a file outside the outputs (dropped on unpack).
   "symlink-escape": async (d) => {
@@ -279,9 +287,33 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     expect(g.status).toBe(status);
     expect(g.result.reason).toMatch(reason);
     expect(g.result.reason).not.toMatch(/forged/);
-    expect(g.kit_fault).toBe(false);
+    expect(g.kit_suspect).toBe(false);
+    // Whatever else happened, the trial counts against the contender.
+    expect(classifyGateRecord(r).failureClass).toBe("gate");
     expect(trialGateSummary(r).pass).toBe(false);
     expect(r.scoring_computer === null || r.scoring_computer.destroyed).toBe(true);
+  });
+
+  it("a planted .hidden-tests file can't buy a re-roll: hardened check FAILs it, fragile check is a counted kit_suspect FAIL", () => {
+    const r = results.get("planted-tests-file")!;
+    expect(r.gates["copy-tests"]).toMatchObject({
+      status: "verdict",
+      kit_suspect: false,
+      result: { pass: false, reason: "hidden tests failed" },
+    });
+    expect(r.gates["copy-tests-fragile"]).toMatchObject({
+      status: "check_failed",
+      kit_suspect: true,
+      result: { pass: false },
+    });
+    const c = classifyGateRecord(r);
+    expect(c.failureClass).toBe("gate");
+    expect(c.kitSuspects.map((k) => k.gate)).toEqual(["copy-tests-fragile"]);
+    // The honest contender passes both copies of the pattern.
+    const h = results.get("honest")!;
+    expect(h.gates["copy-tests"]!.result.pass).toBe(true);
+    expect(h.gates["copy-tests-fragile"]!.result.pass).toBe(true);
+    expect(classifyGateRecord(h)).toEqual({ failureClass: null, kitSuspects: [] });
   });
 
   it("cheaters that ran code still could not break the clean room", () => {

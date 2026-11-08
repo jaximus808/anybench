@@ -50,6 +50,7 @@ export const EVENT_TYPES = [
   "trial.log_chunk",
   "trial.network",
   "trial.gate",
+  "trial.kit_suspect",
   "agent.tool.started",
   "agent.message",
   "computer.created",
@@ -73,6 +74,7 @@ export const EVENT_SOURCE_BY_TYPE = {
   "trial.log_chunk": "trial",
   "trial.network": "trial",
   "trial.gate": "trial",
+  "trial.kit_suspect": "trial",
   "agent.tool.started": "agent_session",
   "agent.message": "agent_session",
   "computer.created": "computer",
@@ -219,6 +221,19 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
       summary: z.string().optional(),
       evidence_url: z.url().optional(),
       details: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
+  /**
+   * A gate FAIL that may be the kit's fault (the check broke rather than judged). It still counts
+   * against the contender (a fragile check must not become a free re-roll); this flags it for a
+   * refund by hand. Written only by the worker's trial.gate job (TDM-51).
+   */
+  eventOf(
+    "trial.kit_suspect",
+    z.object({
+      gate: id,
+      status: z.string().min(1),
+      reason: z.string(),
     }),
   ),
   eventOf(

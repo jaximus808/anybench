@@ -7,6 +7,7 @@ import { createComputerRegistry, MemoryComputerStore } from "@anybench/envs";
 import { FakeProvider, type FakeExecContext } from "@anybench/providers";
 import { describe, expect, it } from "vitest";
 import {
+  classifyGateRecord,
   GATE_VERDICT_MAX_BYTES,
   GateInfraError,
   GateKitError,
@@ -323,29 +324,33 @@ describe("normalizeVerdict (fail closed)", () => {
     expect(o.result.reason).toMatch(reason);
   });
 
-  it("a process left running fails the gate closed: the contender's fault, or the kit's", () => {
+  it("a process left running fails the gate closed; only the check's own is a kit suspect", () => {
     const pass = '{"pass":true,"reason":"","evidence":[]}';
     const run = norm({ ...ok, alive_run: 2 }, pass);
-    expect(run).toMatchObject({ status: "lingering", kit_fault: false, result: { pass: false } });
+    expect(run).toMatchObject({ status: "lingering", kit_suspect: false, result: { pass: false } });
     expect(run.result.reason).toMatch(/2 contender process\(es\) still running/);
     const check = norm({ ...ok, alive_check: 1 }, pass);
-    expect(check).toMatchObject({ status: "lingering", kit_fault: true, result: { pass: false } });
+    expect(check).toMatchObject({
+      status: "lingering",
+      kit_suspect: true,
+      result: { pass: false },
+    });
   });
 
-  it("a broken check is the kit's fault; a check that wrote a verdict and then failed is not", () => {
+  it("a broken check is a kit suspect (still a FAIL); a check that wrote a verdict and then failed is not", () => {
     expect(norm({ rc: 2, duration_ms: 1, verdict: "missing" }, null)).toMatchObject({
       status: "check_failed",
-      kit_fault: true,
+      kit_suspect: true,
     });
     expect(
       norm(
         { rc: 1, duration_ms: 1, verdict: "present" },
         '{"pass":true,"reason":"","evidence":[]}',
       ),
-    ).toMatchObject({ status: "check_failed", kit_fault: false, result: { pass: false } });
-    expect(norm({ ...ok, verdict: "missing" }, null).kit_fault).toBe(true);
-    expect(norm(ok, "{nope").kit_fault).toBe(true);
-    expect(norm(ok, '{"pass":false,"reason":"r","evidence":[]}').kit_fault).toBe(false);
+    ).toMatchObject({ status: "check_failed", kit_suspect: false, result: { pass: false } });
+    expect(norm({ ...ok, verdict: "missing" }, null).kit_suspect).toBe(true);
+    expect(norm(ok, "{nope").kit_suspect).toBe(true);
+    expect(norm(ok, '{"pass":false,"reason":"r","evidence":[]}').kit_suspect).toBe(false);
   });
 
   it("a timeout is a FAIL even with a passing verdict", () => {
@@ -377,11 +382,41 @@ describe("normalizeVerdict (fail closed)", () => {
   });
 });
 
+describe("classifyGateRecord", () => {
+  it("any applicable FAIL is the contender's; kit suspects are listed, never subtracted", () => {
+    const o = (pass: boolean, kit_suspect: boolean, applicable = true) => ({
+      status: kit_suspect ? ("check_failed" as const) : ("verdict" as const),
+      kit_suspect,
+      exit_code: 0,
+      timed_out: false,
+      duration_ms: 1,
+      log_tail: "",
+      result: { pass, applicable, reason: "r", evidence: [] },
+    });
+    const rec = TrialGateRecordSchema.parse({
+      version: 1,
+      trial_id: "t",
+      workload_id: "w",
+      scored_at: new Date().toISOString(),
+      scoring_computer: null,
+      sandbox: "uid-split",
+      outputs_sha256: null,
+      gates: { a: o(false, true), b: o(true, false), c: o(false, false, false) },
+    });
+    expect(classifyGateRecord(rec)).toEqual({
+      failureClass: "gate",
+      kitSuspects: [{ gate: "a", status: "check_failed", reason: "r" }],
+    });
+    const ok = { ...rec, gates: { b: rec.gates.b!, c: rec.gates.c! } };
+    expect(classifyGateRecord(ok)).toEqual({ failureClass: null, kitSuspects: [] });
+  });
+});
+
 describe("trialGateSummary", () => {
   it("not-applicable gates neither pass nor fail the trial; none applicable is no pass", () => {
     const base = {
       status: "verdict" as const,
-      kit_fault: false,
+      kit_suspect: false,
       exit_code: 0,
       timed_out: false,
       duration_ms: 1,
