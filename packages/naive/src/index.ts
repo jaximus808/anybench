@@ -8,6 +8,7 @@ export * from "./types.js";
 export * from "./computers.js";
 export {
   createNaiveClient,
+  naiveClientFetch,
   createNaiveClientFromEnv,
   DEFAULT_NAIVE_BASE_URL,
   NaiveClientOptionsSchema,
@@ -22,3 +23,5 @@ export * from "./fake-computers.js";
 export * from "./apps.js";
 // TDM-39 [4.7]: retry Naïve 429 "at capacity" on create / exec / file writes.
 export * from "./capacity-retry.js";
+// Follow-up 67: bounded retry of Naïve 429 / read 5xx / dropped reads on every live client.
+export * from "./retry-fetch.js";

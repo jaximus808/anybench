@@ -8,9 +8,19 @@
 
 import { createClient, type VettaClient } from "@usenaive-sdk/managed-agents";
 import { z } from "zod";
-import { DEFAULT_NAIVE_BASE_URL } from "./client.js";
+import { DEFAULT_NAIVE_BASE_URL, naiveClientFetch } from "./client.js";
 import { NAIVE_DEFAULT_FS_HOME, type NaiveComputersApi } from "./computers.js";
 import { mapNaiveError, NaiveError } from "./errors.js";
+import type { NaiveRetryFetchOptions } from "./retry-fetch.js";
+
+/** The SDK `fetch` option: retried on Naïve's transient refusals unless `retry: false`. */
+function withRetryFetch(o: {
+  fetch?: typeof globalThis.fetch;
+  retry?: NaiveRetryFetchOptions | false;
+}): { fetch?: typeof globalThis.fetch } {
+  const fetch = naiveClientFetch(o);
+  return fetch ? { fetch } : {};
+}
 
 /** Every trial key is named `<prefix><trialId>`, so a reaper can find and revoke leftovers. */
 export const TRIAL_PROXY_KEY_PREFIX = "anybench-trial-";
@@ -81,11 +91,12 @@ export function liveProxyKeys(options: {
   apiKey: string;
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+  retry?: NaiveRetryFetchOptions | false;
 }): NaiveProxyKeysApi {
   const sdk: VettaClient = createClient({
     apiKey: options.apiKey,
     baseUrl: options.baseUrl ?? DEFAULT_NAIVE_BASE_URL,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...withRetryFetch(options),
   });
   const call = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {
@@ -426,11 +437,16 @@ function microFromWire(n: number | null | undefined): bigint | null {
   return BigInt(n);
 }
 
-function sdkFor(options: { apiKey: string; baseUrl?: string; fetch?: typeof globalThis.fetch }) {
+function sdkFor(options: {
+  apiKey: string;
+  baseUrl?: string;
+  fetch?: typeof globalThis.fetch;
+  retry?: NaiveRetryFetchOptions | false;
+}) {
   return createClient({
     apiKey: options.apiKey,
     baseUrl: options.baseUrl ?? DEFAULT_NAIVE_BASE_URL,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...withRetryFetch(options),
   });
 }
 

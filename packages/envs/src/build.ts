@@ -140,7 +140,7 @@ export interface BuildEnvSnapshotOptions {
   createTries?: number;
   /** First create backoff, doubled each try (max 60 s). Default 5 000 ms. */
   createBackoffMs?: number;
-  /** Tries of a retryable destroy (capacity, timeout). Default 6. */
+  /** Tries of the destroy (any failure but forbidden / validation). Default 6. */
   destroyTries?: number;
   /** First destroy backoff, doubled each try (max 60 s). Default 5 000 ms. */
   destroyBackoffMs?: number;
@@ -324,9 +324,9 @@ export async function buildEnvSnapshot(opts: BuildEnvSnapshotOptions): Promise<E
 }
 
 /**
- * Destroy the build computer, retrying a retryable refusal (Naïve 429 "at capacity", a timeout)
- * with backoff: a build computer is infra, outside the trial reaper's reach, so one 429 on the
- * destroy used to leak it (docs/findings/proof-suite.md). A non-retryable error, or the last try,
+ * Destroy the build computer, retrying a failure (Naïve 429 "at capacity", a timeout, a dropped
+ * connection) with backoff: a build computer is infra, outside the trial reaper's reach, so one
+ * 429 on the destroy used to leak it (docs/findings/proof-suite.md). A non-retryable error, or the last try,
  * is logged and swallowed so the build's own result or error stands.
  */
 async function destroyBuildComputer(
@@ -341,9 +341,12 @@ async function destroyBuildComputer(
       await provider.destroy(id);
       return;
     } catch (err) {
-      const retry = isProviderError(err) && err.retryable && i < tries - 1;
-      if (!retry) {
-        log("env build computer destroy FAILED", { id, err: String(err) });
+      // Follow-up 69: destroy is idempotent (already gone is success), so a network blip (a
+      // plain `provider` error, not `retryable`) is retried too; only a refusal that cannot
+      // change (forbidden / validation) is not.
+      const permanent = isProviderError(err, "forbidden") || isProviderError(err, "validation");
+      if (permanent || i >= tries - 1) {
+        log("env build computer destroy FAILED", { id, attempts: i + 1, err: String(err) });
         return;
       }
       const ms = Math.min(60_000, (opts.destroyBackoffMs ?? 5_000) * 2 ** i);

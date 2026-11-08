@@ -6,6 +6,7 @@ import { z } from "zod";
 import { liveComputers } from "./computers.js";
 import { mapNaiveError, NaiveConflictError } from "./errors.js";
 import { fromWireMicroUsd, toWireMicroUsd } from "./money.js";
+import { naiveRetryFetch, type NaiveRetryFetchOptions } from "./retry-fetch.js";
 import {
   AgentWriteSchema,
   SessionCreateInputSchema,
@@ -38,6 +39,21 @@ export interface NaiveClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Injected in tests for deterministic keys on writes that do not carry their own. */
   idempotencyKey?: () => string;
+  /**
+   * Bounded retry of Naïve's transient refusals (429 on any call; 502/503/504 and dropped
+   * connections on reads). On by default; `false` turns it off (tests asserting a raw error).
+   */
+  retry?: NaiveRetryFetchOptions | false;
+}
+
+/** The fetch a live SDK client gets: the injected one (or global), wrapped in `naiveRetryFetch`. */
+export function naiveClientFetch(options: {
+  fetch?: typeof globalThis.fetch;
+  retry?: NaiveRetryFetchOptions | false;
+}): typeof globalThis.fetch | undefined {
+  if (options.retry === false) return options.fetch;
+  const inner = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  return naiveRetryFetch(inner, options.retry ?? {});
 }
 
 /** Builds the live client. Never call this in a test without `NAIVE_LIVE=1`; use a mocked `fetch` or `FakeNaive`. */
@@ -46,10 +62,11 @@ export function createNaiveClient(options: NaiveClientOptions): NaiveClient {
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
   });
+  const fetch = naiveClientFetch(options);
   const sdk = createClient({
     apiKey: parsed.apiKey,
     baseUrl: parsed.baseUrl,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(fetch ? { fetch } : {}),
     ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
   });
   return new LiveNaiveClient(sdk);

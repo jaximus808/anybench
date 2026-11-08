@@ -55,13 +55,52 @@ export async function bootRuntime(config: Config, role: "api" | "worker"): Promi
   return { logger, sentry };
 }
 
+/** Socket-level errors a dropped database or API connection raises (follow-up 68). */
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "57P01", // admin_shutdown: Neon restarted the endpoint under us
+  "57P03", // cannot_connect_now
+]);
+
+/** A network error the process can outlive: the connection is gone, no in-memory state is. */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "string" && TRANSIENT_NETWORK_CODES.has(code)) return true;
+  return /^Connection terminated( unexpectedly| due to connection timeout)?$/.test(err.message);
+}
+
+export interface ProcessHandlerOptions {
+  /**
+   * Worker only: a transient network error that still escapes as an uncaught exception (a socket
+   * with no 'error' listener) is logged and survived instead of exiting. Jobs whose queries it
+   * broke fail and are retried by graphile-worker.
+   */
+  surviveNetworkErrors?: boolean;
+}
+
 /** Log + report crashes that escape every handler. */
-export function installProcessHandlers({ logger, sentry }: Runtime): void {
+export function installProcessHandlers(
+  { logger, sentry }: Runtime,
+  options: ProcessHandlerOptions = {},
+): void {
   process.on("unhandledRejection", (reason) => {
     logger.error({ err: reason }, "unhandled rejection");
     sentry.captureException(reason);
   });
   process.on("uncaughtException", (err) => {
+    if (options.surviveNetworkErrors && isTransientNetworkError(err)) {
+      logger.error({ err }, "uncaught transient network error; survived");
+      sentry.captureException(err);
+      return;
+    }
     logger.fatal({ err }, "uncaught exception");
     sentry.captureException(err);
     void sentry.flush(2000).finally(() => process.exit(1));

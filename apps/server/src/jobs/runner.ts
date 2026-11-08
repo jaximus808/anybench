@@ -12,7 +12,7 @@ import {
   type TaskList,
 } from "graphile-worker";
 import type { Config } from "../config.js";
-import { createDb, type DbHandle } from "../db/client.js";
+import { createDb, guardPgPool, type DbHandle, type PgErrorSink } from "../db/client.js";
 import type { Logger } from "../lib/logger.js";
 import type { SentryHandle } from "../lib/sentry.js";
 import { JOBS } from "./index.js";
@@ -81,7 +81,10 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   const jobs = options.jobs ?? JOBS;
   const workerId = options.workerId ?? config.WORKER_ID ?? `${hostname()}:${process.pid}`;
   const logger = options.logger.child({ workerId });
-  const dbh: DbHandle = createDb(config.databaseUrlDirect, { max: 2 });
+  // Follow-up 68: a dropped Neon connection is logged and survived, never a process exit.
+  const onPgError: PgErrorSink = (err) =>
+    logger.warn({ err }, "db: connection error; client dropped, work retries");
+  const dbh: DbHandle = createDb(config.databaseUrlDirect, { max: 2, onError: onPgError });
   const ctx: JobContext = {
     config,
     logger,
@@ -95,11 +98,14 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   // graphile owns the pool, so its connections could outlive stop() and a later
   // `drop database ... with (force)` (tests) or Postgres shutdown would raise unhandled 57P01
   // errors. Passing pgPool means graphile never ends it; stop() awaits graphilePool.end() itself.
-  const graphilePool = new pg.Pool({
-    connectionString: config.databaseUrlDirect,
-    max: Math.max(10, config.WORKER_CONCURRENCY + 2),
-  });
-  graphilePool.on("error", (err) => logger.warn({ err }, "graphile-worker idle client error"));
+  const graphilePool = guardPgPool(
+    new pg.Pool({
+      connectionString: config.databaseUrlDirect,
+      max: Math.max(10, config.WORKER_CONCURRENCY + 2),
+      keepAlive: true,
+    }),
+    onPgError,
+  );
 
   let runner: Runner;
   try {

@@ -345,7 +345,12 @@ describe("createNaiveClient (mocked fetch)", () => {
       "GET /v1/credits/subscription": () =>
         new Response("<html>bad gateway</html>", { status: 502 }),
     });
-    const client = createNaiveClient({ apiKey: "k", baseUrl: "https://naive.test", fetch });
+    const client = createNaiveClient({
+      apiKey: "k",
+      baseUrl: "https://naive.test",
+      fetch,
+      retry: false,
+    });
     const e1 = await client.credits.show().catch((e: unknown) => e);
     expect(e1).toBeInstanceOf(NaiveError);
     expect((e1 as NaiveError).code).toBe("response_unreadable");

@@ -7,7 +7,7 @@ import { runProviderContract } from "../src/contract.js";
 import { NaiveProvider } from "../src/naive.js";
 import { tdm22NaiveWireFetch } from "./tdm22-naive-wire.js";
 
-function wired(provisionDelayMs = 20) {
+function wired(provisionDelayMs = 20, retry = false) {
   const naive = new FakeNaive({
     computers: { timeScale: 0.01, provisionDelayMs, fsVisibilityDelayMs: 10 },
   });
@@ -16,6 +16,10 @@ function wired(provisionDelayMs = 20) {
     apiKey: "sk_test_tdm22_offline",
     baseUrl: "https://naive.invalid",
     fetch,
+    // Off by default here so the error-mapping tests see Naïve's raw answers; one test turns it on.
+    ...(retry
+      ? { retry: { sleep: async () => {}, onRetry: () => {} } }
+      : { retry: false as const }),
   });
   const p = new NaiveProvider({
     client,
@@ -57,6 +61,19 @@ describe("naive wire details", () => {
     expect(read?.body).toEqual({ path: "/home/naive/bin/raw", encoding: "base64" });
     const exec = requests.find((r) => r.path.endsWith("/exec"));
     expect(exec?.body).toMatchObject({ timeout_ms: 30_000 });
+  });
+
+  it("follow-up 67: with retry on, a 429 on create and on fs/read is retried transparently", async () => {
+    const { p, naive, requests } = wired(20, true);
+    naive.failNext("computers.create", fakeNaiveError("rate_limited", 429));
+    const c = await p.create({});
+    expect(requests.filter((r) => r.method === "POST" && r.path === "/v1/computers")).toHaveLength(
+      2,
+    );
+    await p.waitReady(c.id, { timeoutMs: 5_000 });
+    await p.putFile(c.id, "f.txt", new TextEncoder().encode("hi"));
+    naive.failNext("computers.fs.read", fakeNaiveError("rate_limited", 429));
+    expect(new TextDecoder().decode(await p.getFile(c.id, "f.txt"))).toBe("hi");
   });
 
   it("maps 402 / 409 / 429 envelopes from the API to typed provider errors", async () => {

@@ -12,7 +12,7 @@ import { startWorker } from "./jobs/runner.js";
 loadDotEnv();
 const config = loadConfigOrExit("worker");
 const runtime = await bootRuntime(config, "worker");
-installProcessHandlers(runtime);
+installProcessHandlers(runtime, { surviveNetworkErrors: true });
 
 const worker = await startWorker({ config, ...runtime });
 onShutdown(runtime.logger, () => worker.stop());
