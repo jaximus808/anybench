@@ -55,17 +55,20 @@ scripts/verify-proof.sh           runs the proof in Docker; results in PROOF.md
   diagnostic), `hidden-tests.json`, `hidden-tests.log`.
 - `api-load` re-runs the hidden tests and only if they all pass starts the app and drives
   `GET /todos` / `POST /todos` at 50 req/s for 20 s, writing `api_p95_ms`. Workloads without an
-  API answer `pass: false, "not applicable"`, which is how `api-p95` is scored on todo-api alone.
+  API answer `pass: false, "not applicable"`; `api-p95` is scoped to `workloads: [todo-api]`, so
+  those trials leave the requirement and the api-load tally.
 
 | Requirement | Metric | Target | Gate | Weight |
 | --- | --- | --- | --- | --- |
 | Hidden tests pass (42 tests across 3 tasks) | `gate_pass_rate` | at least 1.0 | hidden-tests | 50 |
 | API p95 latency at 50 req/s (todo-api) | `api_p95_ms` | under 120 ms | api-load | 10 |
-| Wall-clock time | `wall_s` | relative | hidden-tests | 10 |
-| Cost per task | `cost_micro_usd` | relative | hidden-tests | 10 |
+| Wall-clock time (failures count at the task's `timeout_s`) | `wall_s` | relative | hidden-tests | 10 |
+| Cost per solved task (all spend ÷ solves) | `cost_micro_usd` | relative | hidden-tests | 10 |
 | Code quality (reviewed) | `rubric.md` | 1–4 | hidden-tests | 20 |
 
-Scoring (`packages/bench` `scoreKit`) counts a metric only from trials whose gate passed.
+Scoring (`packages/bench` `scoreKit`) counts a metric only from trials whose gate passed, except
+that cost charges every trial's spend to the solves and time counts a failed trial at the cap. Every
+setup is scored over the same tasks: a task a setup never solves is a 0, not a dropped task.
 
 ## Proof
 

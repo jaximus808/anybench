@@ -4,7 +4,6 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   GATE_PASS_RATE_METRIC,
-  NO_SCORE_REASONS,
   median,
   mulberry32,
   parseTarget,
@@ -206,12 +205,13 @@ describe("fixture run: the product page's example table shape", () => {
       expect(r.time).toMatch(/^\d+ min$/);
       expect(typeof r.costPerSolved).toBe("bigint");
     }
-    // Same ordering as the example: C > D > B > A.
+    // Same ordering as the example: C > D > B > A, and the do-less cheater last with 0 (TDM-174).
     expect(result.ranking).toEqual([
       "tandem-x3",
       "tandem-x5",
       "claude-code-subagents",
       "claude-code-solo",
+      "do-less",
     ]);
   });
 
@@ -246,21 +246,20 @@ describe("fixture run: the product page's example table shape", () => {
     expect(cell(tests, "auth-refactor")).toBeLessThan(cell(bTests, "auth-refactor")!);
   });
 
-  it("the do-less cheater gets no score, no rank, and does not move anyone else's score", () => {
-    const cheater = byId.get("do-less")!;
-    expect(cheater.scored).toBe(false);
-    if (cheater.scored) return;
-    expect(cheater.total).toBeNull();
-    expect(cheater.reason).toBe("no score: gate failed");
-    expect(cheater.blockedBy).toEqual(["latency", "time", "cost", "quality"]);
-    const time = cheater.requirements.find((r) => r.requirementId === "time")!;
-    expect(time).toMatchObject({
-      scored: false,
-      code: "gate_failed",
-      reason: NO_SCORE_REASONS.gate_failed,
-      points: null,
-    });
-    expect(result.ranking).not.toContain("do-less");
+  // TDM-174: a cheater solves nothing, so every cell is a 0 (plan.md 17.2 rule 9: it scores 0).
+  it("the do-less cheater scores 0, ranks last, and does not move anyone else's score", () => {
+    const cheater = scored(byId.get("do-less"));
+    expect(cheater.total).toBe(0);
+    expect(result.ranking.at(-1)).toBe("do-less");
+    for (const r of cheater.requirements) {
+      expect(r).toMatchObject({ scored: true, points: 0 });
+      if (!r.scored) continue;
+      expect(r.byWorkload.map((c) => c.status)).toEqual(
+        r.aggregate === "rate"
+          ? ["measured", "measured", "measured"]
+          : ["unsolved", "unsolved", "unsolved"],
+      );
+    }
 
     const without = scoreKit(kit, trialsTdm53());
     for (const c of without.contenders) {
@@ -430,8 +429,9 @@ describe("scoring properties", () => {
           const mine = ts.filter((t) => t.contenderId === c.contenderId);
           const allGated = mine.every((t) => t.gates.g !== undefined);
           const anyPass = mine.some((t) => t.gates.g?.pass === true);
-          if (!allGated || !anyPass) expect(c.scored).toBe(false);
+          if (!allGated) expect(c.scored).toBe(false);
           if (!c.scored) continue;
+          if (!anyPass) expect(c.total).toBe(0); // TDM-174: 0 cells, not a missing total
           expect(c.total).toBeGreaterThanOrEqual(0);
           expect(c.total).toBeLessThanOrEqual(100 + 1e-9);
           for (const req of c.requirements) {
@@ -446,7 +446,7 @@ describe("scoring properties", () => {
     );
   });
 
-  it("adding a contender whose gate always fails never changes the other scores", () => {
+  it("adding a contender whose gate always fails scores it 0 and never changes the other scores", () => {
     fc.assert(
       fc.property(
         trialsArb,
@@ -457,11 +457,11 @@ describe("scoring properties", () => {
           const after = scoreKit(miniKitTdm53(), [...ts, ...cheat]);
           expect(after.contenders.at(-1)).toMatchObject({
             contenderId: "cheat",
-            scored: false,
-            reason: "no score: gate failed",
+            scored: true,
+            total: 0,
           });
           expect(after.contenders.slice(0, -1)).toEqual(before.contenders);
-          expect(after.ranking).toEqual(before.ranking);
+          expect(after.ranking).toEqual([...before.ranking, "cheat"]);
         },
       ),
     );

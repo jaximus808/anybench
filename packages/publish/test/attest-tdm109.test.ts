@@ -64,7 +64,10 @@ const KIT_TDM109: Pick<KitSpec, "requirements" | "scoring"> = {
   scoring: { weights: { tests: 70, time: 30 } },
 };
 
-/** tandem passes 4/5 and 3/5, claude-code 3/5 and 2/5, do-less never passes (no score). */
+/**
+ * tandem passes 4/5 and 3/5, claude-code 3/5 and 2/5. do-less's gate never ran, so it has no
+ * score (since TDM-174 a contender that runs and fails every gate scores 0 instead).
+ */
 function trialsTdm109(): TrialResult[] {
   const setups = [
     { id: "tandem", passes: [4, 3], wall: 600 },
@@ -81,7 +84,10 @@ function trialsTdm109(): TrialResult[] {
           workloadId,
           repeat,
           metrics: { wall_s: s.wall + repeat * 7 },
-          gates: { "hidden-tests": { pass, reason: pass ? "ok" : "2 failed", evidence: [] } },
+          gates:
+            s.id === "do-less"
+              ? {}
+              : { "hidden-tests": { pass, reason: pass ? "ok" : "2 failed", evidence: [] } },
         });
       }
     });
@@ -240,7 +246,7 @@ describe("attest", () => {
     expect(tandem.ci).toMatchObject({ level: 0.95 });
     const doLess = p.scores.find((s) => s.contender_id === "do-less")!;
     expect(doLess).toMatchObject({ scored: false, total: null, ci: null });
-    expect(doLess.scored === false && doLess.reason).toBe("no score: gate failed");
+    expect(doLess.scored === false && doLess.reason).toBe("no score: gate missing");
 
     const text = serializeAttestation(att);
     expect(text).toBe(canonicalize(JSON.parse(text)));

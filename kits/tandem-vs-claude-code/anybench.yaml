@@ -153,6 +153,8 @@ requirements:
     better: lower
     target: under 120 ms
     gate_id: api-load
+    # Only todo-api builds an API: other workloads are outside this requirement (and the gate's tally).
+    workloads: [todo-api]
   - id: wall
     type: measured
     title: Wall-clock time to finish

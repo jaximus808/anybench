@@ -6,12 +6,7 @@ import { fileURLToPath } from "node:url";
 import { safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import {
-  NO_SCORE_REASONS,
-  scoreKit,
-  type ScoredContender,
-  type TrialResult,
-} from "../src/index.js";
+import { scoreKit, type ScoredContender, type TrialResult } from "../src/index.js";
 
 const KIT_YAML_TDM128 = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -156,9 +151,27 @@ describe("scoreKit on the tandem-vs-claude-code kit", () => {
     expect(c.points).toBe(10); // 96–100 ms meets the target
     expect(a.points).toBeLessThan(10); // ~141 ms misses it: 120 / 141 of the weight
     expect(a.points).toBeCloseTo(10 * (120 / 141), 6);
+    // TDM-174: api-p95 is scoped to todo-api, so the other tasks' "not applicable" answers leave
+    // the api-load tally instead of counting as 10 failures.
+    expect(byId(C.id).gates["api-load"]).toEqual({ passed: 5, failed: 0, missing: 0, total: 5 });
+    expect(byId(C.id).gatesNotApplicable["api-load"]).toBe(10);
   });
 
-  it("a do-nothing setup gets no score at all", () => {
+  it("cost is all spend ÷ solved tasks and wall time counts failures at the task's timeout", () => {
+    const cost = byId(C.id).requirements.find((r) => r.requirementId === "cost")!;
+    const wall = byId(C.id).requirements.find((r) => r.requirementId === "wall")!;
+    if (!cost.scored || !wall.scored) throw new Error("cost and wall should be scored");
+    expect(cost.aggregate).toBe("per_solved");
+    expect(wall.aggregate).toBe("censored");
+    // auth-refactor: C solves 2 of 5 and pays for all 5.
+    const spend = [0, 1, 2, 3, 4].reduce((s, r) => s + C.cost_micro_usd + r * 1000, 0);
+    const authCost = cost.byWorkload.find((w) => w.workloadId === "auth-refactor")!;
+    expect(authCost).toMatchObject({ value: spend / 2, trials: 5, solved: 2, n: 5 });
+    const authWall = wall.byWorkload.find((w) => w.workloadId === "auth-refactor")!;
+    expect(authWall).toMatchObject({ cap: 3600, value: 3600, solved: 2 }); // 3 of 5 at the cap
+  });
+
+  it("a do-nothing setup scores 0 and ranks last (TDM-174: 0 cells, not a missing total)", () => {
     const noop: SetupTdm128 = {
       id: "do-nothing",
       passes: { "todo-api": 0, "auth-refactor": 0, "bug-hunt": 0 },
@@ -169,9 +182,7 @@ describe("scoreKit on the tandem-vs-claude-code kit", () => {
     };
     const r = scoreKit(kit, [A, noop].flatMap(trialsTdm128));
     const c = r.contenders.find((x) => x.contenderId === "do-nothing")!;
-    expect(c.scored).toBe(false);
-    if (c.scored) return;
-    expect(c.reason).toBe(NO_SCORE_REASONS.gate_failed);
-    expect(r.ranking).toEqual(["claude-code-solo"]);
+    expect(c).toMatchObject({ scored: true, total: 0 });
+    expect(r.ranking).toEqual(["claude-code-solo", "do-nothing"]);
   });
 });

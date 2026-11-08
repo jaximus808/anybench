@@ -21,6 +21,7 @@ import {
   SubjectKindSchema,
 } from "./kit-primitives.js";
 import { GateSchema, RequirementSchema } from "./requirement.js";
+import { lookupUnit, parseRequirementTarget } from "./target.js";
 import { WorkloadSchema } from "./workload.js";
 
 export const KIT_SCHEMA_VERSION = 2 as const;
@@ -185,6 +186,9 @@ export const KitSpecSchema = z
       }
     });
 
+    // Per-workload scope, target units and aggregation (TDM-174).
+    checkRequirementScoringTdm174(kit, issue);
+
     // Measured gates need an oracle that covers them.
     const measuredGates = new Map<string, number>();
     kit.requirements.forEach((r, i) => {
@@ -281,6 +285,66 @@ export const KitSpecSchema = z
     });
   });
 export type KitSpec = z.infer<typeof KitSpecSchema>;
+/** Mirrors `GATE_PASS_RATE_METRIC` in @anybench/bench (core cannot import bench). */
+const GATE_PASS_RATE = "gate_pass_rate";
+
+/**
+ * TDM-174 [16.3]: requirement scope, target and aggregation rules.
+ * - `workloads` names real workloads, each once.
+ * - a bound `target` is in a unit that converts to the requirement's `unit`.
+ * - `gate_pass_rate` takes no `aggregate`/`cap`; `cap` goes only with `censored` (or no aggregate).
+ * - `aggregate: censored` can find a cap for every scoped workload.
+ */
+function checkRequirementScoringTdm174(
+  kit: Pick<KitSpec, "requirements" | "workloads" | "contenders">,
+  issue: (path: PropertyKey[], message: string) => void,
+): void {
+  const workloads = new Map(kit.workloads.map((w) => [w.id, w]));
+  kit.requirements.forEach((r, i) => {
+    const seen = new Set<string>();
+    r.workloads?.forEach((w, j) => {
+      if (!workloads.has(w))
+        issue(["requirements", i, "workloads", j], `workload '${w}' is not defined in workloads[]`);
+      else if (seen.has(w))
+        issue(["requirements", i, "workloads", j], `workload '${w}' is listed twice`);
+      seen.add(w);
+    });
+    if (r.type !== "measured") return;
+
+    const t = parseRequirementTarget(r.target, r.unit);
+    if (!t.ok) issue(["requirements", i, "target"], t.error);
+
+    if (r.metric === GATE_PASS_RATE) {
+      if (r.aggregate !== undefined)
+        issue(
+          ["requirements", i, "aggregate"],
+          `${GATE_PASS_RATE} is always a rate: drop aggregate`,
+        );
+      if (r.cap !== undefined) issue(["requirements", i, "cap"], `${GATE_PASS_RATE} has no cap`);
+      return;
+    }
+    if (r.cap !== undefined && r.aggregate !== undefined && r.aggregate !== "censored") {
+      issue(["requirements", i, "cap"], `cap only applies to aggregate 'censored'`);
+    }
+    if (r.aggregate === "censored" && r.cap === undefined) {
+      const timeUnit = r.unit === undefined || lookupUnit(r.unit)?.dim === "time";
+      const scoped = r.workloads ?? kit.workloads.map((w) => w.id);
+      const everyContenderCapped = kit.contenders.every(
+        (c) => c.driver.wall_clock_cap_s !== undefined,
+      );
+      const everyWorkloadCapped = scoped.every((w) => workloads.get(w)?.timeout_s !== undefined);
+      if (!timeUnit || !(everyContenderCapped || everyWorkloadCapped)) {
+        issue(
+          ["requirements", i, "cap"],
+          timeUnit
+            ? "aggregate 'censored' counts failed trials at the cap: set cap, every workload's timeout_s, or every contender's wall_clock_cap_s"
+            : `aggregate 'censored' on a metric in '${r.unit}' needs an explicit cap in that unit`,
+        );
+      }
+    }
+  });
+}
+
 export type KitSpecInput = z.input<typeof KitSpecSchema>;
 
 // ---------------------------------------------------------------------------------------------

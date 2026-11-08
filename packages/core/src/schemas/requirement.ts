@@ -33,14 +33,40 @@ export const GateSchema = z.strictObject({
 });
 export type Gate = z.infer<typeof GateSchema>;
 
-/** `gate.json` written by `check.sh`: `{pass, reason, evidence[]}`. */
+/** `gate.json` written by `check.sh`: `{pass, reason, evidence[], applicable?}`. */
 export const GateResultSchema = z.strictObject({
   pass: z.boolean(),
   reason: z.string(),
   /** Paths (relative to the frozen outputs) that back the verdict. */
   evidence: z.array(z.string()),
+  /**
+   * `false`: the gate does not apply to this trial (e.g. an API load gate on a workload with no
+   * API). The trial then leaves the gate's tally and every requirement on the gate, instead of
+   * counting as a failure; `pass` is ignored. Omitted means it applies. (TDM-174; TDM-51's gate
+   * runner writes the same optional field.)
+   */
+  applicable: z.boolean().optional(),
 });
 export type GateResult = z.infer<typeof GateResultSchema>;
+
+/**
+ * Workloads a requirement is scored on. Omit for every workload. A trial on another workload is
+ * outside the requirement: it neither feeds nor blocks it (e.g. API p95 only on `todo-api`).
+ */
+export const RequirementWorkloadsSchema = z.array(KitSlugSchema).min(1);
+
+/**
+ * How a measured requirement turns a workload's trials into one value (plan.md 17.2 rule 1).
+ * - `median`: median over the gate-passing trials.
+ * - `per_solved`: all spend ÷ solved tasks: the metric summed over every trial, passing or not,
+ *   divided by the number of passing trials (cost per solved task).
+ * - `censored`: time-to-solve: median over every trial, with each failed trial counted at the
+ *   cap (`cap`, else the workload's `timeout_s`, else the contenders' `wall_clock_cap_s`).
+ * Omit to let the scorer pick: `per_solved` for `cost_micro_usd`, `censored` for `wall_s` when a
+ * cap is known, else `median`.
+ */
+export const MeasuredAggregateSchema = z.enum(["median", "per_solved", "censored"]);
+export type MeasuredAggregate = z.infer<typeof MeasuredAggregateSchema>;
 
 /** Measured: a number from the collectors, only counted when its gate passed. */
 export const MeasuredRequirementSchema = z.strictObject({
@@ -61,6 +87,10 @@ export const MeasuredRequirementSchema = z.strictObject({
           : "gate_id must be a string",
     })
     .pipe(KitSlugSchema),
+  workloads: RequirementWorkloadsSchema.optional(),
+  aggregate: MeasuredAggregateSchema.optional(),
+  /** `censored` only: the value a failed trial counts as, in the metric's unit. */
+  cap: z.number().positive().optional(),
 });
 export type MeasuredRequirement = z.infer<typeof MeasuredRequirementSchema>;
 
@@ -79,6 +109,7 @@ export const ReviewedRequirementSchema = z.strictObject({
     .default({ min: 1, max: 4 }),
   /** A reviewed requirement may also be gated (e.g. only review code whose tests pass). */
   gate_id: KitSlugSchema.optional(),
+  workloads: RequirementWorkloadsSchema.optional(),
 });
 export type ReviewedRequirement = z.infer<typeof ReviewedRequirementSchema>;
 
