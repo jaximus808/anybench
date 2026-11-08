@@ -354,7 +354,11 @@ describe.skipIf(!available)("trial.execute (TDM-49, FakeProvider + local Postgre
           secrets: {},
         }),
       }),
-      timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 200, startTimeoutMs: 2_000 },
+      // staleMs is how long status.json may stay unchanged before the runner counts as dead. The
+      // fake runner heartbeats every 20 ms on this same event loop, so a 200 ms window flaked under
+      // machine load (a stalled loop looked like a dead runner on attempt 2). 2 s keeps a ~100x
+      // margin and still catches attempt 1's hang quickly.
+      timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 2_000, startTimeoutMs: 10_000 },
     });
     const before = Date.now();
     await job.run({ trial_id: id, retry: false, keep_computer: false }, ctx, helpers);
@@ -376,7 +380,13 @@ describe.skipIf(!available)("trial.execute (TDM-49, FakeProvider + local Postgre
     // The delayed retry: attempt 2 runs to collecting.
     await job.run({ trial_id: id, retry: true, keep_computer: false }, ctx, helpers);
     const [t2] = await h.db.select().from(trials).where(eq(trials.id, id));
-    expect(t2).toMatchObject({ state: "collecting", attempt: 2 });
+    expect(
+      t2,
+      `attempt 2 ended ${t2?.state} (${t2?.failureClass ?? "no failure class"})`,
+    ).toMatchObject({
+      state: "collecting",
+      attempt: 2,
+    });
   });
 
   it("trial.reattach enqueues orphaned trials under their execute job key", async () => {
