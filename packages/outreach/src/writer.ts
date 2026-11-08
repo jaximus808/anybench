@@ -148,7 +148,8 @@ const clip = (s: string, n: number) => {
 
 /** The no-model opening: quotes their first verified claim, or names the project. */
 export function templateOpening(brief: ScoutBrief, project: string): WriterOutput {
-  const claim = brief.claims[0];
+  // Prefer a prose line over a markdown table row, which reads badly when quoted.
+  const claim = brief.claims.find((c) => !c.text.includes("|")) ?? brief.claims[0];
   const opening = claim
     ? `Your README for ${project} says "${clip(claim.text, 140)}", and I'd like to put that through an independent benchmark.`
     : `I came across ${project} and would like to put it through an independent benchmark.`;
@@ -196,7 +197,10 @@ export const FOOTER_UNSUBSCRIBE = `Reply "unsubscribe" and we won't email you ag
 
 /** Footer lines (also checked by lintDraft). */
 export function footerLines(lead: DraftLead, postalAddress: string): string[] {
-  return [whyYouGotThis(lead), FOOTER_UNSUBSCRIBE, `Anybench, ${postalAddress}`];
+  const postal = /^anybench\b/i.test(postalAddress.trim())
+    ? postalAddress.trim()
+    : `Anybench, ${postalAddress.trim()}`;
+  return [whyYouGotThis(lead), FOOTER_UNSUBSCRIBE, postal];
 }
 
 export function composeDraft(lead: DraftLead, out: WriterOutput, o: ComposeOptions): DraftEmail {

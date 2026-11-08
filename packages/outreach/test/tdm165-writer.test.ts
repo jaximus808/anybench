@@ -132,6 +132,15 @@ describe("writer checks (TDM-165)", () => {
     expect(d.text).toContain('Reply "unsubscribe"');
     expect(d.text).toContain(POSTAL);
     expect(d.text).toContain("listed as a contact on zippy.dev");
+    expect(d.text).toContain(`Anybench, ${POSTAL}`);
+    const named = composeDraft(
+      lead as never,
+      templateOpening(runWriterBrief(lead as never), "zippy"),
+      {
+        postalAddress: `Anybench, ${POSTAL}`,
+      },
+    );
+    expect(named.text).not.toContain("Anybench, Anybench,");
     expect(d.html).toContain('<a href="https://anybench.vercel.app">');
     expect(lintDraft(d, { postalAddress: POSTAL })).toEqual([]);
     expect(lintDraft(d, { postalAddress: "" })).toContain("COMPANY_POSTAL_ADDRESS is not set");
