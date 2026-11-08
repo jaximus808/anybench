@@ -202,3 +202,52 @@ export function resultRows(report: Report): ResultRow[] {
     return { requirementId: id, title, type, cells, verdicts };
   });
 }
+
+export type PerTaskCell = {
+  workloadId: string;
+  contenderId: string;
+  name: string;
+  verdict: Verdict;
+  word: string;
+  ci: string;
+  mde: string;
+  downgraded: RequirementComparison["downgraded"];
+};
+
+export type PerTaskRow = {
+  requirementId: string;
+  title: string;
+  cells: PerTaskCell[];
+};
+
+/**
+ * E18: one row per requirement with each compared setup's per-task results ("on todo-api:
+ * better"). Each speaks for its task only; `report.per_task.scope` says what that leaves out.
+ * Empty for reports without per-task results.
+ */
+export function perTaskRows(report: Report): PerTaskRow[] {
+  if (!report.per_task) return [];
+  const rows = new Map<string, PerTaskRow>();
+  for (const c of report.contenders) {
+    for (const r of c.requirements) {
+      for (const t of r.by_task ?? []) {
+        let row = rows.get(r.requirement_id);
+        if (!row) {
+          row = { requirementId: r.requirement_id, title: r.title || r.requirement_id, cells: [] };
+          rows.set(r.requirement_id, row);
+        }
+        row.cells.push({
+          workloadId: t.workload_id,
+          contenderId: c.contender_id,
+          name: c.name,
+          verdict: t.comparison.verdict,
+          word: VERDICT_WORD[t.comparison.verdict],
+          ci: formatCi(t.comparison, r.unit),
+          mde: formatMde(t.comparison, r.unit),
+          downgraded: t.comparison.downgraded,
+        });
+      }
+    }
+  }
+  return [...rows.values()];
+}

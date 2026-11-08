@@ -18,7 +18,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandTrials, expandTrialsInputFromKit, powerPlanForKit } from "@anybench/bench";
+import {
+  expandTrials,
+  expandTrialsInputFromKit,
+  minRepeatsForPerTask,
+  powerPlanForKit,
+} from "@anybench/bench";
 import { formatSchemaIssues, safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { KitLoadError, loadKit, type LoadedKit } from "@anybench/kit";
 import {
@@ -53,8 +58,31 @@ export function wantsSmoke(question: string): boolean {
 
 /** The head-to-head profile's contenders: plain Claude Code vs Tandem. */
 export const HEAD_TO_HEAD_CONTENDERS = ["claude-code-solo", "tandem"] as const;
-/** Repeats per task in the head-to-head profile. */
+/**
+ * Repeats per task in the head-to-head profile, at least. With 3 tasks the general (task-paired)
+ * verdict can't say anything, so the answer comes from each task's own repeats (E18 per-task
+ * results), and those need enough repeats to survive Holm across every task × requirement test:
+ * 5 vs 5 can't get below p = 0.0079, which is above 0.05 / 13. `headToHeadProfile` raises the
+ * repeats to `minRepeatsForPerTask` (6 for the curated kit).
+ */
 export const HEAD_TO_HEAD_REPEATS = 5;
+
+/** The Tandem setup's display name in the head-to-head profile (TANDEM_WORKERS=3 only). */
+export const HEAD_TO_HEAD_TANDEM_NAME = "Tandem ×3";
+
+/** Per-task tests in a kit's Holm family: (setups − 1) × Σ requirements' covered workloads. */
+export function perTaskFamily(spec: KitSpec): number {
+  const tasks = spec.workloads.map((w) => w.id);
+  const covered = spec.requirements.reduce(
+    (n, r) =>
+      n + (r.workloads ? r.workloads.filter((w) => tasks.includes(w)).length : tasks.length),
+    0,
+  );
+  const setups =
+    spec.contenders.length *
+    Object.values(spec.vary).reduce((p, values) => p * Math.max(1, values.length), 1);
+  return Math.max(1, setups - 1) * covered;
+}
 
 /** Trials the scheduler will plan for a kit (warm-ups included). */
 export function trialCount(spec: KitSpec): number {
@@ -90,20 +118,27 @@ export function smokeProfile(
 
 /**
  * The head-to-head profile, the Tandem repo's default: A (Claude Code solo) vs Tandem ×3 on all
- * three tasks, 5 repeats each, no warm-up: 30 trials, paired by task. It answers "is Tandem better
- * than plain Claude Code?" with enough trials for wall clock and cost to say something; the
- * subagents setup and Tandem ×1/×5 stay in the full kit. Re-validated after the cut.
+ * three tasks, no warm-up, at the fewest repeats a per-task verdict can reach significance with
+ * (6 each for the curated kit: 36 trials). It answers "is Tandem better than plain Claude Code ON
+ * THESE TASKS?" per task (E18); the general task-paired verdict says "insufficient tasks" at 3.
+ * The subagents setup and Tandem ×1/×5 stay in the full kit. Re-validated after the cut.
  */
 export function headToHeadProfile(
   spec: KitSpec,
 ): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
   const keep = new Set<string>(HEAD_TO_HEAD_CONTENDERS);
-  const cut = {
+  const shaped = {
     ...spec,
-    contenders: spec.contenders.filter((c) => keep.has(c.id)),
-    repeats: HEAD_TO_HEAD_REPEATS,
+    // Only Tandem ×3 runs here, so its display name says so ("Tandem ×3 was faster on …").
+    contenders: spec.contenders
+      .filter((c) => keep.has(c.id))
+      .map((c) => (c.id === "tandem" ? { ...c, name: HEAD_TO_HEAD_TANDEM_NAME } : c)),
     schedule: { ...spec.schedule, warmups: 0 },
     vary: { ...spec.vary, TANDEM_WORKERS: [3] },
+  };
+  const cut = {
+    ...shaped,
+    repeats: Math.max(HEAD_TO_HEAD_REPEATS, minRepeatsForPerTask(perTaskFamily(shaped))),
   };
   if (cut.contenders.length !== keep.size) {
     return { ok: false, reason: "the curated Tandem kit is missing a head-to-head contender" };
@@ -140,7 +175,9 @@ export const NULL_PILOT_TWIN_NAME = "A′ · Claude Code solo (identical copy)";
  *
  * Repeats come from the power plan (packages/bench powerPlanForKit), so the pilot runs what the
  * test plan recommends for this shape: 10 per arm × task for a harness kit, 60 trials. The
- * verdicts must all be "no detectable difference": a better/worse here means the eval is broken.
+ * verdicts should all be "no detectable difference". At 3 tasks the general (task-paired) verdict
+ * can't fire at all; the per-task verdicts (E18) can, and Holm keeps a false winner to ≤ 5% of
+ * runs, so a winner in repeated pilots means the eval is broken.
  * Re-validated after the cut.
  */
 export function nullPilotProfile(
@@ -300,7 +337,7 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
         await say(
           ctx,
           "kit_designer",
-          `null pilot profile: ${trialCount(pilot.spec)} trials (Claude Code solo vs an identical copy of itself, ${pilot.spec.workloads.length} tasks × ${pilot.spec.repeats} repeats from the power plan, no warm-up); every verdict must be "no detectable difference", a winner means the eval is broken`,
+          `null pilot profile: ${trialCount(pilot.spec)} trials (Claude Code solo vs an identical copy of itself, ${pilot.spec.workloads.length} tasks × ${pilot.spec.repeats} repeats from the power plan, no warm-up); expect "no detectable difference" everywhere, per task too: a false winner has at most a 5% chance per run (Holm), so winners in repeated pilots mean the eval is broken`,
         );
         return stageOk({ spec: pilot.spec, files_dir });
       }
@@ -323,7 +360,7 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       await say(
         ctx,
         "kit_designer",
-        `head-to-head profile: ${trialCount(h2h.spec)} trials (Claude Code solo vs Tandem ×3, ${h2h.spec.workloads.length} tasks × ${HEAD_TO_HEAD_REPEATS} repeats, no warm-up); say "smoke" for a 3-trial check or "full benchmark" for the whole kit`,
+        `head-to-head profile: ${trialCount(h2h.spec)} trials (Claude Code solo vs Tandem ×3, ${h2h.spec.workloads.length} tasks × ${h2h.spec.repeats} repeats, no warm-up; per-task verdicts, Holm across up to ${perTaskFamily(h2h.spec)} task × requirement tests); say "smoke" for a 3-trial check or "full benchmark" for the whole kit`,
       );
       return stageOk({ spec: h2h.spec, files_dir });
     },

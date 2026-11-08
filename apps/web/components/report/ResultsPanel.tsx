@@ -18,7 +18,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useLiveApi } from "../../lib/live/client";
 import { describeApiError } from "../../lib/live/useLiveRun";
-import { proofBasis, resultRows, splitAnswer } from "./model";
+import { perTaskRows, proofBasis, resultRows, splitAnswer } from "./model";
 import styles from "./report.module.css";
 
 export type ResultsState =
@@ -150,6 +150,7 @@ function ReportBody({ report }: { report: Report }) {
   const { headline, proofLabel, disclosure } = splitAnswer(report.answer);
   const proof = proofBasis(report, proofLabel);
   const rows = resultRows(report);
+  const taskRows = perTaskRows(report);
   const setups = report.contenders;
 
   return (
@@ -250,6 +251,67 @@ function ReportBody({ report }: { report: Report }) {
       ) : (
         <p className={styles.empty}>No requirement was scored.</p>
       )}
+
+      {report.per_task ? (
+        <div className={styles.perTask} data-testid="results-per-task">
+          <h3 className={styles.subTitle}>Per task</h3>
+          {report.per_task.headline.map((h) => (
+            <p key={h} className={styles.headline} data-testid="results-per-task-headline">
+              {h}
+            </p>
+          ))}
+          <p className={styles.note} data-testid="results-per-task-scope">
+            {report.per_task.scope} Each task’s repeats are the unit; Holm across{" "}
+            {report.per_task.family} task × requirement tests.
+          </p>
+          {taskRows.length ? (
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th scope="col">Requirement</th>
+                    <th scope="col">Task</th>
+                    <th scope="col">Verdict vs baseline (CI of the difference)</th>
+                    <th scope="col">Smallest detectable difference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taskRows.flatMap((row) =>
+                    row.cells.map((cell, i) => (
+                      <tr
+                        key={`${row.requirementId}:${cell.contenderId}:${cell.workloadId}`}
+                        data-requirement={row.requirementId}
+                        data-task={cell.workloadId}
+                      >
+                        {i === 0 ? (
+                          <th scope="row" rowSpan={row.cells.length}>
+                            <span className={styles.reqTitle}>{row.title}</span>
+                            <span className={styles.reqId}>{row.requirementId}</span>
+                          </th>
+                        ) : null}
+                        <td>
+                          {setups.length > 2 ? `${cell.name}: ` : ""}
+                          {cell.workloadId}
+                        </td>
+                        <td>
+                          <span className={styles.verdict} data-verdict={cell.verdict}>
+                            on {cell.workloadId}: {cell.word}
+                          </span>{" "}
+                          <span className={styles.ci}>{cell.ci}</span>
+                          {cell.downgraded ? (
+                            <span className={styles.note}> (downgraded: {cell.downgraded})</span>
+                          ) : null}
+                        </td>
+                        <td className={styles.ci}>{cell.mde}</td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <dl className={styles.facts}>
         {disclosure ? (

@@ -89,6 +89,7 @@ import {
   compareArms,
   decide,
   DECISION_RULE,
+  minTasksForSignificance,
   seedFor,
   type ArmCell,
   type Comparison,
@@ -185,6 +186,13 @@ export interface WorkloadCell {
   ci: CellInterval | null;
   /** Software kits: this cell vs the baseline's (null for the baseline and in agent kits). */
   comparison: Comparison | null;
+  /**
+   * Agent and harness kits (E18): this task alone vs the baseline's, with its repeats as the
+   * unit (exact Mann–Whitney, Fisher for pass rates), Holm across every task × requirement test
+   * (`stats.perTask.family`). It speaks for this task only (`claim: these_tasks`). Absent for
+   * the baseline, for software kits and for scores stored before E18.
+   */
+  taskComparison?: Comparison | null;
 }
 
 /** A measured cell's own interval: `level` is the coverage it attains (see `attained`). */
@@ -300,6 +308,36 @@ export interface KitStats {
   primary: string | null;
   /** The primary requirement's verdict per compared contender: the report's headline. */
   headline: { contenderId: string; verdict: Verdict; statement: string }[];
+  /** Agent and harness kits: the per-task results (E18). Null for software kits. */
+  perTask?: PerTaskStats | null;
+}
+
+/**
+ * Fixed-task inference (E18). With few tasks the task-paired verdict can't say anything general
+ * (3 tasks can't get below p = 0.25), but each task's own repeats can say what happened ON THAT
+ * TASK. These results are scoped to the tasks tested and never replace the general verdict.
+ */
+export interface PerTaskStats {
+  alpha: number;
+  /** Task × requirement × contender tests in this Holm family. */
+  family: number;
+  /** Tasks compared, in kit order. */
+  tasks: string[];
+  /** Always shown next to a per-task result: what it does not cover. */
+  scope: string;
+  /** Requirements where every task it covers agrees in direction and is significant. */
+  headline: PerTaskFinding[];
+}
+
+export interface PerTaskFinding {
+  contenderId: string;
+  requirementId: string;
+  verdict: "better" | "worse";
+  /** "faster", "cheaper", "solved more often", … */
+  adjective: string;
+  tasks: string[];
+  /** "<contender> was faster on all 3 tasks tested". Reports swap in the display name. */
+  statement: string;
 }
 
 export interface ScoreOptions {
@@ -1041,6 +1079,9 @@ function attachVerdicts(
     }
   }
 
+  if (clustered)
+    stats.perTask = perTaskVerdicts(kit, scores, perReq, baseline, alpha, stats.family, opts);
+
   if (primary !== null) {
     const ri = kit.requirements.findIndex((r) => r.id === primary);
     for (const s of scores) {
@@ -1057,4 +1098,112 @@ function attachVerdicts(
     }
   }
   return stats;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-task results (E18): one task's repeats as the unit, Holm across task × requirement.
+
+/** How a per-task win reads for a requirement: "faster", "cheaper", … */
+export function perTaskAdjective(req: Requirement, verdict: "better" | "worse"): string {
+  const good = verdict === "better";
+  if (req.type === "reviewed") return `${good ? "better" : "worse"} on ${req.id}`;
+  if (req.metric === WALL_METRIC) return good ? "faster" : "slower";
+  if (req.metric === COST_METRIC) return good ? "cheaper" : "more expensive";
+  if (req.metric === GATE_PASS_RATE_METRIC) return good ? "solved more often" : "solved less often";
+  const higher = (req.better === "higher") === good;
+  return `${higher ? "higher" : "lower"} on ${req.id}`;
+}
+
+function perTaskVerdicts(
+  kit: ScoreKitInput,
+  scores: ContenderScore[],
+  perReq: { plan: Plan; raw: Map<string, RawCells> }[],
+  baseline: string,
+  alpha: number,
+  /** The task-paired (general) family size, for how many tasks a general claim needs. */
+  generalFamily: number,
+  opts: ScoreOptions & { seed: number; iterations: number },
+): PerTaskStats {
+  const base = scores.find((s) => s.contenderId === baseline)!;
+  const pending: { raw: RawComparison; cell: WorkloadCell; contenderId: string; ri: number }[] = [];
+  const taskSet = new Set<string>();
+  perReq.forEach(({ plan, raw }, ri) => {
+    const baseReq = base.requirements[ri]!;
+    const baseRaw = raw.get(baseline)!;
+    if (!baseReq.scored || !baseRaw.ok) return;
+    const req = plan.req;
+    const better = req.type === "measured" ? req.better : "higher";
+    const unit = req.type === "measured" ? (req.unit ?? metricUnit(req.metric)) : undefined;
+    for (const s of scores) {
+      if (s.contenderId === baseline) continue;
+      const mine = s.requirements[ri]!;
+      const mineRaw = raw.get(s.contenderId)!;
+      if (!mine.scored || !mineRaw.ok) continue;
+      mine.byWorkload.forEach((cell, wi) => {
+        const baseCell = baseReq.byWorkload[wi]!;
+        const rc = compareArms({
+          kind: comparisonKind(plan.aggregate),
+          better,
+          survivorship: mine.survivorship,
+          unit,
+          iterations: opts.iterations,
+          rateTest: "fisher_exact",
+          candidate: [armCell(plan.aggregate, cell, mineRaw.cells.get(cell.workloadId)!.passed)],
+          baseline: [
+            armCell(plan.aggregate, baseCell, baseRaw.cells.get(baseCell.workloadId)!.passed),
+          ],
+          clustered: false,
+          seed: seedFor(opts.seed, "task", req.id, s.contenderId, baseline, cell.workloadId),
+        });
+        cell.taskComparison = null;
+        if (!rc) return;
+        taskSet.add(cell.workloadId);
+        pending.push({ raw: rc, cell, contenderId: s.contenderId, ri });
+      });
+    }
+  });
+  const decided = decide(
+    pending.map((p) => p.raw),
+    { alpha, baseline },
+  );
+  decided.forEach((d, i) => {
+    // One task's repeats speak for that task only.
+    pending[i]!.cell.taskComparison = { ...d, claim: "these_tasks" };
+  });
+
+  const order = [...(kit.workloads ?? []).map((w) => w.id), ...taskSet];
+  const tasks = [...new Set(order)].filter((w) => taskSet.has(w));
+  const general = minTasksForSignificance(alpha / Math.max(1, generalFamily));
+  const T = tasks.length;
+  const scope =
+    T < general
+      ? `${T} task${T === 1 ? "" : "s"}: this doesn't generalise to other tasks; ≥${general} tasks needed for a general claim.`
+      : `${T} tasks: per-task results speak for these tasks only; the general claim is the task-paired verdict.`;
+
+  const headline: PerTaskFinding[] = [];
+  for (const s of scores) {
+    if (s.contenderId === baseline) continue;
+    kit.requirements.forEach((req, ri) => {
+      const r = s.requirements[ri];
+      if (!r?.scored || r.byWorkload.length === 0) return;
+      const vs = r.byWorkload.map((c) => c.taskComparison?.verdict ?? null);
+      const first = vs[0];
+      if ((first !== "better" && first !== "worse") || !vs.every((v) => v === first)) return;
+      const ids = r.byWorkload.map((c) => c.workloadId);
+      const adjective = perTaskAdjective(req, first);
+      const where =
+        ids.length === T && T > 1
+          ? `on all ${T} tasks tested`
+          : `on the ${ids.length} task${ids.length === 1 ? "" : "s"} it covers (${ids.join(", ")})`;
+      headline.push({
+        contenderId: s.contenderId,
+        requirementId: req.id,
+        verdict: first,
+        adjective,
+        tasks: ids,
+        statement: `${s.contenderId} was ${adjective} ${where}`,
+      });
+    });
+  }
+  return { alpha, family: decided.length, tasks, scope, headline };
 }

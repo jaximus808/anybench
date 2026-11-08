@@ -31,6 +31,7 @@ import { formatUsd, type MicroUsd, type SubjectKind, type Verdict } from "@anybe
 import {
   cliffsDelta,
   effectMagnitude,
+  fisherExact,
   hodgesLehmannCi,
   holmAdjust,
   mannWhitney,
@@ -91,7 +92,7 @@ const MAX_REPEATS = 100;
  * tasks, two-stage task bootstrap), CI from the bootstrap.
  */
 export type ComparisonTest =
-  "newcombe" | "mann_whitney_exact" | "mann_whitney_asymptotic" | "task_paired";
+  "newcombe" | "fisher_exact" | "mann_whitney_exact" | "mann_whitney_asymptotic" | "task_paired";
 
 /** The over-tasks detail of a `task_paired` comparison. */
 export interface TaskPairing {
@@ -192,6 +193,11 @@ export interface ComparisonSpec {
   clustered: boolean;
   /** Survivorship-biased requirement: never `better`. */
   survivorship: boolean;
+  /**
+   * Unclustered pass rates: `newcombe` (default; software kits) or `fisher_exact` (one task's
+   * repeats in an agent kit, E18: exact at any n). The CI is Newcombe's either way.
+   */
+  rateTest?: "newcombe" | "fisher_exact";
   /** The requirement's unit, for the statement ("s", "ms"). */
   unit?: string | undefined;
   seed: number;
@@ -291,11 +297,14 @@ function compareRateCell(spec: ComparisonSpec): RawComparison {
   const power = spec.power ?? DECISION_RULE.power;
   const sign = orient(spec.better);
   const ci = newcombeCi(c.solved, c.trials, b.solved, b.trials, level);
-  const p = newcombePValue(c.solved, c.trials, b.solved, b.trials);
+  const fisher = spec.rateTest === "fisher_exact";
+  const p = fisher
+    ? fisherExact(c.solved, c.trials, b.solved, b.trials)
+    : newcombePValue(c.solved, c.trials, b.solved, b.trials);
   const pooled = (c.solved + b.solved) / (c.trials + b.trials);
   return {
     spec,
-    test: "newcombe",
+    test: fisher ? "fisher_exact" : "newcombe",
     p,
     effect: {
       measure: "rate_diff",
@@ -316,7 +325,11 @@ function compareRateCell(spec: ComparisonSpec): RawComparison {
     },
     n: { candidate: c.trials, baseline: b.trials, tasks: 1 },
     mdeAt: (alpha) => ({
-      value: mdeTwoProportions(c.trials, b.trials, { alpha, power, rate: pooled }),
+      // Fisher can't go below 2 / C(n1+n2, n1) (a full split), the same floor as Mann–Whitney.
+      value:
+        fisher && minMannWhitneyP(c.trials, b.trials) >= alpha
+          ? null
+          : mdeTwoProportions(c.trials, b.trials, { alpha, power, rate: pooled }),
       unit: "rate",
       metricShift: null,
       alpha,
@@ -630,6 +643,9 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
         statement += `; significant but |δ| ${Math.abs(r.effect.value).toFixed(2)} < ${DECISION_RULE.minCliffsDelta}`;
       else if (downgraded === "multiplicity")
         statement += `; p=${fmtP(r.p)} is not significant after Holm correction across ${m} comparisons`;
+      // Tasks are the unit: too few of them and no data can show a general difference.
+      if (r.spec.clustered && 2 / 2 ** r.n.tasks >= alpha / Math.max(1, m))
+        statement += `; insufficient tasks for a general claim: the exact test over ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"} can't go below p=${fmtP(Math.min(1, 2 / 2 ** r.n.tasks))}, ≥${minTasksForSignificance(alpha / Math.max(1, m))} tasks needed`;
     } else {
       const where =
         claim === "these_tasks" ? ` on these ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"}` : "";
@@ -768,6 +784,18 @@ function powerAt(
     return { repeats: input.repeats, effectiveN, passRate: null, cliffsDelta: null };
   }
   return { repeats: input.repeats, effectiveN, passRate, cliffsDelta: delta };
+}
+
+/**
+ * E18: fewest repeats per arm × task at which a per-task result can be significant at all after
+ * Holm across `family` task × requirement tests: an exact test on r vs r repeats can't go below
+ * 2 / C(2r, r) (a full split), and Holm's first step needs p < α / family. Below this every
+ * per-task verdict is "no detectable difference" whatever the data.
+ */
+export function minRepeatsForPerTask(family: number, alpha: number = DECISION_RULE.alpha): number {
+  let r = 1;
+  while (r < MAX_REPEATS && minMannWhitneyP(r, r) >= alpha / Math.max(1, family)) r++;
+  return r;
 }
 
 /** Fewest tasks whose exact sign-flip test can reach `alpha` (2 / 2^T < alpha). */

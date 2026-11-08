@@ -27,7 +27,13 @@ export const RequirementComparisonSchema = z
   .object({
     baseline_id: z.string().min(1),
     verdict: VerdictSchema,
-    test: z.enum(["newcombe", "mann_whitney_exact", "mann_whitney_asymptotic", "task_paired"]),
+    test: z.enum([
+      "newcombe",
+      "fisher_exact",
+      "mann_whitney_exact",
+      "mann_whitney_asymptotic",
+      "task_paired",
+    ]),
     p: Probability,
     /** Holm-adjusted across the report's `family` comparisons. */
     p_adjusted: Probability,
@@ -79,6 +85,46 @@ export const RequirementComparisonSchema = z
   });
 export type RequirementComparison = z.infer<typeof RequirementComparisonSchema>;
 
+/**
+ * E18: one task's result vs the baseline, with the task's repeats as the unit (exact
+ * Mann–Whitney, Fisher for pass rates), Holm across every task × requirement test. It speaks for
+ * that task only: never a general claim.
+ */
+export const TaskComparisonSchema = z
+  .object({
+    workload_id: z.string().min(1),
+    comparison: RequirementComparisonSchema,
+  })
+  .superRefine((t, ctx) => {
+    if (t.comparison.claim !== "these_tasks")
+      ctx.addIssue({
+        code: "custom",
+        path: ["comparison", "claim"],
+        message: "a per-task result speaks for its task only (claim 'these_tasks')",
+      });
+    if (t.comparison.test === "task_paired")
+      ctx.addIssue({
+        code: "custom",
+        path: ["comparison", "test"],
+        message: "a per-task result compares one task's repeats, not tasks",
+      });
+  });
+export type TaskComparison = z.infer<typeof TaskComparisonSchema>;
+
+/** E18: the report's per-task section (agent and harness kits). Optional: older reports lack it. */
+export const PerTaskSectionSchema = z.object({
+  /** Tasks compared, in kit order. */
+  tasks: z.array(z.string().min(1)),
+  /** Tests in the per-task Holm family. */
+  family: z.int().min(0),
+  alpha: z.number().gt(0).lt(1),
+  /** Always shown next to the per-task results ("3 tasks: this doesn't generalise …"). */
+  scope: z.string().min(1),
+  /** Requirements where every task agrees and is significant ("Tandem was faster on all 3 tasks tested"). */
+  headline: z.array(z.string().min(1)),
+});
+export type PerTaskSection = z.infer<typeof PerTaskSectionSchema>;
+
 export const RequirementResultSchema = z
   .object({
     requirement_id: z.string().min(1),
@@ -101,6 +147,8 @@ export const RequirementResultSchema = z
     survivorship: z.boolean().optional(),
     /** vs the baseline; null for the baseline itself. Optional for reports before TDM-175. */
     comparison: RequirementComparisonSchema.nullable().optional(),
+    /** E18, agent and harness kits: per task vs the baseline. Optional: older reports lack it. */
+    by_task: z.array(TaskComparisonSchema).optional(),
   })
   .superRefine((r, ctx) => {
     if (r.survivorship === true && r.comparison?.verdict === "better")
@@ -109,6 +157,14 @@ export const RequirementResultSchema = z
         path: ["comparison", "verdict"],
         message: "a median over solved trials only (survivorship) can never be 'better'",
       });
+    r.by_task?.forEach((t, i) => {
+      if (r.survivorship === true && t.comparison.verdict === "better")
+        ctx.addIssue({
+          code: "custom",
+          path: ["by_task", i, "comparison", "verdict"],
+          message: "a median over solved trials only (survivorship) can never be 'better'",
+        });
+    });
     if (r.type !== "measured") return;
     if (r.gate_id === null)
       ctx.addIssue({
@@ -172,6 +228,8 @@ export const ReportSchema = z.object({
   bottlenecks: z.array(BottleneckSchema),
   proof: z.array(ProofCheckResultSchema),
   failures: z.record(z.enum(FAILURE_CLASSES), z.int().nonnegative()),
+  /** E18: per-task results and their scope line (agent and harness kits). Optional. */
+  per_task: PerTaskSectionSchema.optional(),
   /** For runs that ended `failed` or `needs_human`: what went wrong in our own pipeline. */
   postmortem: z
     .object({

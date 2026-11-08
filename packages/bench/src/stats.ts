@@ -634,6 +634,46 @@ export function mannWhitney(
   };
 }
 
+/**
+ * Fisher's exact test on a 2×2 table (x1 of n1 vs x2 of n2 successes), two-sided: the sum of the
+ * hypergeometric probabilities of every table with the same margins that is no more likely than
+ * the observed one (R's `fisher.test`, with its 1e-7 relative tolerance). Exact at any n, so it is
+ * the pass-rate test for one task's repeats (E18).
+ */
+export function fisherExact(x1: number, n1: number, x2: number, n2: number): number {
+  for (const [v, name] of [
+    [x1, "x1"],
+    [n1, "n1"],
+    [x2, "x2"],
+    [n2, "n2"],
+  ] as const) {
+    if (!Number.isInteger(v) || v < 0)
+      throw new RangeError(`${name} must be a non-negative integer`);
+  }
+  if (x1 > n1 || x2 > n2) throw new RangeError("successes can't exceed trials");
+  const k = x1 + x2;
+  const N = n1 + n2;
+  if (N === 0) return 1;
+  const lnC = (n: number, r: number) => lnFactorial(n) - lnFactorial(r) - lnFactorial(n - r);
+  const lnTotal = lnC(N, k);
+  const prob = (a: number) => Math.exp(lnC(n1, a) + lnC(n2, k - a) - lnTotal);
+  const lo = Math.max(0, k - n2);
+  const hi = Math.min(n1, k);
+  const observed = prob(x1);
+  let p = 0;
+  for (let a = lo; a <= hi; a++) {
+    const q = prob(a);
+    if (q <= observed * (1 + 1e-7)) p += q;
+  }
+  return Math.min(1, p);
+}
+
+function lnFactorial(n: number): number {
+  let s = 0;
+  for (let i = 2; i <= n; i++) s += Math.log(i);
+  return s;
+}
+
 /** Smallest two-sided exact Mann–Whitney p-value any n1 vs n2 data can reach: 2 / C(n1+n2, n1). */
 export function minMannWhitneyP(n1: number, n2: number): number {
   let c = 1;

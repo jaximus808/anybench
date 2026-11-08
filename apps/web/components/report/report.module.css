@@ -184,6 +184,19 @@
   color: var(--dim);
 }
 
+/* E18: per-task results, scoped to the tasks tested. */
+.perTask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.subTitle {
+  font-family: var(--display);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  margin: 0;
+}
+
 .facts {
   display: grid;
   gap: var(--space-2);

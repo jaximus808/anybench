@@ -626,7 +626,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     }
   }, 60_000);
 
-  it("CuratedKitStage: the Tandem kit defaults to head-to-head (30 trials); 'smoke' gets 3 trials, 'full benchmark' all of it", async () => {
+  it("CuratedKitStage: the Tandem kit defaults to head-to-head (36 trials); 'smoke' gets 3 trials, 'full benchmark' all of it", async () => {
     const full = await loadKit(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
     const smoke = smokeProfile(full.spec);
     expect(smoke.ok).toBe(true);
@@ -650,12 +650,12 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect(h2h.spec.workloads.map((w) => w.id).sort()).toEqual(
       ["auth-refactor", "bug-hunt", "todo-api"].sort(),
     );
-    expect(h2h.spec).toMatchObject({ repeats: 5, schedule: { warmups: 0 } });
-    expect(trialCount(h2h.spec)).toBe(30);
+    expect(h2h.spec).toMatchObject({ repeats: 6, schedule: { warmups: 0 } });
+    expect(trialCount(h2h.spec)).toBe(36);
 
     for (const [question, expected] of [
       ["smoke: does Tandem run?", "smoke profile: 3 trials"],
-      ["Does Tandem beat Claude Code?", "head-to-head profile: 30 trials"],
+      ["Does Tandem beat Claude Code?", "head-to-head profile: 36 trials"],
       ["Null pilot: is Claude Code any different from itself?", "null pilot profile: 60 trials"],
       [
         "full benchmark: does Tandem beat Claude Code?",
@@ -698,7 +698,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
         expected.startsWith("smoke")
           ? 3
           : expected.startsWith("head")
-            ? 30
+            ? 36
             : expected.startsWith("null")
               ? 60
               : trialCount(full.spec),

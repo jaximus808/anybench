@@ -27,6 +27,7 @@ import {
   type Comparison,
   type ContenderScore,
   type KitScore,
+  type PerTaskFinding,
   type TrialResult,
 } from "@anybench/bench";
 import {
@@ -371,6 +372,30 @@ function verdictLines(ks: KitScore, reqId: string): string[] {
   return out;
 }
 
+/** E18: one line per compared setup × task, scoped to that task (agent and harness kits). */
+function perTaskLines(ks: KitScore, reqId: string, nameOf: (id: string) => string): string[] {
+  const out: string[] = [];
+  for (const c of ks.contenders) {
+    if (c.contenderId === ks.stats.baseline) continue;
+    const r = c.requirements.find((x) => x.requirementId === reqId);
+    if (!r?.scored) continue;
+    for (const cell of r.byWorkload) {
+      if (!cell.taskComparison) continue;
+      out.push(
+        `- ${nameOf(c.contenderId)} on ${cell.workloadId}: ${cell.taskComparison.statement}.`,
+      );
+    }
+  }
+  return out;
+}
+
+/** A per-task finding with the setup's display name ("Tandem was faster on all 3 tasks tested"). */
+function namedFinding(f: PerTaskFinding, nameOf: (id: string) => string): string {
+  return f.statement.startsWith(f.contenderId)
+    ? `${nameOf(f.contenderId)}${f.statement.slice(f.contenderId.length)}`
+    : f.statement;
+}
+
 function verdictIds(c: ContenderScore, verdict: "better" | "worse"): string[] {
   return c.requirements.flatMap((r) =>
     r.scored && r.verdict === verdict ? [r.requirementId] : [],
@@ -440,6 +465,10 @@ export function buildSummary(
   const stats = ks.stats as KitScore["stats"] | undefined;
   const decided = stats !== undefined && stats.baseline !== null;
   const head = verdictAt(score.n_per_setup.min, score.n_per_setup.max, kind);
+  const nameOf = (id: string) => kit.contenders.find((k) => k.id === id)?.name ?? id;
+  // E18: per-task results (agent and harness kits), scoped to the tasks tested.
+  const perTask = decided ? (stats.perTask ?? null) : null;
+  const perTaskHeadline = perTask ? perTask.headline.map((f) => namedFinding(f, nameOf)) : [];
   const need = minRepeats(kind);
   const contenderIds = ks.contenders.map((c) => c.contenderId);
 
@@ -456,9 +485,19 @@ export function buildSummary(
           .map((h) => `${h.contenderId} vs ${stats.baseline}: ${h.statement}`)
           .join("; ")
       : null;
-  const sentence = headline
+  const generalSentence = headline
     ? `Result on ${stats!.primary} (the primary requirement): ${headline}. (${contenderIds.length} setups; ${score.trials.scored} measured trials; Holm-corrected across ${stats!.family} comparisons.) No setup is ranked by a composite score.`
     : `Result: ${head} per setup (${contenderIds.length} setups; ${score.trials.scored} measured trials; the plan needs at least ${need} repeats per setup). No setup is ranked and no composite score is shown.`;
+  // The per-task finding leads when every task agrees; the scope line is always there.
+  const sentence = perTask
+    ? [
+        perTaskHeadline.length ? `On the tasks tested: ${perTaskHeadline.join("; ")}.` : null,
+        generalSentence,
+        perTask.scope,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : generalSentence;
   lines.push(sentence, "");
   lines.push(
     `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.cancelled} cancelled.`,
@@ -477,6 +516,13 @@ export function buildSummary(
     });
     lines.push("");
     if (decided) lines.push(...verdictLines(ks, req.id), "");
+    const taskLines = perTask ? perTaskLines(ks, req.id, nameOf) : [];
+    if (taskLines.length)
+      lines.push(
+        `Per task (each task's repeats as the unit; Holm across ${perTask!.family} task × requirement tests; ${perTask!.scope}):`,
+        ...taskLines,
+        "",
+      );
     else
       lines.push(
         ns.length
@@ -525,6 +571,14 @@ export function buildSummary(
             score: null,
             ...(r?.scored ? { n: r.n, survivorship: r.survivorship } : {}),
             ...(decided && r?.scored ? { comparison: reportComparison(r.comparison) } : {}),
+            ...(perTask && r?.scored && c.contenderId !== ks.stats.baseline
+              ? {
+                  by_task: r.byWorkload.flatMap((cell) => {
+                    const cmp = reportComparison(cell.taskComparison ?? null);
+                    return cmp ? [{ workload_id: cell.workloadId, comparison: cmp }] : [];
+                  }),
+                }
+              : {}),
           };
         }),
         // From the verdicts only: a requirement is a win or a loss when the decision rule says so.
@@ -558,6 +612,17 @@ export function buildSummary(
         bottlenecks: [],
         proof: input.proof,
         failures,
+        ...(perTask
+          ? {
+              per_task: {
+                tasks: perTask.tasks,
+                family: perTask.family,
+                alpha: perTask.alpha,
+                scope: perTask.scope,
+                headline: perTaskHeadline,
+              },
+            }
+          : {}),
         postmortem: null,
         generated_at: new Date().toISOString(),
       },
