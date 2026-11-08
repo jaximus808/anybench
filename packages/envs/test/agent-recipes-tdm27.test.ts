@@ -11,6 +11,7 @@ import {
   BASE_RECIPES,
   BASE_RECIPES_DIR,
   RECIPE_LIB_FILE,
+  TOOLCHAIN_RECIPES,
   loadRecipeCatalog,
   resolveRecipeOrder,
   runRecipes,
@@ -26,9 +27,19 @@ async function tdm27Agent(name: (typeof AGENT_RECIPES)[number]): Promise<Recipe>
 }
 
 describe("agent recipe catalog", () => {
-  it("ships every agent recipe next to the base ones, for x64 and arm64", async () => {
+  it("ships every agent recipe next to the base and toolchain ones, for x64 and arm64", async () => {
     const cat = await loadRecipeCatalog();
-    expect([...cat.recipes.keys()].sort()).toEqual([...BASE_RECIPES, ...AGENT_RECIPES].sort());
+    // toolchain-only recipes (TDM-60, e.g. go) are installed per kit, not by any profile
+    const toolchainOnly = [...new Set(Object.values(TOOLCHAIN_RECIPES))].filter(
+      (n) => !(BASE_RECIPES as readonly string[]).includes(n),
+    );
+    expect(toolchainOnly).toContain("go");
+    expect([...cat.recipes.keys()].sort()).toEqual(
+      [...BASE_RECIPES, ...AGENT_RECIPES, ...toolchainOnly].sort(),
+    );
+    for (const n of toolchainOnly) {
+      expect(cat.recipes.get(n)!.manifest.arch.sort(), n).toEqual(["arm64", "x64"]);
+    }
     for (const n of AGENT_RECIPES) {
       const r = cat.recipes.get(n)!;
       expect(r.manifest.arch.sort()).toEqual(["arm64", "x64"]);

@@ -181,6 +181,9 @@ describe.skipIf(!available)("demo proof, scoring and summary", () => {
     const id = await createRun(queue, {
       question: "Smoke test: does Tandem beat Claude Code?",
       source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+      // New users don't auto-start (auto_start_runs defaults off): ask for auto-go explicitly,
+      // as the New run form's "start automatically" does. The billing gate still applies.
+      auto_go: true,
     });
     await drainTdm54(w, queue);
     const [run] = await h.db.select().from(runs).where(eq(runs.id, id));
