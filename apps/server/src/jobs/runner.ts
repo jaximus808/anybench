@@ -18,6 +18,14 @@ import type { SentryHandle } from "../lib/sentry.js";
 import { JOBS } from "./index.js";
 import type { JobContext, JobDef } from "./types.js";
 
+/** Jobs that hold a slot for a whole trial: they get WORKER_CONCURRENCY slots of their own. */
+const LONG_TASKS = new Set(["trial.execute"]);
+/** Slots for everything else (gates, run.advance, heartbeats, reaper, billing). Each gate holds a
+ * fresh scoring computer, so this also bounds scoring computers alive at once. */
+const CONTROL_CONCURRENCY = Math.max(
+  1,
+  Math.min(16, Number(process.env.WORKER_CONTROL_CONCURRENCY ?? "") || 2),
+);
 export interface StartWorkerOptions {
   config: Config;
   logger: Logger;
@@ -101,35 +109,60 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   const graphilePool = guardPgPool(
     new pg.Pool({
       connectionString: config.databaseUrlDirect,
-      max: Math.max(10, config.WORKER_CONCURRENCY + 2),
+      max: Math.max(10, config.WORKER_CONCURRENCY + CONTROL_CONCURRENCY + 2),
       keepAlive: true,
     }),
     onPgError,
   );
 
+  // Two runners on one pool. A trial job holds its slot for the whole trial (up to an hour), so
+  // with one shared pool of WORKER_CONCURRENCY slots the gates, run.advance, heartbeats and the
+  // reaper queued behind every waiting trial: nothing was graded until almost every trial had run.
+  // Trials get WORKER_CONCURRENCY slots; everything else gets its own CONTROL_CONCURRENCY.
+  const allTasks = buildTaskList(jobs, ctx);
+  const pick = (keep: (name: string) => boolean) =>
+    Object.fromEntries(Object.entries(allTasks).filter(([name]) => keep(name)));
+  const trialTasks = pick((n) => LONG_TASKS.has(n));
+  const controlTasks = pick((n) => !LONG_TASKS.has(n));
   let runner: Runner;
+  let trialRunner: Runner | null = null;
   try {
     runner = await run({
       pgPool: graphilePool,
-      concurrency: config.WORKER_CONCURRENCY,
+      concurrency: CONTROL_CONCURRENCY,
       noHandleSignals: true,
       pollInterval: options.pollIntervalMs ?? 2000,
-      taskList: buildTaskList(jobs, ctx),
+      taskList: controlTasks,
       // parsedCronItems (not `crontab`): an empty crontab string makes graphile read ./crontab.
       parsedCronItems: parseCrontab(buildCrontab(jobs)),
       logger: graphileLogger(logger),
     });
+    // WORKER_ONLY_CONTROL=1: a second process that only runs the control jobs (gates, advance,
+    // heartbeats), next to a worker whose slots are all held by trials.
+    if (Object.keys(trialTasks).length > 0 && process.env.WORKER_ONLY_CONTROL !== "1") {
+      trialRunner = await run({
+        pgPool: graphilePool,
+        concurrency: config.WORKER_CONCURRENCY,
+        noHandleSignals: true,
+        pollInterval: options.pollIntervalMs ?? 2000,
+        taskList: trialTasks,
+        parsedCronItems: [],
+        logger: graphileLogger(logger),
+      });
+    }
   } catch (err) {
     await Promise.all([graphilePool.end(), dbh.close()]).catch(() => {});
     throw err;
   }
-  runner.events.on("job:error", ({ job, error }) => {
-    sentry.captureException(error, {
-      job: job.task_identifier,
-      jobId: job.id,
-      attempts: job.attempts,
+  for (const r of [runner, trialRunner]) {
+    r?.events.on("job:error", ({ job, error }) => {
+      sentry.captureException(error, {
+        job: job.task_identifier,
+        jobId: job.id,
+        attempts: job.attempts,
+      });
     });
-  });
+  }
 
   const timers: NodeJS.Timeout[] = [];
   for (const job of jobs.filter((j) => j.everyMs)) {
@@ -152,10 +185,11 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
   const stop = () => {
     stopped ??= (async () => {
       for (const t of timers) clearInterval(t);
-      await runner.stop();
+      await Promise.all([runner.stop(), trialRunner?.stop()]);
       await Promise.all([graphilePool.end(), dbh.close()]);
     })();
     return stopped;
   };
-  return { workerId, runner, done: runner.promise, stop };
+  const done = Promise.all([runner.promise, trialRunner?.promise]).then(() => undefined);
+  return { workerId, runner, done, stop };
 }
