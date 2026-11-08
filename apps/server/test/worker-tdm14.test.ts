@@ -53,15 +53,14 @@ describe.skipIf(!hasDb)("worker runner (TDM-14)", () => {
 
   beforeAll(async () => {
     fresh = await freshMigratedDbTdm11();
-  });
+  }, 120_000);
   afterAll(async () => {
     await worker?.stop();
-    // graphile-worker's runner.stop() calls pgPool.end() without awaiting it, so its connections
-    // can still be open here; `drop database ... with (force)` would then terminate them and pg
-    // raises unhandled 57P01 errors. Wait until only our own pool is connected before dropping.
+    // worker.stop() now awaits graphile-worker's pool.end() (startWorker passes its own pgPool);
+    // the wait below stays as a belt-and-braces guard against 57P01 at `drop ... with (force)`.
     if (fresh) await waitForOnlyOwnBackendsTdm169(fresh);
     await fresh?.drop();
-  });
+  }, 60_000);
 
   it("writes a heartbeat row that /health/worker reports as healthy", async () => {
     const workerId = `tdm14-${randomBytes(4).toString("hex")}`;

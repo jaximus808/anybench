@@ -53,11 +53,12 @@ describe.skipIf(!hasDb)("health routes with Postgres (TDM-14)", () => {
   beforeAll(async () => {
     fresh = await freshMigratedDbTdm11();
     h = appTdm14(fresh.url);
-  });
+    // Creating + migrating a fresh database is slow under machine load.
+  }, 120_000);
   afterAll(async () => {
     await h?.dbh.close();
     await fresh?.drop();
-  });
+  }, 60_000);
 
   it("GET /health is 200 with a DB ping", async () => {
     const res = await h.app.request("/health");

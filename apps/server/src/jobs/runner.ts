@@ -2,6 +2,7 @@
 // DATABASE_URL_DIRECT (graphile-worker uses LISTEN/NOTIFY, which PgBouncer would break), and
 // drives the sub-minute `everyMs` schedules.
 import { hostname } from "node:os";
+import pg from "pg";
 import {
   Logger as GraphileLogger,
   parseCrontab,
@@ -90,16 +91,32 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
     workerStartedAt: new Date(),
   };
 
-  const runner = await run({
+  // Our own pool for graphile-worker: runner.stop() calls pgPool.end() without awaiting it when
+  // graphile owns the pool, so its connections could outlive stop() and a later
+  // `drop database ... with (force)` (tests) or Postgres shutdown would raise unhandled 57P01
+  // errors. Passing pgPool means graphile never ends it; stop() awaits graphilePool.end() itself.
+  const graphilePool = new pg.Pool({
     connectionString: config.databaseUrlDirect,
-    concurrency: config.WORKER_CONCURRENCY,
-    noHandleSignals: true,
-    pollInterval: options.pollIntervalMs ?? 2000,
-    taskList: buildTaskList(jobs, ctx),
-    // parsedCronItems (not `crontab`): an empty crontab string makes graphile read ./crontab.
-    parsedCronItems: parseCrontab(buildCrontab(jobs)),
-    logger: graphileLogger(logger),
+    max: Math.max(10, config.WORKER_CONCURRENCY + 2),
   });
+  graphilePool.on("error", (err) => logger.warn({ err }, "graphile-worker idle client error"));
+
+  let runner: Runner;
+  try {
+    runner = await run({
+      pgPool: graphilePool,
+      concurrency: config.WORKER_CONCURRENCY,
+      noHandleSignals: true,
+      pollInterval: options.pollIntervalMs ?? 2000,
+      taskList: buildTaskList(jobs, ctx),
+      // parsedCronItems (not `crontab`): an empty crontab string makes graphile read ./crontab.
+      parsedCronItems: parseCrontab(buildCrontab(jobs)),
+      logger: graphileLogger(logger),
+    });
+  } catch (err) {
+    await Promise.all([graphilePool.end(), dbh.close()]).catch(() => {});
+    throw err;
+  }
   runner.events.on("job:error", ({ job, error }) => {
     sentry.captureException(error, {
       job: job.task_identifier,
@@ -130,7 +147,7 @@ export async function startWorker(options: StartWorkerOptions): Promise<WorkerHa
     stopped ??= (async () => {
       for (const t of timers) clearInterval(t);
       await runner.stop();
-      await dbh.close();
+      await Promise.all([graphilePool.end(), dbh.close()]);
     })();
     return stopped;
   };
