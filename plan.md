@@ -279,6 +279,8 @@ docs/
 
 **Platform observability (for us):** Sentry (errors and tracing for API, worker, web), pino JSON logs with redaction, an uptime monitor on `/health` and `/health/worker` (worker last-tick age, DB, Naïve balance), PostHog for product analytics (optional). `/admin/costs` shows per-run spend, Naïve `credits.show`/`spend`, and margin per run.
 
+**Scope cut (founder, 2026-11-07): observability is for customers only.** Build what lets a customer see their runs: what's running, current state, what's working and what broke. That means 8.1 events + SSE (done), 8.2 agent session mirroring, 8.3 trial log streaming, 8.4 live run page, 8.5 trial drawer, the agent-session half of 8.6, 8.7 MCP and 8.8 `anybench watch`/`logs`. Internal tooling is out for now: 8.9 platform telemetry (Sentry/uptime), 8.10 `/admin/costs`, the admin computer view in 8.6, and platform-only alert rules and Slack/Tandem channels in 9.2/9.4. Money-safety pieces stay (spend caps, the 9.3 kill switch, the reaper).
+
 ## 7. Alerts (core pillar)
 
 `alert_rules(key, scope, condition, severity, cooldown_s, auto_action)` and `alerts(rule_key, fingerprint, run_id?, severity: info|warn|critical|page, status: open|acked|resolved, first_seen, last_seen, count, acked_by, resolved_at, payload)`. Dedupe by `fingerprint = rule_key + scope_id` while open; repeats bump `count`. Evaluated by an `alerts.evaluate` job every 30 s and on matching events.
