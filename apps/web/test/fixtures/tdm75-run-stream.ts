@@ -116,7 +116,7 @@ export function recordRun(): Recording {
       cost_delta_micro_usd: micro.toString(),
       payload: {
         user_id: uuid(0x900),
-        kind: trialId ? "trial_fee" : "managed_tokens",
+        kind: trialId ? "compute" : "managed_tokens",
         amount_micro_usd: micro.toString(),
         ...(trialId ? { trial_id: trialId } : {}),
       },
