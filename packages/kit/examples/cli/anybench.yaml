@@ -29,6 +29,7 @@ contenders:
       type: cli
       verbs:
         run: adapters/gnu-grep/driver.sh run {in} {out}
+      wall_clock_cap_s: 300
     found_by: "researcher: the plain default"
 
 workloads:
@@ -86,6 +87,8 @@ proof:
 scoring:
   weights: { wall: 70, rss: 30 }
 repeats: 10
+# Rotate the contender order every round from this seed (plan.md 17.2 rule 4).
+schedule: { order_seed: 1 }
 
 env:
   profile: base

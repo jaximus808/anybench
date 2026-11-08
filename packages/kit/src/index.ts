@@ -10,3 +10,5 @@ export * from "./validate.js";
 export * from "./load.js";
 // Drivers, one directory per driver.type (TDM-40 http-agent, ...).
 export * from "./drivers/index.js";
+// TDM-178 [16.7]: comparability rules.
+export * from "./comparability.js";

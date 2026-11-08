@@ -27,6 +27,7 @@ export function schedulableFromKit(kit: KitSpec): SchedulableKit {
     warmups: kit.schedule.warmups,
     est_trial_seconds: estTrialSecondsFromKit(kit),
     packing: kit.schedule.packing,
+    ...(kit.schedule.order_seed === undefined ? {} : { order_seed: kit.schedule.order_seed }),
   });
 }
 

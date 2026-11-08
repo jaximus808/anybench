@@ -268,3 +268,53 @@ export function parseJsonKeepingNumberText(text: string, keys: ReadonlySet<strin
 
 /** A number kept as its JSON text by `parseJsonKeepingNumberText`. */
 export const NumberTextSchema = z.strictObject({ $number: z.string() });
+
+// ---------------------------------------------------------------------------------------------
+// Rate limits make wall time a measure of the API queue, not the contender (TDM-178 [16.7]).
+
+/** Trial-level wall-clock metrics that a 429 inflates. */
+export const WALL_METRIC_NAMES: readonly string[] = [
+  "wall_s",
+  "wall_ms",
+  "time_to_solve_s",
+  "agent_duration_ms",
+  "agent_api_duration_ms",
+];
+
+export interface RateLimitedWallFlag {
+  /** The wall metric that is flagged, e.g. `wall_s`. */
+  metric: string;
+  /** Rate-limited responses (HTTP 429) the trial saw. */
+  http_429: number;
+  message: string;
+}
+
+/**
+ * One flag per trial-level wall metric when the same trial saw any HTTP 429 (`http_429` > 0,
+ * from stream-json or proxy-calls). A flagged wall time must not be compared as if the
+ * contender were slower: the report shows the flag, and a rerun or exclusion is the caller's call.
+ */
+export function flagRateLimitedWall(rows: readonly Metric[]): RateLimitedWallFlag[] {
+  let http429 = 0;
+  for (const m of rows) {
+    if (m.name !== "http_429" || m.level !== "trial" || typeof m.value !== "number") continue;
+    if (m.labels && Object.keys(m.labels).length > 0) continue;
+    http429 = Math.max(http429, m.value);
+  }
+  if (http429 <= 0) return [];
+  const names = new Set(
+    rows
+      .filter(
+        (m) =>
+          m.level === "trial" &&
+          WALL_METRIC_NAMES.includes(m.name) &&
+          !(m.labels && Object.keys(m.labels).length > 0),
+      )
+      .map((m) => m.name),
+  );
+  return [...names].map((metric) => ({
+    metric,
+    http_429: http429,
+    message: `${metric} is rate-limited: the trial saw ${http429} HTTP 429 response${http429 === 1 ? "" : "s"}, so its wall time includes waiting on the API`,
+  }));
+}

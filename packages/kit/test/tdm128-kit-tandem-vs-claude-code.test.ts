@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { validateKitDir } from "../src/index.js";
 
 const KIT_DIR_TDM128 = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -37,6 +38,24 @@ const manifestTdm128 = (w: string): ManifestTdm128 =>
 describe("kits/tandem-vs-claude-code anybench.yaml", () => {
   it("validates against KitSpecSchema", () => {
     expect(loadKitTdm128().schema_version).toBe(2);
+  });
+
+  // TDM-178 [16.7]: the schema accepts the kit, but the setups are not comparable yet (unpinned
+  // model, claude-code@latest, ref main, 8M vs 5M token caps, reviewer only for Tandem, A still
+  // has the `Agent` tool). TDM-184 [16.13] fixes the kit; then this flips to ok.
+  it("fails the comparability rules until TDM-184 [16.13] pins it", async () => {
+    const r = await validateKitDir(KIT_DIR_TDM128);
+    expect(r.ok).toBe(false);
+    expect([...new Set(r.errors.map((e) => e.code))].sort()).toEqual([
+      "assist_unequal",
+      "caps_unequal",
+      "model_unpinned",
+      "ref_unpinned",
+      "subagents_not_disabled",
+      "version_unpinned",
+    ]);
+    // Every error is a comparability error: the files and the schema are fine.
+    expect(r.errors.filter((e) => e.code === "schema" || e.code === "missing_file")).toEqual([]);
   });
 
   it("declares A solo, B subagents, and Tandem varied to ×3 (C) and ×5 (D)", () => {

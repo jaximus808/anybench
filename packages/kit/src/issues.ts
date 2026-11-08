@@ -22,7 +22,19 @@ export type KitIssueCode =
   | "workload_sha256_mismatch"
   | "rubric_criterion_missing"
   | "proof_dir_misplaced"
-  | "unused_dir";
+  | "unused_dir"
+  // Comparability (TDM-178 [16.7], plan.md 17.2 rule 4): see comparability.ts.
+  | "model_unpinned"
+  | "model_mismatch"
+  | "ref_unpinned"
+  | "version_unpinned"
+  | "version_mismatch"
+  | "caps_unequal"
+  | "token_cap_deprecated"
+  | "token_cap_conflict"
+  | "assist_unequal"
+  | "subagents_not_disabled"
+  | "order_not_rotated";
 
 export interface KitIssue {
   severity: "error" | "warning";

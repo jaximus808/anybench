@@ -100,6 +100,11 @@ export const KitScheduleSchema = z.strictObject({
   packing: z.boolean().default(false),
   /** Provider billing block in seconds (Naïve: 600). */
   block_seconds: z.int().positive().max(86_400).default(DEFAULT_KIT_BLOCK_SECONDS),
+  /**
+   * Seed for rotating the contender order in every round (repeat × workload), so no contender
+   * always runs first on a warm cache or a quiet API (plan.md 17.2 rule 4). Omit to keep kit order.
+   */
+  order_seed: z.int().min(0).max(0xffff_ffff).optional(),
 });
 export type KitSchedule = z.infer<typeof KitScheduleSchema>;
 export type KitScheduleInput = z.input<typeof KitScheduleSchema>;
@@ -119,6 +124,11 @@ export const KitSpecSchema = z
       .array(RequirementSchema)
       .min(1, { error: "a kit needs at least one requirement" }),
     proof: KitProofSchema.default({ do_less: [] }),
+    /**
+     * Why the contenders' caps (wall clock, tokens, spend, turns) differ. Without it, or without
+     * the cap being the `vary` axis, the kit validator refuses unequal caps (plan.md 17.2 rule 4).
+     */
+    unequal_caps_reason: z.string().trim().min(1).optional(),
     /** Each value is one setup to compare, e.g. `WORKERS: [1, 3, 5]`. */
     vary: z.record(KitEnvVarNameSchema, z.array(VaryValueSchema).min(1)).default({}),
     human_in_loop: HumanInLoopSchema.optional(),

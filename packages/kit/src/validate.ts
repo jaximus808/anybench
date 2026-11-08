@@ -6,10 +6,13 @@
 //    gates/<id>/check.sh, workloads/<id>/..., reference paths, proof overlays, rubric.md.
 // 3. Every workload's bytes hash deterministically (sha256 per file + manifest), and a declared
 //    `sha256` matches.
+// 4. The setups are comparable (comparability.ts): pinned models and versions, equal caps,
+//    assists for every contender or none.
 // Errors point at anybench.yaml:LINE:COL of the field that references the file.
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { formatIssuePath, type KitSpec } from "@anybench/core";
+import { comparabilityIssues, type ContenderScript } from "./comparability.js";
 import { findKitSymlinks, hashKitPaths, isInsideDir, type TreeHash } from "./hash.js";
 import { formatKitIssue, type KitIssue, type KitIssueCode } from "./issues.js";
 import { KIT_LAYOUT, normalizeKitPath } from "./layout.js";
@@ -67,7 +70,7 @@ class KitChecker {
 
   constructor(
     readonly dir: string,
-    private readonly realDir: string,
+    readonly realDir: string,
     private readonly source: KitYamlSource,
   ) {}
 
@@ -401,6 +404,37 @@ async function checkEnv(c: KitChecker, spec: KitSpec): Promise<void> {
   }
 }
 
+/** Comparable setups or no comparison (plan.md 17.2 rule 4): pins, equal caps, shared assists. */
+async function checkComparability(
+  c: KitChecker,
+  spec: KitSpec,
+  contenders: readonly ResolvedContender[],
+): Promise<void> {
+  const scripts: ContenderScript[] = [];
+  for (const [i, r] of contenders.entries()) {
+    const fields: [string | undefined, PropertyKey[]][] = [
+      [r.install, ["install", "script"]],
+      [r.healthcheck, ["install", "healthcheck"]],
+      [r.driver, ["driver", "script"]],
+    ];
+    for (const [rel, field] of fields) {
+      if (rel === undefined) continue;
+      let text: string;
+      try {
+        // Only scripts inside the kit; an escaping symlink is already reported as outside_kit.
+        if (!isInsideDir(c.realDir, await realpath(path.join(c.dir, rel)))) continue;
+        text = await c.text(rel);
+      } catch {
+        continue; // a missing or unreadable script is already reported by checkContenders
+      }
+      scripts.push({ contender: i, path: rel, field, text });
+    }
+  }
+  for (const issue of comparabilityIssues(spec, scripts)) {
+    c.add(issue.severity, issue.code, issue.at, issue.message);
+  }
+}
+
 /** Warn about adapters/<x>, gates/<x>, workloads/<x> folders no entry in anybench.yaml owns. */
 async function checkUnused(c: KitChecker, spec: KitSpec): Promise<void> {
   const owners: [string, string, Set<string>][] = [
@@ -496,6 +530,7 @@ export async function validateKitDir(dir: string = "."): Promise<KitValidation> 
   await checkProof(c, spec);
   await checkEnv(c, spec);
   await checkUnused(c, spec);
+  await checkComparability(c, spec, contenders);
 
   return result(abs, c.errors, c.warnings, {
     dir: abs,

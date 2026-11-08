@@ -1,8 +1,10 @@
 // L0 source, L1 install, L2 driver, L4 collectors: one contender in a kit (plan.md P2).
 import { z } from "zod";
+import { MicroUsdSchema, type MicroUsd } from "../money.js";
 import type { ProfileName } from "./env.js";
 import {
   KitEnvMapSchema,
+  KitEnvVarNameSchema,
   KitSlugSchema,
   KitPathSchema,
   KitSha256Schema,
@@ -131,12 +133,44 @@ const driverBase = {
   env: KitEnvMapSchema.optional(),
 };
 
+/**
+ * Integer micro-USD as written in `anybench.yaml`: a YAML integer (safe range) or a base-10
+ * integer string, parsed to bigint. Never a float.
+ */
+export const KitMicroUsdSchema = z
+  .union([z.int().nonnegative(), MicroUsdSchema])
+  .transform((v): MicroUsd => (typeof v === "bigint" ? v : BigInt(v)))
+  .refine((v) => v > 0n, { error: "must be a positive integer of micro-USD" });
+
 const tokenCaps = {
+  /**
+   * Model id the agent runs on. The kit validator requires a pinned (dated) id for every agent
+   * contender, never an alias such as `sonnet` or `*-latest` (plan.md 17.2 rule 4).
+   */
   model: z.string().min(1).optional(),
-  /** BYOK token cap the runner enforces from stream-json. */
+  /** Deprecated: read as `token_cap_tokens`. Kept so older kits still parse. */
   token_cap: z.int().positive().optional(),
+  /** Token cap (input + output + cache tokens) the runner enforces from stream-json. */
+  token_cap_tokens: z.int().positive().optional(),
+  /** Spend cap in integer micro-USD the runner enforces (TrialJob `token_cap_micro_usd`). */
+  token_cap_micro_usd: KitMicroUsdSchema.optional(),
   max_turns: z.int().positive().optional(),
 };
+
+/** The token cap of a driver in tokens: `token_cap_tokens`, else the deprecated `token_cap`. */
+export function driverTokenCapTokens(driver: Driver): number | undefined {
+  if (!isAgentDriver(driver)) return undefined;
+  return driver.token_cap_tokens ?? driver.token_cap;
+}
+
+/** Driver types that run a model (and so carry `model` and the token caps). */
+export const AGENT_DRIVER_TYPES = ["coding-agent", "http-agent", "harness"] as const;
+
+export function isAgentDriver(
+  driver: Driver,
+): driver is Extract<Driver, { type: (typeof AGENT_DRIVER_TYPES)[number] }> {
+  return (AGENT_DRIVER_TYPES as readonly string[]).includes(driver.type);
+}
 
 export const CliDriverSchema = z.strictObject({ type: z.literal("cli"), ...driverBase });
 
@@ -235,6 +269,19 @@ export const ContenderSchema = z.strictObject({
   driver: DriverSchema,
   /** Pinned version string recorded on every trial (subject, Claude Code, model, Tandem). */
   version: z.string().min(1).optional(),
+  /**
+   * Pinned versions of what this contender installs, keyed by the env var its adapter scripts
+   * read (e.g. `CLAUDE_CODE_VERSION: "2.0.14"`). Exported to install.sh, healthcheck.sh and the
+   * driver. The kit validator refuses `latest`/`main`-style values and a script that falls back
+   * to `${VAR:-latest}` with VAR unpinned, and a key pinned to different values across contenders.
+   */
+  versions: z.record(KitEnvVarNameSchema, z.string().min(1)).optional(),
+  /**
+   * Help this contender gets beyond its own setup: `llm-reviewer` / `human-sim` approvals
+   * (`human_in_loop.policy`), or tools such as `web-search`. Every assist goes to every
+   * contender or to none (checked by the kit validator).
+   */
+  assists: z.array(KitSlugSchema).optional(),
   /** Where this contender came from (researcher citation, user). */
   found_by: z.string().min(1).optional(),
 });

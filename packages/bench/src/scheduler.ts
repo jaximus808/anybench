@@ -56,6 +56,11 @@ export const SchedulableKitSchema = z.strictObject({
   est_trial_seconds: z.int().positive(),
   /** Pack several short trials onto one computer per billing block (software kits only). */
   packing: z.boolean().default(false),
+  /**
+   * Rotate the contender order every round (kit `schedule.order_seed`, TDM-178). Omit for kit
+   * order in every round.
+   */
+  order_seed: z.int().min(0).max(0xffff_ffff).optional(),
 });
 export type SchedulableKitInput = z.input<typeof SchedulableKitSchema>;
 export type SchedulableKit = z.output<typeof SchedulableKitSchema>;
@@ -108,11 +113,45 @@ export function packCapacity(kit: SchedulableKit, blockSeconds: number): number 
   return raw >= n ? Math.floor(raw / n) * n : raw;
 }
 
+/** mulberry32: a small deterministic PRNG, so a seed gives the same plan on every machine. */
+function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+/**
+ * The contender order for every round. Without a seed: kit order each round. With one: a seeded
+ * shuffle of the contenders, rotated by one place per round, so over any n consecutive rounds
+ * each of the n contenders runs in each position exactly once.
+ */
+export function contenderOrders(
+  contenders: readonly string[],
+  rounds: number,
+  seed?: number,
+): string[][] {
+  if (seed === undefined) return Array.from({ length: rounds }, () => [...contenders]);
+  const rand = seededRandom(seed);
+  const base = [...contenders];
+  for (let i = base.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [base[i], base[j]] = [base[j]!, base[i]!];
+  }
+  const n = base.length;
+  return Array.from({ length: rounds }, (_, r) => base.map((_, k) => base[(k + r) % n]!));
+}
+
 /**
  * Expand a kit into its trial plan. Pure apart from id generation.
  *
- * Order: all warm-ups first, then for each repeat, for each workload, every contender in kit order,
- * so the sequence is A B A B … within each workload and every repeat is one full round.
+ * Order: all warm-ups first, then for each repeat, for each workload, every contender once,
+ * so the sequence is A B A B … within each workload and every repeat is one full round. With
+ * `order_seed` the contender order rotates per round (see `contenderOrders`).
  */
 export function expandTrials(
   input: ExpandTrialsInput,
@@ -122,13 +161,19 @@ export function expandTrials(
   const makeId = opts.newTrialId ?? (() => newId(TrialIdSchema));
 
   const cells: Omit<TrialPlan, "trial_id" | "run_id" | "index" | "block">[] = [];
+  const orders = contenderOrders(
+    kit.contenders,
+    (kit.warmups + kit.repeats) * kit.workloads.length,
+    kit.order_seed,
+  );
+  let round = 0;
   for (const [warmup, count] of [
     [true, kit.warmups],
     [false, kit.repeats],
   ] as const) {
     for (let repeat = 0; repeat < count; repeat++) {
       for (const workload_id of kit.workloads) {
-        for (const contender_id of kit.contenders) {
+        for (const contender_id of orders[round++]!) {
           cells.push({ contender_id, workload_id, repeat, warmup });
         }
       }
