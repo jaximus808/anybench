@@ -24,7 +24,7 @@ a `vary` key expands only the contenders whose `driver.env` declares it (`tandem
 `validateKitDir` refuses a kit whose setups differ in anything but what is under test. Here every
 setup runs:
 
-- the same model, `anthropic/claude-sonnet-4.6` (a Naïve proxy id: the proxy refuses Anthropic's
+- the same model, `anthropic/claude-opus-5.5` (a Naïve proxy id: the proxy refuses Anthropic's
   own ids). It is `driver.model`, passed to Claude Code as `CC_MODEL` and also set as every
   `ANTHROPIC_DEFAULT_*_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, so subagents and background calls
   run it too. The drivers refuse to run without it;

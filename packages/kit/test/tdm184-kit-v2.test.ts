@@ -50,7 +50,7 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
     expect(new Set(models).size).toBe(1);
     expect(isPinnedModelId(models[0]!)).toBe(true);
     // A Naïve proxy id (the proxy refuses Anthropic ids such as claude-sonnet-4-6), not an alias.
-    expect(models[0]).toBe("anthropic/claude-sonnet-4.6");
+    expect(models[0]).toBe("anthropic/claude-opus-5.5");
     for (const c of kit.contenders) expect(c.driver.env?.CC_MODEL, c.id).toBe(models[0]);
     // The drivers refuse to run without it rather than fall back to the CLI's default model.
     // (Tandem's driver.sh execs run.sh, the harness runner, TDM-41.)
@@ -108,10 +108,10 @@ describe("kits/tandem-vs-claude-code v2: comparable setups", () => {
       MAX_THINKING_TOKENS: "0",
       CLAUDE_CODE_MODEL_CAPABILITIES:
         "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking",
-      ANTHROPIC_DEFAULT_OPUS_MODEL: "anthropic/claude-sonnet-4.6",
-      ANTHROPIC_DEFAULT_SONNET_MODEL: "anthropic/claude-sonnet-4.6",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "anthropic/claude-sonnet-4.6",
-      ANTHROPIC_SMALL_FAST_MODEL: "anthropic/claude-sonnet-4.6",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "anthropic/claude-opus-5.5",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "anthropic/claude-opus-5.5",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "anthropic/claude-opus-5.5",
+      ANTHROPIC_SMALL_FAST_MODEL: "anthropic/claude-opus-5.5",
     });
     // Claude Code 2.1.319 is the version verified on the proxy (TDM-16).
     for (const c of kit.contenders) expect(c.versions?.CLAUDE_CODE_VERSION, c.id).toBe("2.1.319");

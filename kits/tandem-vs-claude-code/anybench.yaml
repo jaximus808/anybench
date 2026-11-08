@@ -11,7 +11,7 @@ subject:
     Tandem is a shared task board where a planner splits work into tickets and N Claude Code
     workers claim them, with approvals. This kit compares Tandem with 1, 3 and 5 workers against plain
     Claude Code working alone and Claude Code with subagents, on three coding tasks graded by
-    hidden tests. Every setup runs anthropic/claude-sonnet-4.6 on Claude Code 2.1.319 through the
+    hidden tests. Every setup runs anthropic/claude-opus-5.5 on Claude Code 2.1.319 through the
     Naïve model proxy, at effort naive-min with thinking off.
   better_means:
     - more trials pass every hidden test
@@ -31,7 +31,7 @@ subject:
 # Tokens: every contender is paid through the Naïve model proxy (founder decision, TDM-184), with
 # identical proxy settings in driver.env. The proxy refuses client-chosen effort and extended
 # thinking, so every trial runs at effort naive-min with thinking off. The model id is Naïve's
-# (`anthropic/claude-sonnet-4.6`; the proxy refuses Anthropic's own ids). Claude Code 2.1.319 is
+# (`anthropic/claude-opus-5.5`; the proxy refuses Anthropic's own ids). Claude Code 2.1.319 is
 # the version the proxy was verified with (TDM-16), and the one that reads
 # CLAUDE_CODE_MODEL_CAPABILITIES.
 contenders:
@@ -49,21 +49,21 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: anthropic/claude-sonnet-4.6
+      model: anthropic/claude-opus-5.5
       token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-solo
-        CC_MODEL: anthropic/claude-sonnet-4.6
+        CC_MODEL: anthropic/claude-opus-5.5
         # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
         # same for every contender: effort naive-min, thinking off.
         AB_TOKEN_SOURCE: naive_proxy
         CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
         MAX_THINKING_TOKENS: "0"
         CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
-        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-opus-5.5
         # Claude Code calls its subagent tool Task in older versions and Agent in newer ones.
         CC_DISALLOWED_TOOLS: "Task Agent"
     versions: { CLAUDE_CODE_VERSION: "2.1.319" }
@@ -85,21 +85,21 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: anthropic/claude-sonnet-4.6
+      model: anthropic/claude-opus-5.5
       token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-subagents
-        CC_MODEL: anthropic/claude-sonnet-4.6
+        CC_MODEL: anthropic/claude-opus-5.5
         # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
         # same for every contender: effort naive-min, thinking off.
         AB_TOKEN_SOURCE: naive_proxy
         CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
         MAX_THINKING_TOKENS: "0"
         CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
-        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-opus-5.5
     versions: { CLAUDE_CODE_VERSION: "2.1.319" }
     found_by: "user: the setup Tandem has to beat"
 
@@ -119,22 +119,22 @@ contenders:
       verbs:
         run: adapters/tandem/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      model: anthropic/claude-sonnet-4.6
+      model: anthropic/claude-opus-5.5
       token_cap_tokens: 8000000
       env:
         # Default for the key `vary` sets; only drivers that declare a vary key are expanded by it.
         TANDEM_WORKERS: "3"
-        CC_MODEL: anthropic/claude-sonnet-4.6
+        CC_MODEL: anthropic/claude-opus-5.5
         # Model tokens come from the Naïve proxy (docs/findings/claude-code-naive-proxy.md), the
         # same for every contender: effort naive-min, thinking off.
         AB_TOKEN_SOURCE: naive_proxy
         CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
         MAX_THINKING_TOKENS: "0"
         CLAUDE_CODE_MODEL_CAPABILITIES: "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking"
-        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-sonnet-4.6
-        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-sonnet-4.6
+        ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-opus-5.5
+        ANTHROPIC_SMALL_FAST_MODEL: anthropic/claude-opus-5.5
     version: tandem@0.2.0
     versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0", TANDEM_VERSION: "0.2.0" }
 

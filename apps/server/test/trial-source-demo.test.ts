@@ -136,8 +136,8 @@ describe.skipIf(!available)("kit trial source + env build on Postgres (demo-env-
       diskGb: 20,
     });
     expect(p.naive_proxy).toEqual({
-      model: "anthropic/claude-sonnet-4.6",
-      smallFastModel: "anthropic/claude-sonnet-4.6",
+      model: "anthropic/claude-opus-5.5",
+      smallFastModel: "anthropic/claude-opus-5.5",
       capMicroUsd: 3_000_000n,
     });
     expect(p.job.driver.cwd).toBe("kit");
