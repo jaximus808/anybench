@@ -11,6 +11,7 @@ import type { JobQueue } from "./lib/job-queue.js";
 import type { Logger } from "./lib/logger.js";
 import type { TrialLogReader } from "./lib/trial-logs.js";
 import type { SentryHandle } from "./lib/sentry.js";
+import type { RateLimiter, RunSuggester } from "./lib/suggest.js";
 import type { EventsWriter, TrialArtifactStore } from "./routes/runner.js";
 
 export interface AppDeps {
@@ -45,6 +46,13 @@ export interface AppDeps {
   billingGate?: BillingGate;
   /** Enqueues graphile-worker jobs (TDM-67). Default: graphile_worker.add_job on `db`. */
   jobs?: JobQueue;
+  /**
+   * The New run screen's repo reader (POST /runs/suggest). Default: lib/suggest.ts on Naïve when
+   * NAIVE_API_KEY is set, else null (the route answers 503 and the screen falls back to manual).
+   */
+  suggester?: RunSuggester | null;
+  /** Per-user limit for POST /runs/suggest. Default: an in-process sliding window. */
+  suggestLimiter?: RateLimiter;
 }
 
 /** Hono env for every router: `new Hono<AppEnv>()`. `c.get("log")` is a per-request child logger. */

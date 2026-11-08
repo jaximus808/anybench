@@ -18,6 +18,8 @@ import {
   requireScope,
 } from "../lib/auth-key.js";
 import { graphileJobQueue } from "../lib/job-queue.js";
+import { createRunSuggester, slidingWindowLimiter } from "../lib/suggest.js";
+import { createNaiveClient } from "@anybench/naive";
 import type { AppDeps, AppEnv } from "../types.js";
 import { apiKeysRoutes } from "./api-keys.js";
 import { authRoutes } from "./auth.js";
@@ -28,6 +30,7 @@ import { reportsRoutes } from "./reports.js";
 import { runnerRoutes } from "./runner.js";
 import { runsRoutes } from "./runs.js";
 import { scanRoutes } from "./scan.js";
+import { suggestRoutes } from "./suggest.js";
 import { trialLogsRoutes } from "./trial-logs.js";
 import { runTrialsRoutes, trialsRoutes } from "./trials.js";
 
@@ -56,6 +59,27 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   app.use("/runs/:id/events", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.use("/runs/:id/stream", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.route("/runs", eventsRoutes(deps));
+  // New run screen: POST /runs/suggest (one bounded Naïve session; session cookie only).
+  app.route(
+    "/runs",
+    suggestRoutes({
+      ...deps,
+      suggester:
+        deps.suggester !== undefined
+          ? deps.suggester
+          : deps.config.NAIVE_API_KEY
+            ? createRunSuggester({
+                client: createNaiveClient({
+                  apiKey: deps.config.NAIVE_API_KEY,
+                  ...(deps.config.NAIVE_BASE_URL ? { baseUrl: deps.config.NAIVE_BASE_URL } : {}),
+                }),
+                model: deps.config.ANYBENCH_SUGGEST_MODEL,
+                githubToken: deps.config.GITHUB_TOKEN,
+              })
+            : null,
+      suggestLimiter: deps.suggestLimiter ?? slidingWindowLimiter(),
+    }),
+  );
   app.route("/runs", runsRoutes(tenant));
   // Run page fix: trials.list (runs:read; a run-scoped key only reaches its own runs).
   app.route("/runs", runTrialsRoutes(deps));

@@ -144,6 +144,50 @@ export const CreateRunBodySchema = z.object({
   auto_go: z.boolean().default(true),
 });
 
+// ---------------------------------------------------------------------------------------------
+// Suggest (New run screen): one bounded Naïve session reads a repo's README and file tree and
+// proposes the rest of the form. The user reviews and edits every field; nothing is created.
+
+export const SUGGESTED_QUESTIONS_MIN = 2;
+export const SUGGESTED_QUESTIONS_MAX = 3;
+export const SUGGESTED_ALTERNATIVES_MAX = 5;
+
+/** The approvals preference the New run screen offers (runs per setup 1–20 likewise). */
+export const ApprovalsPolicySchema = z.enum(["reviewer", "ask_me", "auto"]);
+
+export const SuggestedAlternativeSchema = z.object({
+  /** A product name or `owner/repo`, as the user would type it on the form. */
+  name: z.string().trim().min(1).max(120),
+  /** One line: why it is the obvious thing to compare against. */
+  reason: z.string().trim().min(1).max(300),
+});
+export type SuggestedAlternative = z.infer<typeof SuggestedAlternativeSchema>;
+
+/** What the suggester agent proposes. Also its Naïve output_schema. */
+export const RunSuggestionSchema = z.object({
+  /** One line: what this project is. */
+  project_summary: z.string().trim().min(1).max(300),
+  /** Questions worth benchmarking, best first. */
+  questions: z
+    .array(z.string().trim().min(1).max(400))
+    .min(SUGGESTED_QUESTIONS_MIN)
+    .max(SUGGESTED_QUESTIONS_MAX),
+  alternatives: z.array(SuggestedAlternativeSchema).max(SUGGESTED_ALTERNATIVES_MAX),
+  options: z.object({
+    runs_per_setup: z.int().min(1).max(20),
+    approvals: ApprovalsPolicySchema,
+  }),
+});
+export type RunSuggestion = z.infer<typeof RunSuggestionSchema>;
+
+export const SuggestRunBodySchema = z.object({
+  source: z.object({
+    kind: z.literal("github"),
+    github: GithubSourceSchema.shape.github,
+    ref: z.string().min(1).max(255).optional(),
+  }),
+});
+
 const IdempotencyHeadersSchema = z.object({
   "idempotency-key": z.string().min(8).max(200).optional(),
 });
@@ -173,6 +217,20 @@ export const runRoutes = defineRoutes({
     body: CreateRunBodySchema,
     status: 201,
     response: runResponse,
+  }),
+  suggest: defineRoute({
+    id: "runs.suggest",
+    method: "POST",
+    path: "/runs/suggest",
+    auth: ["session"],
+    summary:
+      "Read a GitHub repo and propose questions, alternatives and options for a new run. Creates nothing.",
+    body: SuggestRunBodySchema,
+    response: z.object({
+      suggestion: RunSuggestionSchema,
+      /** What the suggester session cost Anybench (integer micro-USD); the user is not billed. */
+      cost_micro_usd: NonNegativeMicroUsdSchema,
+    }),
   }),
   get: defineRoute({
     id: "runs.get",

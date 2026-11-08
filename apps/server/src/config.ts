@@ -121,6 +121,11 @@ export const EnvSchema = z.object({
   NAIVE_API_KEY: optionalString,
   NAIVE_BASE_URL: optionalUrl,
   /**
+   * Naïve model for POST /runs/suggest (the New run screen's repo reader). A cheap model that keeps
+   * to a JSON schema; each call is capped at about $0.05. Default: lib/suggest.ts SUGGEST_DEFAULT_MODEL.
+   */
+  ANYBENCH_SUGGEST_MODEL: optionalString,
+  /**
    * Where the bun-compiled runner binaries are (runner-linux-x64/arm64), for the env build to put
    * in every image. Default: packages/runner/dist/bin (`pnpm --filter @anybench/runner build:bin`).
    */

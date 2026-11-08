@@ -171,7 +171,8 @@ export function buildCreateRunBody(form: NewRunForm, uploads: UploadedIds = {}):
   return { ok: true, body };
 }
 
-function isHttpUrl(s: string): boolean {
+/** An absolute http: or https: URL (the binary and docs links). */
+export function isHttpUrl(s: string): boolean {
   try {
     const u = new URL(s);
     return u.protocol === "https:" || u.protocol === "http:";

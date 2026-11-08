@@ -5,7 +5,7 @@ import styles from "./new-run.module.css";
 
 export const metadata: Metadata = {
   title: "New run",
-  description: "Paste a repo or upload a binary, ask whether it's better, and Anybench tests it.",
+  description: "Paste a repo, ask whether it's better, and Anybench designs the test.",
 };
 
 export default function NewRunPage() {
@@ -13,8 +13,8 @@ export default function NewRunPage() {
     <main id="main" className={styles.main}>
       <h1 className={styles.title}>New run</h1>
       <p className={styles.lede}>
-        Paste a repo or upload what you built, ask whether it&rsquo;s better or faster, and name
-        anything you want it compared with. Agents design the test; you review it before Go.
+        Point Anybench at what you built and ask your question. It reads your repo and suggests the
+        rest; you check the test plan before Go.
       </p>
       <NewRunForm />
     </main>
