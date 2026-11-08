@@ -6,17 +6,7 @@
 // ANYBENCH_EVAL_HOME); the sudo/runuser switch is exercised on the eval computers.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import {
-  chmod,
-  cp as cpDir,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
