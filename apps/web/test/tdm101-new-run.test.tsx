@@ -4,13 +4,21 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWebApiClient } from "../lib/api";
 import { NewRunForm } from "../app/runs/new/NewRunForm";
-import { RunsList } from "../app/runs/RunsList";
+import { RunsList, stateTone } from "../app/runs/RunsList";
 import {
   buildCreateRunBody,
   EMPTY_FORM,
   parseGithubRepo,
   parseUsdToMicro,
+  safeHttpsUrl,
+  sha256OfBlob,
+  uploadFile,
+  uploadSizeError,
+  UploadTooLargeError,
 } from "../app/runs/new/new-run";
+import { Sha256 } from "../app/runs/new/sha256";
+import { apiRoutes, UPLOAD_MAX_BYTES } from "@anybench/core";
+import { createHash } from "node:crypto";
 
 const nav = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => nav }));
@@ -165,6 +173,135 @@ describe("new run helpers (TDM-101)", () => {
   });
 });
 
+function uploadRecord(status: "pending" | "complete", size: number) {
+  return {
+    id: UPLOAD_ID,
+    purpose: "binary",
+    filename: "tool",
+    content_type: "application/octet-stream",
+    size_bytes: size,
+    sha256: "0".repeat(64),
+    status,
+    created_at: NOW,
+    completed_at: status === "complete" ? NOW : null,
+  };
+}
+
+describe("bounded uploads (TDM-101)", () => {
+  it("incremental SHA-256 matches node:crypto across block boundaries", () => {
+    for (const n of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000]) {
+      const data = new Uint8Array(n).map((_, i) => (i * 31 + 7) & 0xff);
+      const h = new Sha256();
+      // Feed in uneven pieces.
+      for (let i = 0; i < n; i += 13) h.update(data.subarray(i, i + 13));
+      expect(h.hex()).toBe(createHash("sha256").update(data).digest("hex"));
+    }
+  });
+
+  it("hashes a Blob slice by slice, never the whole file at once", async () => {
+    const file = new File(["hello world, hashed in pieces"], "x.bin");
+    const whole = vi.spyOn(file, "arrayBuffer");
+    const slice = vi.spyOn(file, "slice");
+    const hex = await sha256OfBlob(file, 4);
+    expect(hex).toBe(createHash("sha256").update("hello world, hashed in pieces").digest("hex"));
+    expect(whole).not.toHaveBeenCalled();
+    expect(slice).toHaveBeenCalledTimes(Math.ceil(file.size / 4));
+  });
+
+  it("the contract refuses an over-cap upload per purpose", () => {
+    const body = (purpose: "binary" | "claude_setup", size_bytes: number) => ({
+      purpose,
+      filename: "f",
+      content_type: "application/zip",
+      size_bytes,
+      sha256: "0".repeat(64),
+    });
+    const schema = apiRoutes.uploads.create.body;
+    expect(schema.safeParse(body("claude_setup", UPLOAD_MAX_BYTES.claude_setup)).success).toBe(
+      true,
+    );
+    expect(schema.safeParse(body("claude_setup", UPLOAD_MAX_BYTES.claude_setup + 1)).success).toBe(
+      false,
+    );
+    expect(UPLOAD_MAX_BYTES.binary).toBeGreaterThan(UPLOAD_MAX_BYTES.claude_setup);
+  });
+
+  it("refuses an over-cap file from file.size before reading or calling uploads.create", async () => {
+    const { calls, client } = mockApi();
+    const file = new File(["x"], "huge.bin");
+    Object.defineProperty(file, "size", { value: UPLOAD_MAX_BYTES.binary + 1 });
+    const read = vi.spyOn(file, "slice");
+    await expect(uploadFile(client, file, "binary")).rejects.toBeInstanceOf(UploadTooLargeError);
+    expect(read).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(uploadSizeError(file.size, "binary")).toMatch(/limit is 1 GB/);
+  });
+
+  it("the form shows the size error on select and never starts the upload", async () => {
+    const { calls, client } = mockApi();
+    render(<NewRunForm client={client} />);
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code setup" }));
+    const file = new File(["x"], "setup.zip", { type: "application/zip" });
+    Object.defineProperty(file, "size", { value: UPLOAD_MAX_BYTES.claude_setup + 1 });
+    fireEvent.change(screen.getByLabelText("Your .claude/ setup"), { target: { files: [file] } });
+    expect(await screen.findByText(/The Claude Code setup is .* the limit is 25 MB/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Your question"), { target: { value: "Better?" } });
+    submit();
+    expect(await screen.findByText(/the limit is 25 MB/)).toBeTruthy();
+    expect(calls.some((c) => c.path.startsWith("/uploads") || c.path === "/runs")).toBe(false);
+  });
+
+  it("multipart sends each part as a slice of the file and completes with the ETags", async () => {
+    const content = "0123456789abcdef";
+    const { calls, client } = mockApi(
+      route("POST", "/uploads", () =>
+        json(201, {
+          upload: uploadRecord("pending", content.length),
+          plan: {
+            kind: "multipart",
+            part_size_bytes: 10,
+            parts: [
+              { part_number: 1, offset: 0, size_bytes: 10, url: "https://r2.test/p1", headers: {} },
+              { part_number: 2, offset: 10, size_bytes: 6, url: "https://r2.test/p2", headers: {} },
+            ],
+          },
+          expires_at: NOW,
+        }),
+      ),
+      route("POST", `/uploads/${UPLOAD_ID}/complete`, () =>
+        json(200, { upload: uploadRecord("complete", content.length) }),
+      ),
+    );
+    const file = new File([content], "tool");
+    const whole = vi.spyOn(file, "arrayBuffer");
+    const bodies: { url: string; text: string }[] = [];
+    const put = async (url: string, init: RequestInit) => {
+      expect(init.body).toBeInstanceOf(Blob);
+      bodies.push({ url, text: await (init.body as Blob).text() });
+      return new Response(null, { status: 200, headers: { etag: `"e${bodies.length}"` } });
+    };
+    expect(await uploadFile(client, file, "binary", put)).toBe(UPLOAD_ID);
+    expect(whole).not.toHaveBeenCalled();
+    expect(bodies).toEqual([
+      { url: "https://r2.test/p1", text: "0123456789" },
+      { url: "https://r2.test/p2", text: "abcdef" },
+    ]);
+    expect(calls.find((c) => c.path.endsWith("/complete"))?.body).toEqual({
+      parts: [
+        { part_number: 1, etag: '"e1"' },
+        { part_number: 2, etag: '"e2"' },
+      ],
+    });
+  });
+
+  it("only renders https: card links", () => {
+    expect(safeHttpsUrl("https://pay.test/x")).toBe("https://pay.test/x");
+    expect(safeHttpsUrl("javascript:alert(1)")).toBeNull();
+    expect(safeHttpsUrl("http://pay.test/x")).toBeNull();
+    expect(safeHttpsUrl("nope")).toBeNull();
+  });
+});
+
 function fillGithub() {
   fireEvent.change(screen.getByLabelText("Repo URL"), {
     target: { value: "https://github.com/jaximus808/tandem" },
@@ -250,6 +387,20 @@ describe("Ask screen (TDM-101)", () => {
     expect(link.getAttribute("href")).toBe("https://pay.test/link");
   });
 
+  it("falls back to /billing when the 402 link is not https:", async () => {
+    const { client } = mockApi(
+      route("POST", "/runs", () =>
+        json(402, { reason: "no_payment_method", link_card_url: "http://pay.test/link" }),
+      ),
+    );
+    render(<NewRunForm client={client} />);
+    fillGithub();
+    submit();
+    const link = await screen.findByRole("link", { name: "Go to billing" });
+    expect(link.getAttribute("href")).toBe("/billing");
+    expect(screen.queryByRole("link", { name: "Add a card" })).toBeNull();
+  });
+
   it("uploads a binary (create → PUT → complete) and sends its upload id", async () => {
     const puts: string[] = [];
     const { calls, client } = mockApi(
@@ -321,6 +472,16 @@ describe("runs list (TDM-101)", () => {
     const link = await screen.findByRole("link", { name: "Is it faster than ripgrep?" });
     expect(link.getAttribute("href")).toBe(`/runs/${RUN_ID}`);
     expect(screen.getByText(/\$1\.50 of \$100\.00/)).toBeTruthy();
+    expect(screen.getByText("intake").getAttribute("data-tone")).toBe("active");
+  });
+
+  it("tones states: accent only while work is live", () => {
+    expect(stateTone("running")).toBe("active");
+    expect(stateTone("delivered")).toBe("passed");
+    expect(stateTone("failed")).toBe("failed");
+    expect(stateTone("cancelled")).toBe("infra");
+    expect(stateTone("awaiting_go")).toBe("muted");
+    expect(stateTone("paused_budget")).toBe("muted");
   });
 
   it("shows an empty state that points to a new run", async () => {

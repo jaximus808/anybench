@@ -14,7 +14,7 @@ export default function RunsPage() {
     <main id="main" className={styles.main}>
       <div className={styles.head}>
         <h1 className={styles.title}>Runs</h1>
-        <Link href="/runs/new" className={styles.btn}>
+        <Link href="/runs/new" className="btn">
           New run
         </Link>
       </div>

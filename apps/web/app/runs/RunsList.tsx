@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { ApiClientError, formatUsd, type ApiClient, type Run } from "@anybench/core";
+import { ApiClientError, formatUsd, type ApiClient, type Run, type RunState } from "@anybench/core";
 import { api } from "../../lib/api";
 import styles from "./new/new-run.module.css";
 
@@ -53,7 +53,7 @@ export function RunsList({ client: injected }: { client?: ApiClient }) {
     return (
       <div className={styles.empty}>
         <p>No runs yet.</p>
-        <Link href="/runs/new" className={styles.btn}>
+        <Link href="/runs/new" className="btn">
           Start your first run
         </Link>
       </div>
@@ -64,7 +64,9 @@ export function RunsList({ client: injected }: { client?: ApiClient }) {
         {runs.map((r) => (
           <li key={r.id} className={styles.item}>
             <Link href={`/runs/${r.id}`}>{firstLine(r.question)}</Link>
-            <span className={styles.state}>{r.state.replace(/_/g, " ")}</span>
+            <span className={styles.state} data-tone={stateTone(r.state)}>
+              {r.state.replace(/_/g, " ")}
+            </span>
             <span className={styles.meta}>
               {formatUsd(r.spent_micro_usd)} of {formatUsd(r.budget_micro_usd)} ·{" "}
               <time dateTime={r.created_at}>{r.created_at.slice(0, 10)}</time>
@@ -81,7 +83,7 @@ export function RunsList({ client: injected }: { client?: ApiClient }) {
         <p>
           <button
             type="button"
-            className={styles.ghost}
+            className="btn btn-quiet"
             disabled={loading}
             onClick={() => void load(cursor)}
           >
@@ -91,6 +93,26 @@ export function RunsList({ client: injected }: { client?: ApiClient }) {
       )}
     </>
   );
+}
+
+export type StateTone = "active" | "passed" | "failed" | "infra" | "muted";
+
+/** Colour means state (docs/design/design-system.md): orange only while work is live. */
+export function stateTone(state: RunState): StateTone {
+  switch (state) {
+    case "delivered":
+      return "passed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "infra";
+    case "awaiting_go":
+    case "needs_human":
+    case "paused_budget":
+      return "muted";
+    default:
+      return "active";
+  }
 }
 
 function firstLine(question: string): string {

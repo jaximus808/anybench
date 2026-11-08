@@ -15,7 +15,9 @@ import {
   RUNS_PER_SETUP_MAX,
   RUNS_PER_SETUP_MIN,
   SIGNIN_NEW_RUN,
+  safeHttpsUrl,
   uploadFile,
+  uploadSizeError,
   type ApprovalsPolicy,
   type NewRunForm as FormState,
   type PutFetch,
@@ -68,6 +70,9 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
   function setFile(key: keyof typeof files, file: File | undefined) {
     idempotencyKey.current = null;
     setFiles((f) => ({ ...f, [key]: file }));
+    // Checked from file.size alone, before any byte is read.
+    const tooBig = file ? uploadSizeError(file.size, FILE_PURPOSE[key]) : null;
+    setErrors(tooBig ? [tooBig] : []);
   }
 
   async function ensureUploaded(file: File | undefined, purpose: Parameters<typeof uploadFile>[2]) {
@@ -85,8 +90,11 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
     if (busy) return;
     setFailure(null);
     const precheck = buildCreateRunBody(form, placeholderUploads(form.sourceKind, files));
-    if (!precheck.ok) {
-      setErrors(precheck.errors);
+    const sizeErrors = chosenFiles(form.sourceKind, files)
+      .map(([key, file]) => uploadSizeError(file.size, FILE_PURPOSE[key]))
+      .filter((m): m is string => m !== null);
+    if (!precheck.ok || sizeErrors.length > 0) {
+      setErrors([...sizeErrors, ...(precheck.ok ? [] : precheck.errors)]);
       return;
     }
     setErrors([]);
@@ -140,7 +148,12 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
       )}
       {failure?.kind === "payment" && (
         <div className={styles.notice} role="alert">
-          Add a card or credit to start this run. <a href={failure.linkCardUrl}>Add a card</a>
+          Add a card or credit to start this run.{" "}
+          {safeHttpsUrl(failure.linkCardUrl) ? (
+            <a href={safeHttpsUrl(failure.linkCardUrl) ?? undefined}>Add a card</a>
+          ) : (
+            <a href="/billing">Go to billing</a>
+          )}
         </div>
       )}
       {failure?.kind === "message" && (
@@ -275,7 +288,7 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
           <fieldset className={styles.field}>
             <legend className={styles.lbl}>Setups to compare</legend>
             <div className={styles.setup}>
-              <span className={styles.sl}>A</span>
+              <span className={styles.sl}>01</span>
               <div className={styles.setupBody}>
                 <b>Yours</b>
                 <small>Anybench also looks for the obvious alternatives.</small>
@@ -283,7 +296,7 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
             </div>
             {contenders.map((c, i) => (
               <div key={i} className={styles.setup}>
-                <span className={styles.sl}>{String.fromCharCode(66 + i)}</span>
+                <span className={styles.sl}>{String(i + 2).padStart(2, "0")}</span>
                 <div className={styles.setupBody}>
                   <input
                     className={styles.input}
@@ -316,7 +329,7 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
             {contenders.length < 10 && (
               <button
                 type="button"
-                className={styles.ghost}
+                className={`btn btn-quiet ${styles.add}`}
                 onClick={() => update("contenders", [...contenders, ""])}
               >
                 + Add a setup
@@ -399,7 +412,7 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
             />
             Let me review the test plan before it starts
           </label>
-          <button type="submit" className={styles.btn} disabled={busy !== null}>
+          <button type="submit" className="btn" disabled={busy !== null}>
             {busy ? "Working…" : "Design the test"}
           </button>
           <p className={styles.status} role="status">
@@ -409,6 +422,23 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
       </div>
     </form>
   );
+}
+
+type FileKey = "binary" | "docs" | "claudeSetup";
+const FILE_PURPOSE: Readonly<Record<FileKey, "binary" | "docs" | "claude_setup">> = {
+  binary: "binary",
+  docs: "docs",
+  claudeSetup: "claude_setup",
+};
+
+/** The files the chosen source will upload. */
+function chosenFiles(kind: SourceKind, files: Partial<Record<FileKey, File>>): [FileKey, File][] {
+  const keys: FileKey[] =
+    kind === "binary" ? ["binary", "docs"] : kind === "claude_setup" ? ["claudeSetup"] : [];
+  return keys.flatMap((k) => {
+    const f = files[k];
+    return f ? [[k, f] as [FileKey, File]] : [];
+  });
 }
 
 /** For the pre-upload check: a chosen file counts as an upload that will exist. */

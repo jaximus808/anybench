@@ -9,6 +9,16 @@ export type UploadId = z.output<typeof UploadIdSchema>;
 
 export const UPLOAD_PURPOSES = ["binary", "docs", "claude_setup", "kit"] as const;
 export const UploadPurposeSchema = z.enum(UPLOAD_PURPOSES);
+export type UploadPurpose = z.infer<typeof UploadPurposeSchema>;
+
+const MiB = 1024 * 1024;
+/** Largest file each purpose accepts (uploads.create refuses bigger; clients check first). */
+export const UPLOAD_MAX_BYTES: Readonly<Record<UploadPurpose, number>> = {
+  binary: 1024 * MiB,
+  docs: 100 * MiB,
+  claude_setup: 25 * MiB,
+  kit: 25 * MiB,
+};
 
 const Sha256Schema = z
   .string()
@@ -65,13 +75,18 @@ export const uploadRoutes = defineRoutes({
     path: "/uploads",
     auth: ["session", "apiKey:runs:write"],
     summary: "Plan an upload: returns presigned PUT url(s). Size is capped per purpose.",
-    body: z.object({
-      purpose: UploadPurposeSchema,
-      filename: z.string().min(1).max(255),
-      content_type: z.string().min(1).max(255),
-      size_bytes: ByteCountSchema,
-      sha256: Sha256Schema,
-    }),
+    body: z
+      .object({
+        purpose: UploadPurposeSchema,
+        filename: z.string().min(1).max(255),
+        content_type: z.string().min(1).max(255),
+        size_bytes: ByteCountSchema,
+        sha256: Sha256Schema,
+      })
+      .refine((b) => b.size_bytes <= UPLOAD_MAX_BYTES[b.purpose], {
+        path: ["size_bytes"],
+        error: "file is larger than this purpose allows (UPLOAD_MAX_BYTES)",
+      }),
     status: 201,
     response: z.object({
       upload: UploadSchema,

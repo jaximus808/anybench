@@ -8,7 +8,9 @@ import {
   type ApiClient,
   type MicroUsd,
   type RouteInput,
+  UPLOAD_MAX_BYTES,
 } from "@anybench/core";
+import { Sha256 } from "./sha256";
 
 export type SourceKind = "github" | "binary" | "claude_setup";
 export type ApprovalsPolicy = "reviewer" | "ask_me" | "auto";
@@ -189,9 +191,36 @@ export function newIdempotencyKey(): string {
 export type UploadPurpose = "binary" | "docs" | "claude_setup";
 export type PutFetch = (url: string, init: RequestInit) => Promise<Response>;
 
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+/** Bytes read per step while hashing: the file is never held in memory whole. */
+export const HASH_CHUNK_BYTES = 8 * 1024 * 1024;
+
+const PURPOSE_LABEL: Readonly<Record<UploadPurpose, string>> = {
+  binary: "The binary",
+  docs: "The docs",
+  claude_setup: "The Claude Code setup",
+};
+
+export function formatBytes(n: number): string {
+  const mib = n / (1024 * 1024);
+  return mib >= 1024 ? `${Math.round(mib / 102.4) / 10} GB` : `${Math.max(1, Math.round(mib))} MB`;
+}
+
+/** The size check, made from `file.size` before any byte is read. */
+export function uploadSizeError(size: number, purpose: UploadPurpose): string | null {
+  const max = UPLOAD_MAX_BYTES[purpose];
+  if (size <= max) return null;
+  return `${PURPOSE_LABEL[purpose]} is ${formatBytes(size)}; the limit is ${formatBytes(max)}.`;
+}
+
+export class UploadTooLargeError extends Error {}
+
+/** SHA-256 of a Blob, read one slice at a time. */
+export async function sha256OfBlob(blob: Blob, chunk = HASH_CHUNK_BYTES): Promise<string> {
+  const h = new Sha256();
+  for (let off = 0; off < blob.size; off += chunk) {
+    h.update(new Uint8Array(await blob.slice(off, off + chunk).arrayBuffer()));
+  }
+  return h.hex();
 }
 
 /** Upload one file and return its upload id once the server has checked size and sha256. */
@@ -201,24 +230,26 @@ export async function uploadFile(
   purpose: UploadPurpose,
   put: PutFetch = (url, init) => globalThis.fetch(url, init),
 ): Promise<string> {
-  const bytes = await file.arrayBuffer();
+  const tooBig = uploadSizeError(file.size, purpose);
+  if (tooBig) throw new UploadTooLargeError(tooBig);
   const { upload, plan } = await client.uploads.create({
     body: {
       purpose,
       filename: file.name,
       content_type: file.type || "application/octet-stream",
-      size_bytes: bytes.byteLength,
-      sha256: await sha256Hex(bytes),
+      size_bytes: file.size,
+      sha256: await sha256OfBlob(file),
     },
   });
   if (plan.kind === "single") {
-    const res = await put(plan.url, { method: "PUT", headers: plan.headers, body: bytes });
+    // The Blob itself is the body: the browser streams it from disk.
+    const res = await put(plan.url, { method: "PUT", headers: plan.headers, body: file });
     if (!res.ok) throw new Error(`Upload of ${file.name} failed (HTTP ${res.status}).`);
     await client.uploads.complete({ params: { id: upload.id }, body: {} });
   } else {
     const parts: { part_number: number; etag: string }[] = [];
     for (const p of plan.parts) {
-      const chunk = bytes.slice(p.offset, p.offset + p.size_bytes);
+      const chunk = file.slice(p.offset, p.offset + p.size_bytes);
       const res = await put(p.url, { method: "PUT", headers: p.headers, body: chunk });
       const etag = res.headers.get("etag");
       if (!res.ok || !etag)
@@ -228,6 +259,15 @@ export async function uploadFile(
     await client.uploads.complete({ params: { id: upload.id }, body: { parts } });
   }
   return upload.id;
+}
+
+/** Only an https: link is rendered (the 402's link_card_url). */
+export function safeHttpsUrl(url: string): string | null {
+  try {
+    return new URL(url).protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
