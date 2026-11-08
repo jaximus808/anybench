@@ -33,7 +33,7 @@ import {
   type ExecutorDeps,
   type TrialPrepared,
 } from "@anybench/bench";
-import { newId, TrialIdSchema, type KitSpec } from "@anybench/core";
+import { isAgentDriver, newId, TrialIdSchema, type KitSpec } from "@anybench/core";
 import {
   createComputerRegistry,
   KIT_DIR_REL,
@@ -60,7 +60,7 @@ import {
 } from "@anybench/providers";
 import { kitComputerSize, type EnvBuildDetail } from "../orchestrator/env-build.js";
 import type { EnvBuild } from "../orchestrator/ports.js";
-import { preparedJob } from "../orchestrator/trial-source.js";
+import { preparedJob, trialProxyCap } from "../orchestrator/trial-source.js";
 
 export interface ProviderProofRunnerOptions {
   provider: ComputeProvider;
@@ -73,6 +73,13 @@ export interface ProviderProofRunnerOptions {
   store?: ComputerStore;
   /** Integer micro-USD per billing block, for the rows' cost. */
   pricePerBlockMicroUsd?: bigint;
+  /** Naïve proxy keys for agent contenders (AB_TOKEN_SOURCE=naive_proxy): proxyDepsFromConfig. */
+  naiveProxy?: ExecutorDeps["naiveProxy"];
+  /** Ceiling of each proof trial's proxy spend cap (TRIAL_PROXY_CAP_MICRO_USD). */
+  proxyCapMicroUsd?: bigint;
+  /** Backoff before retrying our own failure (default 10 s, doubled for gates). */
+  retryBackoffMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   /** Override the executor's timing (tests). */
   timing?: ExecutorDeps["timing"];
   log?: (msg: string, data?: Record<string, unknown>) => void;
@@ -126,7 +133,23 @@ async function kitFile(kit: LoadedKit, rel: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(path.join(kit.dir, rel)));
 }
 
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderProofRunner {
+  const sleep = opts.sleep ?? realSleep;
+  const retryBackoffMs = opts.retryBackoffMs ?? 10_000;
+  /** A gate run whose scoring computer could not start (GateInfraError) is retried twice. */
+  const withGateRetries = async <T>(f: () => Promise<T>): Promise<T> => {
+    for (let i = 0; ; i++) {
+      try {
+        return await f();
+      } catch (err) {
+        if (!(err instanceof GateInfraError) || i >= 2) throw err;
+        log("proof gate: infra retry", { err: err.message, attempt: i + 1 });
+        await sleep(retryBackoffMs * 2 ** i);
+      }
+    }
+  };
   const { provider, kit, env } = opts;
   const spec = kit.spec;
   const detail = (env.detail ?? {}) as Partial<EnvBuildDetail>;
@@ -195,6 +218,26 @@ export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderP
         secrets: {},
         files: await overlayFiles(req),
       };
+      // Model tokens through the Naïve proxy, as kitTrialSource does for a contender trial: the
+      // executor mints the per-trial key, enforces the cap and revokes it on every path.
+      if (prepared.job.env?.AB_TOKEN_SOURCE === "naive_proxy") {
+        const contender = spec.contenders.find((c) => c.id === req.contenderId)!;
+        const e = prepared.job.env;
+        const model =
+          (isAgentDriver(contender.driver) ? contender.driver.model : undefined) ??
+          e.CC_MODEL ??
+          e.ANTHROPIC_MODEL;
+        if (!opts.naiveProxy || !model) {
+          throw new ProofInfraError(
+            `proof trial ${req.label}: the contender takes model tokens from the Naïve proxy, which is not configured`,
+          );
+        }
+        prepared.naive_proxy = {
+          model,
+          ...(e.ANTHROPIC_SMALL_FAST_MODEL ? { smallFastModel: e.ANTHROPIC_SMALL_FAST_MODEL } : {}),
+          capMicroUsd: trialProxyCap(contender.driver, opts.proxyCapMicroUsd),
+        };
+      }
       const store = new MemoryTrialExecStore();
       store.seed({ id: trialId, run_id: opts.runId });
       let bundle: Uint8Array | null = null;
@@ -220,12 +263,17 @@ export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderP
           return { key: `proof/${opts.runId}/${trialId}/out.tar.gz` };
         },
         ...(opts.timing ? { timing: opts.timing } : {}),
+        ...(opts.naiveProxy ? { naiveProxy: opts.naiveProxy } : {}),
       };
       log("proof trial: start", { label: req.label, trialId });
       let out = await executeTrial(deps, trialId, signal ? { signal } : {});
       // One retry for our own trouble (a 429 on create, a lost runner), as trial.execute does.
-      if (out.kind === "retry")
+      // Our own trouble (a 429 "at capacity" on create, a lost runner) is retried as a new
+      // attempt after a backoff, as trial.execute does, until the executor's tries run out.
+      while (out.kind === "retry" && !signal?.aborted) {
+        await sleep(Math.max(retryBackoffMs, Math.min(out.delay_ms, 60_000)));
         out = await executeTrial(deps, trialId, { retryNow: true, ...(signal ? { signal } : {}) });
+      }
       const t = (await store.get(trialId))!;
       log("proof trial: end", {
         label: req.label,
@@ -261,20 +309,22 @@ export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderP
       const trialId = newId(TrialIdSchema);
       trialIds.push(trialId);
       try {
-        const record = await runGates(
-          {
-            runId: opts.runId,
-            trialId,
-            workloadId: req.workloadId,
-            gates,
-            frozen: req.bundle
-              ? { kind: "bytes", data: req.bundle }
-              : { kind: "missing", reason: "the trial froze no outputs" },
-            scoring: await collectScoringFiles(kit.dir, gates),
-            profile: detail.scoring_snapshot_id ? { snapshotId: detail.scoring_snapshot_id } : {},
-            subjectSnapshotIds: [env.env_id!],
-          },
-          { registry },
+        const record = await withGateRetries(async () =>
+          runGates(
+            {
+              runId: opts.runId,
+              trialId,
+              workloadId: req.workloadId,
+              gates,
+              frozen: req.bundle
+                ? { kind: "bytes", data: req.bundle }
+                : { kind: "missing", reason: "the trial froze no outputs" },
+              scoring: await collectScoringFiles(kit.dir, gates),
+              profile: detail.scoring_snapshot_id ? { snapshotId: detail.scoring_snapshot_id } : {},
+              subjectSnapshotIds: [env.env_id!],
+            },
+            { registry },
+          ),
         );
         return {
           gates: Object.fromEntries(

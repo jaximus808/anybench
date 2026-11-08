@@ -52,6 +52,9 @@ export interface ProofStageOptions {
   kitsDir?: string;
   /** The worker's configured secret values, matched exactly in every kit file. Never logged. */
   secretValues?: () => readonly string[];
+  /** Naïve proxy keys + the per-trial cap ceiling, for agent contenders' proof trials. */
+  naiveProxy?: ProviderProofRunnerOptions["naiveProxy"];
+  proxyCapMicroUsd?: bigint;
   /** COMPUTER_BLOCK_PRICE_MICRO_USD, for the proof computers' rows. */
   pricePerBlockMicroUsd?: bigint;
   /** Suite bounds (concurrency, deadline, repeats). */
@@ -159,6 +162,8 @@ export function proofStage(opts: ProofStageOptions): PipelinePort["prove"] {
         ? { pricePerBlockMicroUsd: opts.pricePerBlockMicroUsd }
         : {}),
       log,
+      ...(opts.naiveProxy ? { naiveProxy: opts.naiveProxy } : {}),
+      ...(opts.proxyCapMicroUsd !== undefined ? { proxyCapMicroUsd: opts.proxyCapMicroUsd } : {}),
     };
     const runner = opts.runner ? opts.runner(runnerOpts) : providerProofRunner(runnerOpts);
     await say(

@@ -23,6 +23,7 @@ import {
   recipesForProfile,
   runnerFromBytes,
   type RecipeArch,
+  type RunnerInstaller,
 } from "@anybench/envs";
 import { loadKit, runProofSuiteReport } from "@anybench/kit";
 import { createNaiveClient } from "@anybench/naive";
@@ -65,20 +66,28 @@ function runnerBins(): Partial<Record<RecipeArch, Uint8Array>> {
 
 async function proveCliExample(
   provider: ComputeProvider,
-  opts: { recipes: readonly string[]; scoringImage: boolean; pricePerBlockMicroUsd: bigint },
+  opts: {
+    recipes: readonly string[];
+    scoringImage: boolean;
+    pricePerBlockMicroUsd: bigint;
+    runner?: RunnerInstaller;
+    concurrency?: number;
+  },
 ) {
   const kit = await loadKit(CLI);
   const cleanups: (() => Promise<unknown>)[] = [];
   const t0 = Date.now();
   try {
     const plan = await subjectPlan(kit.dir, kit.spec);
-    const [subject, scoring] = await Promise.all([
+    const runner = opts.runner ?? runnerFromBytes(runnerBins());
+    // Wait for BOTH builds to settle (each destroys its own computer) before going on or failing.
+    const [subjectRes, scoringRes] = await Promise.allSettled([
       buildEnvSnapshot({
         provider,
         spec: { vcpu: 2, memoryMb: 4096, diskGb: 20 },
         label: "tdm44-proof",
         recipes: opts.recipes,
-        runner: runnerFromBytes(runnerBins()),
+        runner,
         files: plan.files,
         installs: plan.installs,
         log: (m, d) => log(`env: ${m}`, d),
@@ -93,8 +102,17 @@ async function proveCliExample(
           })
         : Promise.resolve(null),
     ]);
-    cleanups.push(() => provider.deleteSnapshot(subject.snapshotId));
-    if (scoring) cleanups.push(() => provider.deleteSnapshot(scoring.snapshotId));
+    if (subjectRes.status === "fulfilled") {
+      cleanups.push(() => provider.deleteSnapshot(subjectRes.value.snapshotId));
+    }
+    if (scoringRes.status === "fulfilled" && scoringRes.value) {
+      const id = scoringRes.value.snapshotId;
+      cleanups.push(() => provider.deleteSnapshot(id));
+    }
+    if (subjectRes.status === "rejected") throw subjectRes.reason;
+    if (scoringRes.status === "rejected") throw scoringRes.reason;
+    const subject = subjectRes.value;
+    const scoring = scoringRes.value;
     const buildMs = Date.now() - t0;
     log("images built", {
       subject: subject.snapshotId,
@@ -103,7 +121,7 @@ async function proveCliExample(
     });
 
     const store = new MemoryComputerStore();
-    const runner = providerProofRunner({
+    const proofRunner = providerProofRunner({
       provider,
       kit,
       env: {
@@ -123,9 +141,13 @@ async function proveCliExample(
     const t1 = Date.now();
     let report;
     try {
-      report = await runProofSuiteReport(kit, { runner, concurrency: 4, log: (m, d) => log(m, d) });
+      report = await runProofSuiteReport(kit, {
+        runner: proofRunner,
+        concurrency: opts.concurrency ?? 4,
+        log: (m, d) => log(m, d),
+      });
     } finally {
-      const swept = await runner.sweep();
+      const swept = await proofRunner.sweep();
       log("swept", { swept });
     }
     const rows = [...store.rows.values()];

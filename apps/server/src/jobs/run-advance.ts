@@ -23,7 +23,11 @@ import { createNaiveClient } from "@anybench/naive";
 import type { JobHelpers } from "graphile-worker";
 import { z } from "zod";
 import { defaultBillingGate, type BillingGate } from "../lib/billing-gate.js";
-import { artifactStoreFromEnv, computeProviderFromConfig } from "../lib/compute.js";
+import {
+  artifactStoreFromEnv,
+  computeProviderFromConfig,
+  proxyDepsFromConfig,
+} from "../lib/compute.js";
 import {
   defaultRunnerBinDir,
   providerEnvBuild,
@@ -102,6 +106,8 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
       ...(ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {}),
       secretValues: () => configuredSecretValues(ctx.config as unknown as Record<string, unknown>),
       pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+      ...(proxyDepsFromConfig(ctx.config) ? { naiveProxy: proxyDepsFromConfig(ctx.config)! } : {}),
+      proxyCapMicroUsd: ctx.config.TRIAL_PROXY_CAP_MICRO_USD,
       log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),
     }),
     score: kitScore(),
