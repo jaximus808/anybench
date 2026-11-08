@@ -4,7 +4,7 @@
 // fail-closed verdicts recorded as failure_class "gate", idempotency, stale attempts and
 // subject snapshots refused for scoring.
 import { newId, TrialIdSchema } from "@anybench/core";
-import { runGates, SCORE_ROOT, type TrialGateRecord } from "@anybench/bench";
+import { GateInfraError, runGates, SCORE_ROOT, type TrialGateRecord } from "@anybench/bench";
 import { ArtifactTransferError, createComputerRegistry } from "@anybench/envs";
 import { FakeProvider, type FakeExecContext } from "@anybench/providers";
 import { eq } from "drizzle-orm";
@@ -22,6 +22,7 @@ import {
 import { JOBS } from "../src/jobs/index.js";
 import {
   artifactFrozenOutputs,
+  GATE_INFRA_MAX_ATTEMPTS,
   gateTrial,
   TRIAL_GATE_JOB,
   trialGateJob,
@@ -156,7 +157,7 @@ function fakeScoringTdm51(verdicts: Record<string, string | null>) {
     );
     return "";
   });
-  fake.onExec(/^cat '([^']+)'/, (ctx: FakeExecContext) => {
+  fake.onExec(/cat '([^']+)'/, (ctx: FakeExecContext) => {
     const text = ctx.readFile(ctx.match![1]!);
     return text === undefined ? { exitCode: 1 } : { stdout: text };
   });
@@ -215,7 +216,7 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       "sum-tests": JSON.stringify({ pass: true, reason: "3/3", evidence: ["workspace/sum.sh"] }),
       "db-state": JSON.stringify({ pass: false, applicable: false, reason: "no db", evidence: [] }),
     });
-    const report = await gateTrial(depsTdm51(fake), { trialId: t.id, attempt: 1 });
+    const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
     expect(report).toMatchObject({ outcome: "scored", to: "done" });
 
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
@@ -247,29 +248,70 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     expect(comp).toMatchObject({ status: "destroyed", trialId: t.id });
 
     // Idempotent: a retry of the same job changes nothing.
-    expect(await gateTrial(depsTdm51(fake), { trialId: t.id, attempt: 1 })).toMatchObject({
+    expect(await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 })).toMatchObject({
       outcome: "skipped",
     });
     expect((await eventsOf(s.runId)).length).toBe(evs.length);
   });
 
-  it("a missing verdict is a FAIL: failure_class gate, then reviewing when the kit has a rubric", async () => {
+  it("a failing verdict is the contender's: failure_class gate, then reviewing when the kit has a rubric", async () => {
     const s = await seedTdm51(h.db, true);
     const t = await trialTdm51(h.db, s, "gating");
-    const fake = fakeScoringTdm51({ "sum-tests": null, "db-state": null });
-    const report = await gateTrial(depsTdm51(fake), { trialId: t.id, attempt: 1 });
+    const fake = fakeScoringTdm51({
+      "sum-tests": JSON.stringify({ pass: false, reason: "1/3 hidden cases fail", evidence: [] }),
+      "db-state": JSON.stringify({ pass: false, applicable: false, reason: "no db", evidence: [] }),
+    });
+    const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
     expect(report).toMatchObject({ outcome: "scored", to: "reviewing" });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
     expect(row!.state).toBe("reviewing");
     expect(row!.failureClass).toBe("gate");
     const gate = row!.gate as TrialGateRecord;
     expect(gate.gates["sum-tests"]).toMatchObject({
-      status: "no_verdict",
-      result: { pass: false, reason: expect.stringMatching(/fail closed/) },
+      status: "verdict",
+      kit_fault: false,
+      result: { pass: false, reason: "1/3 hidden cases fail" },
     });
   });
 
-  it("missing frozen outputs fail closed without a scoring computer", async () => {
+  it("a broken check (no verdict) is the kit's fault: failed_infra, failure_class kit, never billed", async () => {
+    const s = await seedTdm51(h.db, true);
+    const t = await trialTdm51(h.db, s, "gating");
+    const fake = fakeScoringTdm51({
+      "sum-tests": null,
+      "db-state": JSON.stringify({ pass: true, reason: "ok", evidence: [] }),
+    });
+    const report = await gateTrial(depsTdm51(fake), { trial_id: t.id, attempt: 1 });
+    expect(report).toMatchObject({ outcome: "failed_infra", failureClass: "kit" });
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
+    expect(row!.state).toBe("failed_infra");
+    expect(row!.failureClass).toBe("kit");
+    // The record is kept for diagnosis; it is never a pass.
+    const gate = row!.gate as TrialGateRecord;
+    expect(gate.gates["sum-tests"]).toMatchObject({ status: "no_verdict", kit_fault: true });
+    const phase = (await eventsOf(s.runId)).filter((e) => e.type === "trial.phase").at(-1)!;
+    expect(phase.payload).toMatchObject({
+      from: "gating",
+      to: "failed_infra",
+      failure_class: "kit",
+    });
+  });
+
+  it("a kit error (check not in the bundle) is failure_class kit, before any computer", async () => {
+    const s = await seedTdm51(h.db, false);
+    const t = await trialTdm51(h.db, s, "gating");
+    const fake = fakeScoringTdm51({});
+    const report = await gateTrial(
+      depsTdm51(fake, { kitFiles: { scoringFiles: async () => [SCORING_TDM51[0]!] } }),
+      { trial_id: t.id, attempt: 1 },
+    );
+    expect(report).toMatchObject({ outcome: "failed_infra", failureClass: "kit" });
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
+    expect(row).toMatchObject({ state: "failed_infra", failureClass: "kit", gate: null });
+    expect(await fake.list({ includeDestroyed: true })).toEqual([]);
+  });
+
+  it("a missing out.tar.gz is our failure: failed_infra, failure_class infra, no scoring computer", async () => {
     const s = await seedTdm51(h.db, false);
     const t = await trialTdm51(h.db, s, "gating");
     const fake = fakeScoringTdm51({});
@@ -279,17 +321,16 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       },
     };
     const report = await gateTrial(depsTdm51(fake, { frozen: artifactFrozenOutputs(store) }), {
-      trialId: t.id,
+      trial_id: t.id,
       attempt: 1,
     });
-    expect(report.outcome).toBe("scored");
+    expect(report).toMatchObject({
+      outcome: "failed_infra",
+      failureClass: "infra",
+      reason: expect.stringMatching(/out\.tar\.gz is not in the artifact store/),
+    });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
-    const gate = row!.gate as TrialGateRecord;
-    expect(gate.scoring_computer).toBeNull();
-    expect(gate.gates["sum-tests"]!.result.reason).toMatch(
-      /out\.tar\.gz is not in the artifact store/,
-    );
-    expect(row!.failureClass).toBe("gate");
+    expect(row).toMatchObject({ state: "failed_infra", failureClass: "infra", gate: null });
     expect(await fake.list({ includeDestroyed: true })).toEqual([]);
   });
 
@@ -297,12 +338,12 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     const s = await seedTdm51(h.db, false);
     const fake = fakeScoringTdm51({});
     const stale = await trialTdm51(h.db, s, "gating", { attempt: 2 });
-    expect(await gateTrial(depsTdm51(fake), { trialId: stale.id, attempt: 1 })).toMatchObject({
+    expect(await gateTrial(depsTdm51(fake), { trial_id: stale.id, attempt: 1 })).toMatchObject({
       outcome: "skipped",
       reason: expect.stringMatching(/stale attempt/),
     });
     const running = await trialTdm51(h.db, s, "running");
-    expect(await gateTrial(depsTdm51(fake), { trialId: running.id, attempt: 1 })).toMatchObject({
+    expect(await gateTrial(depsTdm51(fake), { trial_id: running.id, attempt: 1 })).toMatchObject({
       outcome: "skipped",
     });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, running.id));
@@ -329,11 +370,46 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       throw new Error("scoring computer never became ready");
     };
     await expect(
-      gateTrial(depsTdm51(fakeScoringTdm51({}), { runGates: boom }), { trialId: t.id, attempt: 1 }),
+      gateTrial(depsTdm51(fakeScoringTdm51({}), { runGates: boom }), {
+        trial_id: t.id,
+        attempt: 1,
+      }),
     ).rejects.toThrow(/never became ready/);
     expect(seen).toEqual(["snap-subject"]);
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
     expect(row!.state).toBe("gating");
     expect(row!.gate).toBeNull();
+  });
+
+  it("GateInfraError retries are capped: the last allowed run fails the trial infra", async () => {
+    const s = await seedTdm51(h.db, false);
+    const t = await trialTdm51(h.db, s, "gating");
+    let calls = 0;
+    const flaky: typeof runGates = async () => {
+      calls++;
+      throw new GateInfraError("scoring computer could not be created: capacity");
+    };
+    const deps = (n: number) =>
+      depsTdm51(fakeScoringTdm51({}), { runGates: flaky, infraAttempt: n });
+    for (const n of [1, 2]) {
+      await expect(gateTrial(deps(n), { trial_id: t.id, attempt: 1 })).rejects.toBeInstanceOf(
+        GateInfraError,
+      );
+    }
+    expect(
+      await gateTrial(deps(GATE_INFRA_MAX_ATTEMPTS), { trial_id: t.id, attempt: 1 }),
+    ).toMatchObject({
+      outcome: "failed_infra",
+      failureClass: "infra",
+      reason: expect.stringMatching(/scoring failed 3 times/),
+    });
+    expect(calls).toBe(3);
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
+    expect(row).toMatchObject({ state: "failed_infra", failureClass: "infra" });
+    // Once failed_infra, a stray job run does nothing (no new scoring computer).
+    expect(await gateTrial(deps(4), { trial_id: t.id, attempt: 1 })).toMatchObject({
+      outcome: "skipped",
+    });
+    expect(calls).toBe(3);
   });
 });

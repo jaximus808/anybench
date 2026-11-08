@@ -7,16 +7,20 @@
 // Integrity: this job is the ONLY writer of trials.gate and of `trial.gate` events. The verdicts
 // come from the worker reading the scoring computer through the provider. Nothing a runner token
 // can reach writes them (the agent under test can read that token; the runner ingest refuses
-// `trial.gate`). The scoring computer gets only gates/ and reference/ from the kit, never the
-// contender, and it is never forked from a snapshot that held a subject.
+// `trial.gate`). The scoring computer gets gates/, reference/ and workloads/ from the kit, never
+// the contender, and it is never forked from a snapshot that held a subject.
 //
 // Idempotent: a trial not in collecting/gating, or on another attempt, is left alone. The verdict,
 // the state change and the events commit in one transaction guarded by `state = 'gating'`, so a
-// retried job never writes twice. Infra trouble (GateInfraError: computer, download, setup) throws,
-// so graphile-worker retries; it is never recorded as a contender failure.
+// retried job never writes twice.
 //
-// Enqueue with `trialGateJobKey(trialId, attempt)` (the trial executor, [5.4], does this after
-// `collecting`).
+// Our failures are never billed to the contender (see gateTrial): a missing bundle, GateInfraError
+// past GATE_INFRA_MAX_ATTEMPTS job runs, a kit error or a broken check → failed_infra with
+// failure_class infra | kit. Before the cap, GateInfraError throws so graphile-worker retries.
+//
+// Enqueue with payload `{trial_id, attempt}` and job key `trialGateJobKey(trialId, attempt)` (the
+// trial executor, [5.4] TDM-49, does this after `collecting`; whichever of TDM-49 / TDM-51 lands
+// second keeps ONE TRIAL_GATE_JOB / trialGateJobKey and deletes trialGateStubJob).
 import { fileURLToPath } from "node:url";
 import {
   AnybenchEventSchema,
@@ -30,6 +34,8 @@ import {
 import {
   collectScoringFiles,
   FROZEN_BUNDLE_NAME,
+  GateInfraError,
+  GateKitError,
   runGates,
   type FrozenOutputs,
   type GateRunDeps,
@@ -59,10 +65,18 @@ import { defineJob, type JobContext } from "./types.js";
 
 export const TRIAL_GATE_JOB = "trial.gate";
 
+/** Same shape as TDM-49's trial.execute payload (snake_case). */
 export const TrialGatePayloadSchema = z.object({
-  trialId: z.uuid(),
+  trial_id: z.uuid(),
   attempt: z.int().positive(),
 });
+
+/**
+ * Job runs that may hit GateInfraError (our computer, download, setup) before the trial is
+ * failed_infra (failure_class infra: retried by the executor, never billed). Bounds how many
+ * scoring computers one trial can cost.
+ */
+export const GATE_INFRA_MAX_ATTEMPTS = 3;
 export type TrialGatePayload = z.infer<typeof TrialGatePayloadSchema>;
 
 /** job_key for trial.gate. Distinct from trial.execute's `trials:<id>:<attempt>`. */
@@ -150,11 +164,21 @@ export interface GateTrialDeps {
   now?: () => Date;
   /** Injectable for tests; defaults to @anybench/bench runGates. */
   runGates?: typeof runGates;
+  /** This job run's attempt (graphile `job.attempts`, 1-based). Default 1. */
+  infraAttempt?: number;
+  /** Default GATE_INFRA_MAX_ATTEMPTS. */
+  maxInfraAttempts?: number;
 }
 
 export type GateTrialReport =
   | { outcome: "skipped"; reason: string }
-  | { outcome: "scored"; to: TrialState; record: TrialGateRecord };
+  | { outcome: "scored"; to: TrialState; record: TrialGateRecord }
+  | {
+      outcome: "failed_infra";
+      failureClass: "infra" | "kit";
+      reason: string;
+      record: TrialGateRecord | null;
+    };
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type EventDraft = DistributiveOmit<AnybenchEvent, "seq" | "run_id">;
@@ -164,14 +188,23 @@ function toEvents(runId: string, drafts: EventDraft[]): AnybenchEvent[] {
   return drafts.map((d) => AnybenchEventSchema.parse({ ...d, run_id: run, seq: 0 }));
 }
 
-/** Score one trial. See the file header. */
+/**
+ * Score one trial. See the file header.
+ *
+ * Who pays for a failure:
+ *   - the contender: a verdict that fails, a timeout, a contender process left running, outputs
+ *     that can't be unpacked → done/reviewing with failure_class "gate" (billable, never a pass);
+ *   - us: no out.tar.gz in the store, GateInfraError past GATE_INFRA_MAX_ATTEMPTS → failed_infra,
+ *     failure_class "infra"; a GateKitError or a broken check (GateOutcome.kit_fault) →
+ *     failed_infra, failure_class "kit". failed_infra is retried by the executor and never billed.
+ */
 export async function gateTrial(
   deps: GateTrialDeps,
   payload: TrialGatePayload,
 ): Promise<GateTrialReport> {
   const now = deps.now ?? (() => new Date());
   const actor = { kind: "worker" as const, id: deps.workerId };
-  const [trial] = await deps.db.select().from(trials).where(eq(trials.id, payload.trialId));
+  const [trial] = await deps.db.select().from(trials).where(eq(trials.id, payload.trial_id));
   if (!trial) return { outcome: "skipped", reason: "no such trial" };
   if (trial.attempt !== payload.attempt) {
     return {
@@ -179,52 +212,104 @@ export async function gateTrial(
       reason: `stale attempt ${payload.attempt} (trial is on ${trial.attempt})`,
     };
   }
-
   if (trial.state !== "collecting" && trial.state !== "gating") {
     return { outcome: "skipped", reason: `trial is ${trial.state}, not collecting or gating` };
   }
-
-  // The kit: its gates, and whether a reviewer comes next.
-  const [run] = await deps.db.select().from(runs).where(eq(runs.id, trial.runId));
-  if (!run?.kitId) throw new Error(`trial ${trial.id}: run ${trial.runId} has no kit`);
-  const [kit] = await deps.db.select().from(kits).where(eq(kits.id, run.kitId));
-  if (!kit) throw new Error(`trial ${trial.id}: kit ${run.kitId} not found`);
-  const spec = safeParseKitSpec(kit.spec);
-  if (!spec.success) {
-    throw new Error(`kit ${kit.id} does not validate: ${spec.errors.join("; ")}`);
-  }
-  const gates = spec.data.gates;
-  const reviewed = spec.data.requirements.some((r) => r.type === "reviewed");
+  const runId = RunIdSchema.parse(trial.runId);
+  const phase = (from: TrialState, to: TrialState, at: Date, extra: object = {}): EventDraft => ({
+    type: "trial.phase",
+    source: "trial",
+    source_id: trial.id,
+    severity: to === "failed_infra" ? "warn" : "info",
+    actor,
+    cost_delta_micro_usd: 0n,
+    at: at.toISOString(),
+    payload: { from, to, attempt: trial.attempt, ...extra },
+  });
 
   // collecting → gating (the executor may already have done it).
   if (trial.state === "collecting") {
     const t = transitionTrial("collecting", { type: "advance" });
     if (!t.ok) throw new Error(t.error.message);
     await deps.db.transaction(async (tx) => {
+      const at = now();
       const moved = await tx
         .update(trials)
-        .set({ state: "gating", updatedAt: now() })
-        .where(and(eq(trials.id, trial.id), eq(trials.state, "collecting")))
+        .set({ state: "gating", updatedAt: at })
+        .where(
+          and(
+            eq(trials.id, trial.id),
+            eq(trials.state, "collecting"),
+            eq(trials.attempt, payload.attempt),
+          ),
+        )
         .returning({ id: trials.id });
       if (moved.length === 0) return;
-      await appendEvents(
-        tx,
-        RunIdSchema.parse(trial.runId),
-        toEvents(trial.runId, [
-          {
-            type: "trial.phase",
-            source: "trial",
-            source_id: trial.id,
-            severity: "info",
-            actor,
-            cost_delta_micro_usd: 0n,
-            at: now().toISOString(),
-            payload: { from: "collecting", to: "gating", attempt: trial.attempt },
-          },
-        ]),
-      );
+      await appendEvents(tx, runId, toEvents(trial.runId, [phase("collecting", "gating", at)]));
     });
   }
+
+  /** gating → failed_infra (our fault: never billed, retried by the executor). */
+  async function failInfra(
+    failureClass: "infra" | "kit",
+    reason: string,
+    record: TrialGateRecord | null,
+  ): Promise<GateTrialReport> {
+    const t = transitionTrial("gating", {
+      type: "fail_infra",
+      reason,
+      failure_class: failureClass,
+    });
+    if (!t.ok) throw new Error(t.error.message);
+    const at = now();
+    const wrote = await deps.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(trials)
+        .set({
+          state: "failed_infra",
+          failureClass,
+          updatedAt: at,
+          endedAt: at,
+          ...(record ? { gate: record } : {}),
+        })
+        .where(
+          and(
+            eq(trials.id, trial!.id),
+            eq(trials.state, "gating"),
+            eq(trials.attempt, payload.attempt),
+          ),
+        )
+        .returning({ id: trials.id });
+      if (updated.length === 0) return false;
+      await appendEvents(
+        tx,
+        runId,
+        toEvents(trial!.runId, [
+          phase("gating", "failed_infra", at, { reason, failure_class: failureClass }),
+        ]),
+      );
+      return true;
+    });
+    if (!wrote) return { outcome: "skipped", reason: "trial left gating while it was scored" };
+    deps.logger?.warn(
+      { trialId: trial!.id, failureClass, reason },
+      "trial.gate: failed_infra (not the contender's fault)",
+    );
+    return { outcome: "failed_infra", failureClass, reason, record };
+  }
+
+  // The kit: its gates, and whether a reviewer comes next.
+  const [run] = await deps.db.select().from(runs).where(eq(runs.id, trial.runId));
+  const [kit] = run?.kitId
+    ? await deps.db.select().from(kits).where(eq(kits.id, run.kitId))
+    : [undefined];
+  if (!kit) return failInfra("kit", `run ${trial.runId} has no kit`, null);
+  const spec = safeParseKitSpec(kit.spec);
+  if (!spec.success) {
+    return failInfra("kit", `kit ${kit.id} does not validate: ${spec.errors.join("; ")}`, null);
+  }
+  const gates = spec.data.gates;
+  const reviewed = spec.data.requirements.some((r) => r.type === "reviewed");
 
   // Every snapshot a subject trial of this run ran on: the scoring computer may not fork one.
   const subjectSnaps = await deps.db
@@ -233,31 +318,56 @@ export async function gateTrial(
     .innerJoin(computers, eq(trials.computerId, computers.id))
     .where(and(eq(trials.runId, trial.runId), isNotNull(computers.snapshotId)));
 
-  const scoring = gates.length > 0 ? await deps.kitFiles.scoringFiles(kit, gates) : [];
-  const frozen: FrozenOutputs =
-    gates.length > 0
-      ? await deps.frozen.frozen(trial.runId, trial.id)
-      : { kind: "missing", reason: "kit has no gates" };
+  let record: TrialGateRecord;
+  try {
+    const scoring = gates.length > 0 ? await deps.kitFiles.scoringFiles(kit, gates) : [];
+    const frozen: FrozenOutputs =
+      gates.length > 0
+        ? await deps.frozen.frozen(trial.runId, trial.id)
+        : { kind: "missing", reason: "kit has no gates" };
+    // No bundle at gate time is our storage/upload failure, never the contender's FAIL.
+    if (gates.length > 0 && frozen.kind === "missing") {
+      return failInfra("infra", `no frozen outputs: ${frozen.reason}`, null);
+    }
+    record = await (deps.runGates ?? runGates)(
+      {
+        runId: trial.runId,
+        trialId: trial.id,
+        workloadId: trial.workloadId,
+        gates,
+        frozen,
+        scoring,
+        ...(deps.profile ? { profile: deps.profile } : {}),
+        subjectSnapshotIds: subjectSnaps.flatMap((r) => (r.snapshotId ? [r.snapshotId] : [])),
+      },
+      {
+        registry: deps.registry,
+        ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
+        ...deps.gateOptions,
+        ...(deps.logger ? { logger: deps.logger } : {}),
+        now,
+      },
+    );
+  } catch (err) {
+    if (err instanceof GateKitError) return failInfra("kit", err.message, null);
+    if (err instanceof GateInfraError) {
+      const tries = deps.infraAttempt ?? 1;
+      const max = deps.maxInfraAttempts ?? GATE_INFRA_MAX_ATTEMPTS;
+      if (tries >= max) {
+        return failInfra("infra", `scoring failed ${tries} times: ${err.message}`, null);
+      }
+    }
+    throw err;
+  }
 
-  const record = await (deps.runGates ?? runGates)(
-    {
-      runId: trial.runId,
-      trialId: trial.id,
-      workloadId: trial.workloadId,
-      gates,
-      frozen,
-      scoring,
-      ...(deps.profile ? { profile: deps.profile } : {}),
-      subjectSnapshotIds: subjectSnaps.flatMap((r) => (r.snapshotId ? [r.snapshotId] : [])),
-    },
-    {
-      registry: deps.registry,
-      ...(deps.sandbox ? { sandbox: deps.sandbox } : {}),
-      ...deps.gateOptions,
-      ...(deps.logger ? { logger: deps.logger } : {}),
-      now,
-    },
-  );
+  const kitFaults = Object.entries(record.gates).filter(([, o]) => o.kit_fault);
+  if (kitFaults.length > 0) {
+    return failInfra(
+      "kit",
+      `broken check: ${kitFaults.map(([id, o]) => `${id}: ${o.result.reason}`).join("; ")}`,
+      record,
+    );
+  }
 
   const command = reviewed ? ({ type: "advance" } as const) : ({ type: "skip_review" } as const);
   const t = transitionTrial("gating", command);
@@ -266,12 +376,13 @@ export async function gateTrial(
     (o) => o.result.applicable && !o.result.pass,
   );
   const at = now();
+  const scored = record;
 
   const wrote = await deps.db.transaction(async (tx) => {
     const updated = await tx
       .update(trials)
       .set({
-        gate: record,
+        gate: scored,
         state: t.to,
         updatedAt: at,
         ...(failedApplicable ? { failureClass: "gate" } : {}),
@@ -286,7 +397,7 @@ export async function gateTrial(
       )
       .returning({ id: trials.id });
     if (updated.length === 0) return false;
-    const drafts: EventDraft[] = Object.entries(record.gates).map(([gateId, o]) => ({
+    const drafts: EventDraft[] = Object.entries(scored.gates).map(([gateId, o]) => ({
       type: "trial.gate",
       source: "trial",
       source_id: trial.id,
@@ -305,30 +416,21 @@ export async function gateTrial(
           timed_out: o.timed_out,
           duration_ms: o.duration_ms,
           evidence: o.result.evidence,
-          sandbox: record.sandbox,
-          scoring_computer_id: record.scoring_computer?.computer_id ?? null,
+          sandbox: scored.sandbox,
+          scoring_computer_id: scored.scoring_computer?.computer_id ?? null,
         },
       },
     }));
-    drafts.push({
-      type: "trial.phase",
-      source: "trial",
-      source_id: trial.id,
-      severity: "info",
-      actor,
-      cost_delta_micro_usd: 0n,
-      at: at.toISOString(),
-      payload: { from: "gating", to: t.to, attempt: trial.attempt },
-    });
-    await appendEvents(tx, RunIdSchema.parse(trial.runId), toEvents(trial.runId, drafts));
+    drafts.push(phase("gating", t.to, at));
+    await appendEvents(tx, runId, toEvents(trial.runId, drafts));
     return true;
   });
   if (!wrote) return { outcome: "skipped", reason: "trial left gating while it was scored" };
   deps.logger?.info(
-    { trialId: trial.id, to: t.to, gates: Object.keys(record.gates).length, failedApplicable },
+    { trialId: trial.id, to: t.to, gates: Object.keys(scored.gates).length, failedApplicable },
     "trial gated",
   );
-  return { outcome: "scored", to: t.to, record };
+  return { outcome: "scored", to: t.to, record: scored };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -351,7 +453,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
   return defineJob({
     name: TRIAL_GATE_JOB,
     payload: TrialGatePayloadSchema,
-    async run(payload, ctx) {
+    async run(payload, ctx, helpers) {
       const provider = options.provider?.(ctx) ?? null;
       const artifacts = options.artifacts?.(ctx) ?? null;
       if (!provider || !artifacts) {
@@ -378,6 +480,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
           ...(options.runGates ? { runGates: options.runGates } : {}),
           logger: ctx.logger,
           workerId: ctx.workerId,
+          infraAttempt: helpers.job.attempts,
         },
         payload,
       );

@@ -25,13 +25,13 @@ layout) and scored on its own fresh container. The kit is `test/fixtures/gate-ki
 | honest | verdict, **pass**, "3/3 hidden cases pass" (288 ms) | not applicable, "workload add has no database" | pass |
 | do-less (off by one) | verdict, FAIL, "3/3 hidden cases fail" | n/a | pass |
 | forged-verdict (`gate.json` with pass inside its outputs) | verdict, FAIL, "3/3 hidden cases fail" | n/a | pass |
-| tamper-tests (rewrites `$AB_KIT/reference/.../cases.txt`) | verdict, FAIL, "2/3 hidden cases fail" (write refused: kit is root-owned, read-only) | n/a | pass |
-| late-writer (setsid daemon forges every `verdict/*/gate.json` after 3 s) | verdict, FAIL, "2/3 hidden cases fail" (daemon killed before the read) | n/a | pass |
+| tamper-tests (rewrites `kit/reference/.../cases.txt`) | verdict, FAIL, "2/3 hidden cases fail" (abrun can't even read the kit) | n/a | pass |
+| late-writer (setsid daemon forges every `verdict/*/gate.json` after 3 s) | lingering, FAIL, "6 contender process(es) still running when the check exited (fail closed)" | n/a | pass |
 | symlink-escape (`workspace/sum.sh -> /var/lib/anybench-score/kit/...`) | verdict, FAIL, "workspace/sum.sh is missing" (symlink dropped on unpack) | n/a | pass |
 | hang (`sleep 600`) | timeout, FAIL, "check timed out after 8s (fail closed)" (10.2 s) | n/a | pass |
 | corrupt (not a tarball) | no_outputs, FAIL, "the frozen outputs could not be unpacked (fail closed)" | same | same |
 
-`clean-room` runs inside the sandbox and checks: not root, no `adapters/`, `workloads/`, `proof/`
+`clean-room` runs inside the sandbox and checks: not root, no `adapters/`, `proof/`
 or `anybench.yaml` in the kit, the kit and the pristine outputs not writable, the subject not
 installed. It passed for every trial that had outputs, including the cheaters that ran code.
 Every container had a registry row, ended `destroyed`, and the suite left none behind.
@@ -57,14 +57,77 @@ Every container had a registry row, ended `destroyed`, and the suite left none b
   bundle. Afterwards root drops FIFOs, sockets and devices, drops symlinks whose
   `realpath -m` leaves the tree, then `chown -R -h 0:0` and `chmod -R a-w`.
 
+## Two uids: check vs contender code (review round 1)
+
+The first version ran contender code as the check's own uid, and the reviewer's race-writer won:
+a setsid loop rewrote `verdict/sum-tests/gate.json` between the check's write and the kill. Now:
+
+- the check runs as `abgate`, and contender code runs only as `abrun`, through `"$AB_RUN" <cmd>`,
+  inside `$AB_RUN_DIR`, which is its own writable copy of the outputs.
+- **runuser/setpriv can't do this.** They need root, and the check is not root. A check running as
+  root would hand contender code root whenever a kit forgot `$AB_RUN`. ubuntu:24.04 has no
+  `sudo`, but util-linux `su` is setuid root there (`-rwsr-xr-x 1 root root 67744 /bin/su`). So
+  `$AB_RUN` is `su abrun -s /bin/bash -c ...`, allowed by two PAM lines after `pam_rootok` in
+  `/etc/pam.d/su`:
+
+  ```
+  auth [success=ignore default=1] pam_succeed_if.so quiet user = abrun   # anybench-gate
+  auth sufficient pam_succeed_if.so quiet use_uid user = abgate          # anybench-gate
+  ```
+
+  I prototyped it in `docker run ubuntu:24.04`, and it printed:
+
+  ```
+  uid=998(abrun) gid=998(abrun) groups=998(abrun)
+  bash: line 1: kill: (27) - Operation not permitted     # abrun can't signal abgate
+  --- other user cannot su
+  Password: su: Authentication failure
+  --- abrun cannot su to abgate
+  su: Authentication failure
+  ```
+
+  Setup self-tests both directions and fails (an infra error) if either is wrong.
+- abrun gets a clean env (no `AB_*`), and `HOME=TMPDIR=$AB_RUN_HOME`.
+- abrun can't read the kit (`root:abgate`, `o=`), so it can't read the reference or the hidden
+  tests in `gates/`.
+- abrun can't reach the verdict dir (`abgate` 0700) or the check's private copy, and it can't
+  signal abgate.
+- Dirs in `$AB_RUN_DIR` are `abgate:abrun 1775` (sticky). Files the check copies there, such as the
+  harness kit's `.hidden-tests/`, stay read-only to abrun, and abrun can't delete them.
+- When the check exits, every non-zombie process of abgate or abrun is counted (from `/proc`)
+  **before** anything is killed. More than zero fails the gate closed (`lingering`). It is the
+  contender's fault if an abrun process is left, and the kit's if an abgate process is left.
+- `status/`, `logs/` and `bin/` are root 0700 and are read back through `sudo -n cat` on Naïve.
+  Contender code can't read an earlier gate's log tail.
+
+The e2e (15 tests) now also covers these cheaters, all FAIL with `kit_fault: false`:
+
+- `race-writer` (the reviewer's loop): `lingering`.
+- `sigstop` (SIGSTOP the check, rewrite the verdict, SIGCONT): EPERM, then "3/3 hidden cases fail".
+- `peek-reference` (reads `cases.txt` for the answers): EPERM, then "3/3 hidden cases fail".
+- `late-writer`: now `lingering`.
+
+The `clean-room` gate checks every isolation property above from inside, and passes for every
+contender, cheaters included.
+
+## Who pays
+
+These end in `failed_infra`, which is retried and never billed:
+
+- out.tar.gz not in the store: `failure_class infra`.
+- GateInfraError on the 3rd job run (`GATE_INFRA_MAX_ATTEMPTS`): `failure_class infra`.
+- A kit error, or a broken check (non-zero exit with no verdict, no or invalid gate.json, the
+  check's own process left running): `failure_class kit`.
+
+Everything else that fails is the contender's: `failure_class gate`.
+
 ## Limits
 
-- Until [16.1]: contender code that a check runs (hidden tests) runs as the check's own uid, so
-  while the check is running it could write that check's `gate.json`. The late-writer case shows
-  that anything still running after the check is killed before the read. A tight loop that
-  rewrites the file during the check is not stopped yet. Closing that needs the grade harness to
-  run contender code under its own uid (sudo rule or root broker), which is [16.1] (TDM-172).
+- In-process tampering inside a test runner (contender code patching `node:assert` in the same
+  `node --test` process) is still possible. That is [16.1] (TDM-172).
+- A check that runs contender code directly, not through `$AB_RUN`, gives it the check's uid. That
+  is the kit's fault. The shipped examples (`harness/hidden-tests`) use `$AB_RUN`; `cli` and
+  `http-agent` never run contender code. A proof check for it belongs in [16.10].
 - A scoring computer carries the trial's tag, but `trials.computer_id` names the subject's
   computer. So the reaper only spares it while `last_seen_at` is fresh. The runner `touch`es the
-  registry on every exec (about every 2 s while polling). A single exec that blocks for more than
-  15 min would be the only risk, and none does: checks run detached and are polled.
+  registry on every exec (about every 2 s while polling), and checks run detached.

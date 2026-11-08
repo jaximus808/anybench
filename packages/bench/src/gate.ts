@@ -4,7 +4,7 @@
 //   1. create (or fork the `scoring` profile snapshot) a FRESH computer through the registry, so it
 //      has a `computers` row and a trial tag. It never ran the subject: we refuse a snapshot that
 //      held one, and nothing of the contender is installed on it.
-//   2. put the scoring bundle on it (`gates/`, `reference/`: only kit files that are needed to
+//   2. put the scoring bundle on it (`gates/`, `reference/`, `workloads/`: only kit files needed to
 //      score, see SCORING_BUNDLE_ROOTS) and pull the frozen outputs (`out.tar.gz` from the trial's
 //      artifact prefix) by presigned GET, or push them when the worker already holds the bytes.
 //      The outputs are untrusted data: their sha256 is checked, they are unpacked by the sandbox
@@ -32,11 +32,14 @@
 // is [16.1] (TDM-172): it plugs in here as another GateSandbox and/or through the AB_* env the
 // check receives, without changing the runner.
 //
-// Known gap until [16.1]: a check that executes contender code (hidden tests) runs it as the same
-// uid as itself, so WHILE the check runs that code could write the check's own gate.json or
-// results files. What is closed here: the kit, the reference and the pristine outputs are
-// read-only to it; nothing it leaves running survives to the verdict read (killAll first); a
-// forged gate.json inside the outputs is just data; symlinks out of the outputs are dropped.
+// Contender code never runs as the check's uid: the check runs as `abgate`, and it runs contender
+// code only through `$AB_RUN` (uid `abrun`, util-linux su + a PAM rule for exactly abgate → abrun),
+// on its own writable copy. abrun can't read the kit (reference, hidden tests), can't write the
+// verdict dir and can't signal the check. Any abgate/abrun process still alive when the check
+// exits fails the gate closed. Kits must call contender code through "$AB_RUN"; a check that runs
+// it directly gives that code the check's uid (the kit's fault, caught by [16.10] proof checks).
+// In-process tampering inside a test runner (patching node:assert) is [16.1] (TDM-172).
+
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import {
@@ -64,12 +67,18 @@ export const SCORE_ROOT = "/var/lib/anybench-score";
 export const SCORE_INBOX = ".anybench/score";
 /** The uid checks run as. */
 export const GATE_SANDBOX_USER = "abgate";
+/** The uid contender code runs as, through `$AB_RUN`. */
+export const GATE_RUN_USER = "abrun";
 /** gate.json larger than this is refused (fail closed). */
 export const GATE_VERDICT_MAX_BYTES = 64 * 1024;
 /** Used when a gate sets no `timeout_s`. */
 export const DEFAULT_GATE_TIMEOUT_S = 600;
-/** Kit top-level dirs that may reach the scoring computer. Never adapters/, workloads/, proof/. */
-export const SCORING_BUNDLE_ROOTS = ["gates", "reference"] as const;
+/**
+ * Kit top-level dirs that may reach the scoring computer. `workloads/` is the shared input (some
+ * checks need it, e.g. http-agent conversations; plan.md 17.2 rule 5 keeps answers out of it).
+ * Never `adapters/` (the subject) or `proof/` (the oracle).
+ */
+export const SCORING_BUNDLE_ROOTS = ["gates", "reference", "workloads"] as const;
 /** The bundle name the runner uploads under the trial prefix (packages/runner UploadConfig). */
 export const FROZEN_BUNDLE_NAME = "out.tar.gz";
 
@@ -143,6 +152,7 @@ export const GateOutcomeStatusSchema = z.enum([
   "invalid_verdict", // gate.json is not a valid GateResult
   "check_failed", // check exited non-zero
   "timeout", // check ran past its timeout
+  "lingering", // a process of the check's or the contender's uid outlived the check
   "no_outputs", // the frozen outputs are missing or could not be unpacked
 ]);
 export type GateOutcomeStatus = z.infer<typeof GateOutcomeStatusSchema>;
@@ -156,6 +166,13 @@ export const GateOutcomeSchema = z.object({
   duration_ms: z.int().nonnegative(),
   /** Last lines of the check's stdout+stderr (untrusted text, for the reason drawer). */
   log_tail: z.string(),
+  /**
+   * The FAIL is the kit's (or our) fault, not the contender's: the check broke (non-zero exit with
+   * no verdict, no or invalid gate.json, the check's own process left running) or the gate was
+   * lost. Contender code can't touch the verdict dir, so these never come from the contender.
+   * The trial.gate job turns them into failed_infra / failure_class "kit" (never billed).
+   */
+  kit_fault: z.boolean(),
 });
 export type GateOutcome = z.infer<typeof GateOutcomeSchema>;
 
@@ -237,47 +254,105 @@ export interface GateSandboxPaths {
 
 /**
  * How a check is isolated on the scoring computer. Every fragment is bash run as root.
- * [16.1] (TDM-172) plugs a stronger sandbox in here (contender code under its own uid, tests
- * mounted read-only, results over a channel contender code can't reach).
+ *
+ * Two identities: the CHECK runs as `user`; CONTENDER CODE the check executes (hidden tests,
+ * the contender's binary) runs as `runUser`, only through the `$AB_RUN` command the check is
+ * given, on a writable copy of the outputs in `$AB_RUN_DIR`. `runUser` can't read the kit, can't
+ * write the verdict dir and can't signal the check. [16.1] (TDM-172) can plug a stronger one in.
  */
 export interface GateSandbox {
   /** Recorded in TrialGateRecord.sandbox (and so on the report's trust checklist). */
   readonly level: string;
-  /** The user that owns the check's writable copy and verdict dir. */
+  /** The uid the check runs as. Owns its private copy of the outputs and its verdict dir. */
   readonly user: string;
-  /** Idempotent setup (create the uid). Exit non-zero on failure. */
+  /** The uid contender code runs as through `$AB_RUN`. null: this sandbox gives no `$AB_RUN`. */
+  readonly runUser: string | null;
+  /**
+   * Idempotent setup: create the uids, make `$AB_RUN` work (it must end up at
+   * `<root>/run-bin/ab-run`) and self-test it. Exit non-zero on failure.
+   */
   setup(paths: GateSandboxPaths): string;
-  /** A command prefix that runs the rest of the line as the sandbox user. */
+  /** A command prefix that runs the rest of the line as `user`. */
   runAs(): string;
-  /** Kill every process of the sandbox user. Must not fail when there are none. */
+  /** Kill every process of `user` and `runUser`. Must not fail when there are none. */
   killAll(): string;
 }
 
-/** Default sandbox: the check runs as a dedicated non-root uid (`abgate`) in a clean env. */
-export function uidGateSandbox(user: string = GATE_SANDBOX_USER): GateSandbox {
-  if (!/^[a-z_][a-z0-9_-]{0,30}$/.test(user)) throw new Error(`bad sandbox user name: ${user}`);
+const USER_RE = /^[a-z_][a-z0-9_-]{0,30}$/;
+
+function killUser(user: string): string {
+  // kill -1 as the user signals every process that user owns (the shell too, hence `|| true`).
+  return [
+    `for _ in 1 2 3; do`,
+    `  if command -v runuser >/dev/null 2>&1; then runuser -u ${user} -- sh -c 'kill -9 -1' >/dev/null 2>&1 || true;`,
+    `  else setpriv --reuid=${user} --regid=${user} --init-groups sh -c 'kill -9 -1' >/dev/null 2>&1 || true; fi`,
+    `done`,
+  ].join("\n");
+}
+
+/**
+ * The `$AB_RUN` command: `"$AB_RUN" <cmd> [args...]` runs as the contender uid, in the caller's
+ * cwd (which must be under `$AB_RUN_DIR`), with a clean env (no AB_* paths) and
+ * HOME=TMPDIR=`$AB_RUN_HOME`. The uid switch is util-linux `su` (setuid root on ubuntu:24.04,
+ * nothing to install), allowed by a PAM rule for exactly check uid → run uid.
+ */
+function abRunScript(runUser: string): string {
+  return [
+    "#!/usr/bin/env bash",
+    `# AB_RUN: run contender code as ${runUser}, never as the check's uid. Usage: "$AB_RUN" <cmd> [args...]`,
+    "set -u",
+    '[ "$#" -ge 1 ] || { echo "usage: \\$AB_RUN <cmd> [args...]" >&2; exit 2; }',
+    'h="${AB_RUN_HOME:-/tmp}"',
+    `inner="cd $(printf '%q' "$PWD") && exec env -i PATH=${CHECK_PATH_ENV} HOME=$(printf '%q' "$h") TMPDIR=$(printf '%q' "$h") LC_ALL=C LANG=C $(printf '%q ' "$@")"`,
+    `exec su ${runUser} -s /bin/bash -c "$inner"`,
+  ].join("\n");
+}
+
+/**
+ * Default sandbox (level `uid-split`): the check runs as `abgate`, contender code as `abrun`
+ * through `$AB_RUN`. Needs root once for setup (useradd, a PAM rule in /etc/pam.d/su).
+ */
+export function uidGateSandbox(opts: { user?: string; runUser?: string } = {}): GateSandbox {
+  const user = opts.user ?? GATE_SANDBOX_USER;
+  const runUser = opts.runUser ?? GATE_RUN_USER;
+  for (const u of [user, runUser]) {
+    if (!USER_RE.test(u)) throw new Error(`bad sandbox user name: ${u}`);
+  }
+  if (user === runUser) throw new Error("the check and contender code need two different uids");
+  const tag = "# anybench-gate";
   return {
-    level: "uid",
+    level: "uid-split",
     user,
-    setup: () =>
+    runUser,
+    setup: (paths) =>
       [
-        `if ! id -u ${user} >/dev/null 2>&1; then`,
-        `  useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ${user} 2>/dev/null \\`,
-        `    || adduser -S -D -H ${user} 2>/dev/null || { echo "cannot create sandbox user ${user}" >&2; exit 1; }`,
+        `mk() { id -u "$1" >/dev/null 2>&1 || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell "$2" "$1" \\`,
+        `  || { echo "cannot create sandbox user $1" >&2; exit 1; }; }`,
+        `mk ${user} /usr/sbin/nologin`,
+        `mk ${runUser} /bin/bash`,
+        `[ "$(id -u ${user})" != 0 ] && [ "$(id -u ${runUser})" != 0 ] || { echo "sandbox user is root" >&2; exit 1; }`,
+        `command -v runuser >/dev/null 2>&1 || command -v setpriv >/dev/null 2>&1 || { echo "need runuser or setpriv" >&2; exit 1; }`,
+        `su_bin="$(command -v su)" && [ -u "$su_bin" ] || { echo "need a setuid su" >&2; exit 1; }`,
+        `[ -f /etc/pam.d/su ] || { echo "no /etc/pam.d/su" >&2; exit 1; }`,
+        // Exactly one rule pair: target ${runUser}, caller ${user}. Inserted right after pam_rootok.
+        `if ! grep -q '${tag}' /etc/pam.d/su; then`,
+        `  awk '{print} !d && /^auth[ \\t]+sufficient[ \\t]+pam_rootok\\.so/ {print "auth [success=ignore default=1] pam_succeed_if.so quiet user = ${runUser} ${tag}"; print "auth sufficient pam_succeed_if.so quiet use_uid user = ${user} ${tag}"; d=1}' /etc/pam.d/su > /etc/pam.d/su.ab-tmp \\`,
+        `    && cat /etc/pam.d/su.ab-tmp > /etc/pam.d/su; rm -f /etc/pam.d/su.ab-tmp`,
         `fi`,
-        `[ "$(id -u ${user})" != 0 ] || { echo "sandbox user ${user} is root" >&2; exit 1; }`,
-        `if command -v runuser >/dev/null 2>&1; then :; elif command -v setpriv >/dev/null 2>&1; then :; else echo "need runuser or setpriv" >&2; exit 1; fi`,
+        `[ "$(grep -c '${tag}' /etc/pam.d/su)" = 2 ] || { echo "PAM rule for ${user} -> ${runUser} not installed" >&2; exit 1; }`,
+        `mkdir -p ${sq(paths.root)}/run-bin && chmod 755 ${sq(paths.root)}/run-bin`,
+        `cat > ${sq(paths.root)}/run-bin/ab-run <<'AB_RUN_EOF'`,
+        abRunScript(runUser),
+        `AB_RUN_EOF`,
+        `chown 0:0 ${sq(paths.root)}/run-bin/ab-run && chmod 755 ${sq(paths.root)}/run-bin/ab-run`,
+        // Self-test: the check uid becomes the run uid, and the run uid can't become the check uid.
+        `[ "$(cd / && runuser -u ${user} -- ${sq(paths.root)}/run-bin/ab-run id -un </dev/null 2>/dev/null)" = ${runUser} ] \\`,
+        `  || { echo "${user} cannot run code as ${runUser}" >&2; exit 1; }`,
+        `if runuser -u ${runUser} -- su ${user} -s /bin/bash -c true </dev/null >/dev/null 2>&1; then echo "${runUser} can become ${user}" >&2; exit 1; fi`,
       ].join("\n"),
     runAs: () =>
       `$(if command -v runuser >/dev/null 2>&1; then echo "runuser -u ${user} --"; else echo "setpriv --reuid=${user} --regid=${user} --init-groups"; fi)`,
-    killAll: () =>
-      [
-        // kill -1 as the user signals every process that user owns (the shell too, hence `|| true`).
-        `for _ in 1 2 3; do`,
-        `  if command -v runuser >/dev/null 2>&1; then runuser -u ${user} -- sh -c 'kill -9 -1' >/dev/null 2>&1 || true;`,
-        `  else setpriv --reuid=${user} --regid=${user} --init-groups sh -c 'kill -9 -1' >/dev/null 2>&1 || true; fi`,
-        `done`,
-      ].join("\n"),
+    killAll: () => [killUser(runUser), killUser(user)].join("\n"),
   };
 }
 
@@ -302,7 +377,7 @@ export function gateCheckPath(gate: Gate): string {
 /**
  * Read the scoring bundle from a kit directory: every regular file under `gates/`, `reference/`
  * and each gate's `reference` path. Symlinks are refused (a kit file must not point anywhere
- * else). Nothing from adapters/, workloads/ or proof/ is ever included.
+ * else). Nothing from adapters/ or proof/ is ever included.
  */
 export async function collectScoringFiles(
   kitDir: string,
@@ -398,18 +473,19 @@ function setupScript(ctx: ScriptCtx, expectSha: string | null): string {
     PRELUDE,
     `S=${S}; IN=${sq(inbox(ctx))}; U=${sq(U)}`,
     'die() { echo "AB_SETUP_FAIL $*"; exit 3; }',
-    "# sandbox",
+    "# work tree: root-owned. status/, logs/, bin/ are root-only (read back through sudo).",
+    'rm -rf "$S" && mkdir -p "$S/kit" "$S/work" "$S/verdict" "$S/status" "$S/logs" "$S/bin" || die "mkdir $S"',
+    'chown -R 0:0 "$S"; chmod 755 "$S" "$S/work" "$S/verdict"; chmod 700 "$S/status" "$S/logs" "$S/bin"',
+    "# sandbox (uids, $AB_RUN)",
     "(",
     ctx.sandbox.setup({ root: SCORE_ROOT }),
     ') || die "sandbox setup failed"',
     ctx.sandbox.killAll(),
-    "# work tree",
-    'rm -rf "$S" && mkdir -p "$S/kit" "$S/work" "$S/verdict" "$S/status" "$S/logs" "$S/bin" || die "mkdir $S"',
-    'chown -R 0:0 "$S"; chmod 755 "$S" "$S/work" "$S/verdict" "$S/status"; chmod 700 "$S/logs" "$S/bin"',
-    "# kit: root-owned, read-only for everyone",
+    "# kit: readable by the check uid only (contender code can't read the reference), writable by no one",
     'if [ -d "$IN/kit" ]; then cp -R "$IN/kit/." "$S/kit/" || die "copy kit"; fi',
     'cp "$IN"/gate-*.sh "$IN/kill.sh" "$S/bin/" 2>/dev/null || die "copy scripts"',
-    'chown -R 0:0 "$S/kit" "$S/bin"; chmod -R u=rwX,go=rX "$S/kit"; chmod -R a-w "$S/kit"; chmod 700 "$S/bin"/*',
+    'chown -R 0:"$(id -g "$U")" "$S/kit"; chmod -R u=rwX,g=rX,o= "$S/kit"; chmod -R a-w "$S/kit"',
+    'chown -R 0:0 "$S/bin"; chmod 700 "$S/bin"/*',
     "# frozen outputs: untrusted data",
     "frozen=missing; sha=-",
     'if [ -f "$IN/outputs.tar.gz" ]; then',
@@ -440,31 +516,55 @@ function killScript(ctx: ScriptCtx): string {
 
 /**
  * One gate, run detached as root. Writes `$S/status/<gate>.json` last (atomically):
- * `{"rc":N,"duration_ms":N,"verdict":"present|missing|symlink|not_regular|hardlink|bad_owner|too_large"}`
- * and, when present, the verdict copy `$S/status/<gate>.verdict`.
+ * `{"rc":N,"duration_ms":N,"verdict":"present|missing|...","alive_check":N,"alive_run":N}` and,
+ * when present, the verdict copy `$S/status/<gate>.verdict`. `alive_*` count the sandbox uids'
+ * processes (zombies aside) still running when the check exited; they are killed only after.
+ *
+ * Layout for one gate (W = $S/work/<gate>):
+ *   W            check uid, 0711   (contender uid can traverse to run/, see nothing else)
+ *   W/out        check uid, 0700   the check's private writable copy (its $1)
+ *   W/home       check uid, 0700   the check's HOME
+ *   W/run        dirs check uid:run gid 1775 (sticky), files run uid: $AB_RUN_DIR, the copy
+ *                contender code may write; files the check adds there are read-only to it
+ *   W/runhome    run uid, 0700     $AB_RUN_HOME
+ *   $S/verdict/<gate>  check uid, 0700  the verdict dir (its $3 is gate.json in here)
  */
 function gateScript(ctx: ScriptCtx, gate: Gate, workloadId: string, trialId: string): string {
   const U = ctx.sandbox.user;
+  const RU = ctx.sandbox.runUser ?? "";
   const timeoutS = gate.timeout_s ?? DEFAULT_GATE_TIMEOUT_S;
   return [
     PRELUDE,
-    `S=${sq(SCORE_ROOT)}; U=${sq(U)}; G=${sq(gate.id)}; WL=${sq(workloadId)}; TR=${sq(trialId)}`,
+    `S=${sq(SCORE_ROOT)}; U=${sq(U)}; RU=${sq(RU)}; G=${sq(gate.id)}; WL=${sq(workloadId)}; TR=${sq(trialId)}`,
     `CHECK=${sq(gateCheckPath(gate))}; T=${timeoutS}; MAX=${GATE_VERDICT_MAX_BYTES}`,
     'W="$S/work/$G"; V="$S/verdict/$G"; ST="$S/status/$G"; LOG="$S/logs/$G.log"',
     'rm -rf "$W" "$V" "$ST.json" "$ST.verdict" "$ST.log"',
     'mkdir -p "$W/home" "$V"',
     // The check gets a private writable copy; the pristine frozen copy stays read-only.
     'if [ -d "$S/frozen" ]; then cp -a "$S/frozen" "$W/out"; chmod -R u+w "$W/out"; else mkdir "$W/out"; fi',
-    'chown -R -h "$U" "$W"; chown "$U" "$V"; chmod 700 "$V"',
+    'chown -R -h "$U" "$W/out" "$W/home"; chown "$U" "$W" "$V"; chmod 711 "$W"; chmod 700 "$W/out" "$W/home" "$V"',
+    "RUNENV=()",
+    'if [ -n "$RU" ]; then',
+    '  if [ -d "$S/frozen" ]; then cp -a "$S/frozen" "$W/run"; else mkdir "$W/run"; fi',
+    '  chown -R -h "$RU:$RU" "$W/run"; chmod -R u+w "$W/run"',
+    '  find "$W/run" -type d -exec chown "$U:$RU" {} + -exec chmod 1775 {} +',
+    '  mkdir -p "$W/runhome" && chown "$RU:$RU" "$W/runhome" && chmod 700 "$W/runhome"',
+    '  RUNENV=(AB_RUN="$S/run-bin/ab-run" AB_RUN_DIR="$W/run" AB_RUN_HOME="$W/runhome")',
+    "fi",
     "t0=$(date +%s%N)",
     'cd "$S/kit"',
     "(",
     "  ulimit -u 4096 2>/dev/null",
     `  exec timeout -k 10 "$T" ${ctx.sandbox.runAs()} env -i PATH=${CHECK_PATH_ENV} HOME="$W/home" TMPDIR="$W/home" LC_ALL=C LANG=C \\`,
-    '    AB_GATE_ID="$G" AB_WORKLOAD_ID="$WL" AB_TRIAL_ID="$TR" AB_FROZEN="$S/frozen" AB_KIT="$S/kit" \\',
+    '    AB_GATE_ID="$G" AB_WORKLOAD_ID="$WL" AB_TRIAL_ID="$TR" AB_FROZEN="$S/frozen" AB_KIT="$S/kit" "${RUNENV[@]}" \\',
     '    bash "$S/kit/$CHECK" "$W/out" "$WL" "$V/gate.json"',
     ') </dev/null >"$LOG" 2>&1',
     "rc=$?",
+    // Anything of either uid still running now is a fail (counted before it is killed).
+    'count() { local n=0 d st; for d in /proc/[0-9]*; do [ "$(stat -c %u "$d" 2>/dev/null)" = "$1" ] || continue;',
+    '  st="$(awk \'/^State:/{print $2; exit}\' "$d/status" 2>/dev/null)"; case "$st" in ""|Z|X) ;; *) n=$((n + 1)) ;; esac; done; echo "$n"; }',
+    'alive_check="$(count "$(id -u "$U")")"',
+    'alive_run=0; if [ -n "$RU" ]; then alive_run="$(count "$(id -u "$RU")")"; fi',
     ctx.sandbox.killAll(),
     "t1=$(date +%s%N)",
     'f="$V/gate.json"; verdict=missing',
@@ -474,12 +574,18 @@ function gateScript(ctx: ScriptCtx, gate: Gate, workloadId: string, trialId: str
     '  elif [ "$(stat -c %h "$f")" != 1 ]; then verdict=hardlink',
     '  elif [ "$(stat -c %U "$f")" != "$U" ]; then verdict=bad_owner',
     '  elif [ "$(stat -c %s "$f")" -gt "$MAX" ]; then verdict=too_large',
-    '  else cp "$f" "$ST.verdict.tmp" && chmod 644 "$ST.verdict.tmp" && mv "$ST.verdict.tmp" "$ST.verdict" && verdict=present; fi',
+    '  else cp "$f" "$ST.verdict.tmp" && mv "$ST.verdict.tmp" "$ST.verdict" && verdict=present; fi',
     "fi",
-    `tail -c ${LOG_TAIL_MAX_CHARS} "$LOG" > "$ST.log" 2>/dev/null; chmod 644 "$ST.log"`,
-    'printf \'{"rc":%d,"duration_ms":%d,"verdict":"%s"}\\n\' "$rc" "$(( (t1 - t0) / 1000000 ))" "$verdict" > "$ST.json.tmp"',
-    'chmod 644 "$ST.json.tmp"; mv "$ST.json.tmp" "$ST.json"',
+    `tail -c ${LOG_TAIL_MAX_CHARS} "$LOG" > "$ST.log" 2>/dev/null`,
+    'printf \'{"rc":%d,"duration_ms":%d,"verdict":"%s","alive_check":%d,"alive_run":%d}\\n\' "$rc" "$(( (t1 - t0) / 1000000 ))" "$verdict" "$alive_check" "$alive_run" > "$ST.json.tmp"',
+    'mv "$ST.json.tmp" "$ST.json"',
   ].join("\n");
+}
+
+/** Read a root-only file on the scoring computer (exit 1 when it does not exist). */
+function rootCat(path: string): string {
+  const f = sq(path);
+  return `if [ "$(id -u)" -eq 0 ]; then cat ${f} 2>/dev/null; else sudo -n cat ${f} 2>/dev/null; fi`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -497,6 +603,9 @@ const GateStatusFileSchema = z.object({
     "bad_owner",
     "too_large",
   ]),
+  /** Processes of the check uid / contender uid still alive when the check exited. */
+  alive_check: z.int().nonnegative().default(0),
+  alive_run: z.int().nonnegative().default(0),
 });
 
 function clip(s: string, n: number): string {
@@ -519,9 +628,12 @@ function safeEvidence(paths: readonly string[]): string[] {
 function failOutcome(
   status: Exclude<GateOutcomeStatus, "verdict">,
   reason: string,
-  extra: Partial<Pick<GateOutcome, "exit_code" | "timed_out" | "duration_ms" | "log_tail">> = {},
+  extra: Partial<
+    Pick<GateOutcome, "exit_code" | "timed_out" | "duration_ms" | "log_tail" | "kit_fault">
+  > = {},
 ): GateOutcome {
   return {
+    kit_fault: extra.kit_fault ?? false,
     result: { pass: false, applicable: true, reason: clip(reason, REASON_MAX_CHARS), evidence: [] },
     status,
     exit_code: extra.exit_code ?? null,
@@ -547,7 +659,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "timeout",
       `gate ${input.gateId}: no result from the scoring computer within ${input.timeoutS}s (fail closed)`,
-      { timed_out: true, log_tail: logTail },
+      { timed_out: true, log_tail: logTail, kit_fault: true },
     );
   }
   const base = { exit_code: status.rc, duration_ms: status.duration_ms, log_tail: logTail };
@@ -559,11 +671,25 @@ export function normalizeVerdict(input: {
       { ...base, timed_out: true },
     );
   }
+  const aliveRun = status.alive_run ?? 0;
+  const aliveCheck = status.alive_check ?? 0;
+  if (aliveRun > 0 || aliveCheck > 0) {
+    const who =
+      aliveRun > 0
+        ? `${aliveRun} contender process(es)`
+        : `${aliveCheck} process(es) of the check itself`;
+    return failOutcome(
+      "lingering",
+      `gate ${input.gateId}: ${who} still running when the check exited (fail closed)`,
+      { ...base, kit_fault: aliveRun === 0 },
+    );
+  }
   if (status.rc !== 0) {
+    const wrote = status.verdict === "present";
     return failOutcome(
       "check_failed",
-      `gate ${input.gateId}: check exited ${status.rc} (fail closed${status.verdict === "present" ? "; its gate.json is ignored" : ""})`,
-      base,
+      `gate ${input.gateId}: check exited ${status.rc} (fail closed${wrote ? "; its gate.json is ignored" : "; no verdict: a broken check"})`,
+      { ...base, kit_fault: !wrote },
     );
   }
   if (status.verdict !== "present" || input.verdictText === null) {
@@ -579,7 +705,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "no_verdict",
       `gate ${input.gateId}: ${why[status.verdict] ?? "no verdict"} (fail closed)`,
-      base,
+      { ...base, kit_fault: true },
     );
   }
   let raw: unknown;
@@ -589,7 +715,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "invalid_verdict",
       `gate ${input.gateId}: gate.json is not JSON (${(e as Error).message}) (fail closed)`,
-      base,
+      { ...base, kit_fault: true },
     );
   }
   const parsed = GateResultSchema.safeParse(raw);
@@ -600,7 +726,7 @@ export function normalizeVerdict(input: {
     return failOutcome(
       "invalid_verdict",
       `gate ${input.gateId}: gate.json is invalid: ${issues} (fail closed)`,
-      base,
+      { ...base, kit_fault: true },
     );
   }
   const r = parsed.data;
@@ -616,6 +742,7 @@ export function normalizeVerdict(input: {
     status: "verdict",
     ...base,
     timed_out: false,
+    kit_fault: false,
   };
 }
 
@@ -839,7 +966,7 @@ export async function runGates(
       const deadline = Date.now() + timeoutS * 1000 + graceMs;
       let status: z.infer<typeof GateStatusFileSchema> | null = null;
       for (;;) {
-        const r = await exec(`cat ${sq(statusPath)} 2>/dev/null`, 30_000);
+        const r = await exec(rootCat(statusPath), 30_000);
         if (r.exitCode === 0 && r.stdout.trim() !== "") {
           const p = GateStatusFileSchema.safeParse(safeJson(r.stdout.trim()));
           if (!p.success) throw new GateInfraError(`gate ${g.id}: unreadable status file`);
@@ -854,10 +981,10 @@ export async function runGates(
       }
       let verdictText: string | null = null;
       if (status?.verdict === "present") {
-        const v = await exec(`cat ${sq(`${SCORE_ROOT}/status/${g.id}.verdict`)}`, 30_000);
+        const v = await exec(rootCat(`${SCORE_ROOT}/status/${g.id}.verdict`), 30_000);
         verdictText = v.exitCode === 0 && !v.truncated ? v.stdout : null;
       }
-      const tail = await exec(`cat ${sq(`${SCORE_ROOT}/status/${g.id}.log`)} 2>/dev/null`, 30_000);
+      const tail = await exec(rootCat(`${SCORE_ROOT}/status/${g.id}.log`), 30_000);
       outcomes[g.id] = normalizeVerdict({
         gateId: g.id,
         timeoutS,

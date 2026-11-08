@@ -80,7 +80,7 @@ function setupTdm51(
     return "";
   });
   fake.onExec(/bin\/kill\.sh'/, () => "");
-  fake.onExec(/^cat '([^']+)'/, (ctx: FakeExecContext) => {
+  fake.onExec(/cat '([^']+)'/, (ctx: FakeExecContext) => {
     const text = ctx.readFile(ctx.match![1]!);
     return text === undefined ? { exitCode: 1 } : { stdout: text };
   });
@@ -115,7 +115,7 @@ describe("runGates on a fresh scoring computer (FakeProvider)", () => {
     });
     expect(rec.gates.tests!.status).toBe("verdict");
     expect(rec.gates.tests!.log_tail).toBe("log of tests\n");
-    expect(rec.sandbox).toBe("uid");
+    expect(rec.sandbox).toBe("uid-split");
     expect(rec.outputs_sha256).toBe(SHA);
     expect(rec.scoring_computer?.destroyed).toBe(true);
     expect(t.runs).toEqual(["tests", "db"]);
@@ -129,7 +129,7 @@ describe("runGates on a fresh scoring computer (FakeProvider)", () => {
     expect(trialGateSummary(rec)).toMatchObject({ pass: true, reason: "2/2 gates passed" });
   });
 
-  it("puts only gates/ and reference/ on the scoring computer, and refuses anything else", async () => {
+  it("puts only gates/, reference/ and workloads/ on the scoring computer, never adapters/ or proof/", async () => {
     const t = setupTdm51();
     const puts: string[] = [];
     const putFile = t.fake.putFile.bind(t.fake);
@@ -141,7 +141,7 @@ describe("runGates on a fresh scoring computer (FakeProvider)", () => {
     const kit = puts.filter((p) => p.startsWith(".anybench/score/kit/"));
     expect(kit.sort()).toEqual(SCORING.map((f) => `.anybench/score/kit/${f.path}`).sort());
     expect(puts.filter((p) => !p.startsWith(".anybench/score/"))).toEqual([]);
-    for (const bad of ["adapters/summer/driver.sh", "workloads/w1/answers.txt", "proof/oracle/x"]) {
+    for (const bad of ["adapters/summer/driver.sh", "proof/oracle/x", "anybench.yaml"]) {
       await expect(
         runGates(t.input({ scoring: [...SCORING, { path: bad, data: enc.encode("x") }] }), t.deps),
       ).rejects.toBeInstanceOf(GateKitError);
@@ -323,6 +323,31 @@ describe("normalizeVerdict (fail closed)", () => {
     expect(o.result.reason).toMatch(reason);
   });
 
+  it("a process left running fails the gate closed: the contender's fault, or the kit's", () => {
+    const pass = '{"pass":true,"reason":"","evidence":[]}';
+    const run = norm({ ...ok, alive_run: 2 }, pass);
+    expect(run).toMatchObject({ status: "lingering", kit_fault: false, result: { pass: false } });
+    expect(run.result.reason).toMatch(/2 contender process\(es\) still running/);
+    const check = norm({ ...ok, alive_check: 1 }, pass);
+    expect(check).toMatchObject({ status: "lingering", kit_fault: true, result: { pass: false } });
+  });
+
+  it("a broken check is the kit's fault; a check that wrote a verdict and then failed is not", () => {
+    expect(norm({ rc: 2, duration_ms: 1, verdict: "missing" }, null)).toMatchObject({
+      status: "check_failed",
+      kit_fault: true,
+    });
+    expect(
+      norm(
+        { rc: 1, duration_ms: 1, verdict: "present" },
+        '{"pass":true,"reason":"","evidence":[]}',
+      ),
+    ).toMatchObject({ status: "check_failed", kit_fault: false, result: { pass: false } });
+    expect(norm({ ...ok, verdict: "missing" }, null).kit_fault).toBe(true);
+    expect(norm(ok, "{nope").kit_fault).toBe(true);
+    expect(norm(ok, '{"pass":false,"reason":"r","evidence":[]}').kit_fault).toBe(false);
+  });
+
   it("a timeout is a FAIL even with a passing verdict", () => {
     for (const rc of [124, 137]) {
       const o = norm(
@@ -356,6 +381,7 @@ describe("trialGateSummary", () => {
   it("not-applicable gates neither pass nor fail the trial; none applicable is no pass", () => {
     const base = {
       status: "verdict" as const,
+      kit_fault: false,
       exit_code: 0,
       timed_out: false,
       duration_ms: 1,

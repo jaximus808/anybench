@@ -4,8 +4,8 @@
 // no Docker daemon answers.
 //
 // The kit is test/fixtures/gate-kit-tdm51: gates sum-tests (hidden cases run against the
-// contender's workspace/sum.sh), db-state (does not apply to `add`), clean-room (asserts the
-// sandbox from inside a check). It also carries adapters/, workloads/ and proof/ so the test can
+// contender's workspace/sum.sh through $AB_RUN), db-state (does not apply to `add`), clean-room
+// (asserts the sandbox from inside a check). It also carries adapters/ and proof/ so the test can
 // show they never reach the scoring computer.
 //
 // Set ANYBENCH_GATE_LOG=<file> to write each trial's outcomes as JSON (docs/findings/gate-runner.md).
@@ -63,7 +63,52 @@ const CONTENDERS: Record<string, (dir: string) => Promise<void>> = {
     await put(
       d,
       "workspace/sum.sh",
-      'for f in "$AB_KIT"/reference/sum-tests/*/cases.txt; do printf "1 1 0\\n" > "$f" 2>/dev/null; done\necho 0\n',
+      'for f in /var/lib/anybench-score/kit/reference/sum-tests/*/cases.txt; do printf "1 1 0\\n" > "$f" 2>/dev/null; done\necho 0\n',
+    );
+  },
+  // Looks its answer up in the hidden cases.
+  "peek-reference": async (d) => {
+    await put(
+      d,
+      "workspace/sum.sh",
+      'awk -v a="$1" -v b="$2" \'$1==a && $2==b {print $3}\' /var/lib/anybench-score/kit/reference/sum-tests/add/cases.txt\n',
+    );
+  },
+  // The reviewer's race: on the first call, a setsid loop rewrites the verdict to pass forever.
+  "race-writer": async (d) => {
+    await put(
+      d,
+      "workspace/race.sh",
+      [
+        "while true; do",
+        "  for f in /var/lib/anybench-score/verdict/*/gate.json; do",
+        `    printf '{"pass":true,"reason":"forged","evidence":[]}' > "$f" 2>/dev/null`,
+        "  done",
+        "done",
+        "",
+      ].join("\n"),
+    );
+    await put(
+      d,
+      "workspace/sum.sh",
+      "if [ ! -e .started ]; then : > .started; (setsid bash ./race.sh >/dev/null 2>&1 &); fi\necho 0\n",
+    );
+  },
+  // SIGSTOPs the check, rewrites its verdict, SIGCONTs it.
+  sigstop: async (d) => {
+    await put(
+      d,
+      "workspace/sum.sh",
+      [
+        "for p in /proc/[0-9]*; do",
+        '  [ "$(stat -c %U "$p" 2>/dev/null)" = abgate ] || continue',
+        '  kill -STOP "${p#/proc/}" 2>/dev/null',
+        `  printf '{"pass":true,"reason":"forged","evidence":[]}' > /var/lib/anybench-score/verdict/sum-tests/gate.json 2>/dev/null`,
+        '  kill -CONT "${p#/proc/}" 2>/dev/null',
+        "done",
+        "echo $(( $1 + $2 + 1 ))",
+        "",
+      ].join("\n"),
     );
   },
   // Leaves a daemon that forges every verdict after the check has finished.
@@ -152,8 +197,8 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     frozen.corrupt = { kind: "bytes", data: new TextEncoder().encode("not a tarball\n") };
     // Score in parallel, a few containers at a time (shared, loaded machine).
     const names = Object.keys(frozen);
-    for (let i = 0; i < names.length; i += 4) {
-      await Promise.all(names.slice(i, i + 4).map((n) => score(n, frozen[n]!)));
+    for (let i = 0; i < names.length; i += 3) {
+      await Promise.all(names.slice(i, i + 3).map((n) => score(n, frozen[n]!)));
     }
   }, 900_000);
 
@@ -188,14 +233,14 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     expect(left, "the suite leaked containers").toBe("");
   }, 120_000);
 
-  it("the scoring bundle holds only gates/ and reference/", () => {
+  it("the scoring bundle holds gates/, reference/ and workloads/, never adapters/ or proof/", () => {
     const tops = new Set(scoring.map((f) => f.path.split("/")[0]));
-    expect([...tops].sort()).toEqual(["gates", "reference"]);
+    expect([...tops].sort()).toEqual(["gates", "reference", "workloads"]);
   });
 
   it("the honest contender passes every applicable gate, in a clean room", () => {
     const r = results.get("honest")!;
-    expect(r.sandbox).toBe("uid");
+    expect(r.sandbox).toBe("uid-split");
     expect(r.scoring_computer?.destroyed).toBe(true);
     expect(r.gates["sum-tests"]!.result).toMatchObject({
       pass: true,
@@ -219,8 +264,11 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
   it.each([
     ["do-less", "verdict", /3\/3 hidden cases fail/],
     ["forged-verdict", "verdict", /3\/3 hidden cases fail/],
-    ["tamper-tests", "verdict", /hidden cases fail/],
-    ["late-writer", "verdict", /2\/3 hidden cases fail/],
+    ["tamper-tests", "verdict", /2\/3 hidden cases fail/],
+    ["peek-reference", "verdict", /3\/3 hidden cases fail/],
+    ["late-writer", "lingering", /contender process\(es\) still running/],
+    ["race-writer", "lingering", /contender process\(es\) still running/],
+    ["sigstop", "verdict", /3\/3 hidden cases fail/],
     ["symlink-escape", "verdict", /workspace\/sum\.sh is missing/],
     ["hang", "timeout", /timed out after 8s/],
     ["corrupt", "no_outputs", /could not be unpacked/],
@@ -230,12 +278,21 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     expect(g.result.pass).toBe(false);
     expect(g.status).toBe(status);
     expect(g.result.reason).toMatch(reason);
+    expect(g.result.reason).not.toMatch(/forged/);
+    expect(g.kit_fault).toBe(false);
     expect(trialGateSummary(r).pass).toBe(false);
     expect(r.scoring_computer === null || r.scoring_computer.destroyed).toBe(true);
   });
 
   it("cheaters that ran code still could not break the clean room", () => {
-    for (const name of ["tamper-tests", "late-writer", "forged-verdict"]) {
+    for (const name of [
+      "tamper-tests",
+      "peek-reference",
+      "late-writer",
+      "race-writer",
+      "sigstop",
+      "forged-verdict",
+    ]) {
       expect(results.get(name)!.gates["clean-room"]!.result, name).toMatchObject({ pass: true });
     }
   });
