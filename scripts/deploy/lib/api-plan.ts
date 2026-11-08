@@ -169,6 +169,9 @@ export const OWNED_SECRETS = [
   "S3_BUCKET",
   "S3_ACCESS_KEY_ID",
   "S3_SECRET_ACCESS_KEY",
+  // POST /runs/suggest runs one bounded Naïve session from the API (New run screen).
+  "NAIVE_API_KEY",
+  "ANYBENCH_SUGGEST_MODEL",
 ] as const;
 export type OwnedSecret = (typeof OWNED_SECRETS)[number];
 
@@ -238,6 +241,7 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
   if (env.ADMIN_GITHUB_LOGINS) s.ADMIN_GITHUB_LOGINS = env.ADMIN_GITHUB_LOGINS;
   if (env.RUNNER_TOKEN_SECRET) s.RUNNER_TOKEN_SECRET = env.RUNNER_TOKEN_SECRET;
   if (env.SENTRY_DSN) s.SENTRY_DSN = env.SENTRY_DSN;
+  s.NAIVE_API_KEY = env.NAIVE_API_KEY;
   if (env.S3_BUCKET) {
     for (const k of [
       "S3_ENDPOINT",
