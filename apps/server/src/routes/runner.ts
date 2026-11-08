@@ -19,6 +19,10 @@
 // DB clock) and records the heartbeat's log_offset (stdout+stderr bytes) in trials.log_offset;
 // the runner's events.jsonl offset and live log chunk counters are kept on the inbox row.
 // Trial state edges in the batch are written as events only; the trial executor applies them.
+// The executor MUST apply a runner trial.phase event with transitionTrial from the trial's state
+// in the DB, and never trust payload.from: the token (and so every field here) is readable by the
+// agent under test. This route only limits which targets a runner may name (RUNNER_PHASE_TARGETS)
+// and pins payload.attempt to the token's attempt.
 import {
   apiError,
   API_ERROR_STATUS,
@@ -45,6 +49,7 @@ import {
   MULTIPART_THRESHOLD_BYTES,
   planParts,
   trialArtifactKey,
+  trialPrefix,
   type UploadPlan,
 } from "@anybench/envs";
 import { eq, sql } from "drizzle-orm";
@@ -140,7 +145,27 @@ export const RUNNER_UPLOAD_BODY_LIMIT_BYTES = 64 * 1024;
 export const RUNNER_MAX_EVENTS_PER_BATCH = 1000;
 
 /** Why a runner may not send this event, or null when it may. */
-function runnerEventProblem(e: AnybenchEvent, trial: { id: string; runId: string }): string | null {
+/** The `artifact:<key>` reference the runner puts in trial.log_chunk (packages/runner upload.ts). */
+const ARTIFACT_URL_PREFIX = "artifact:";
+
+/**
+ * True when `url` is `artifact:<key>` for an object under THIS trial's prefix with a valid name.
+ * Anything else (javascript:, https://..., a sibling trial's key) would be rendered as a link in
+ * the log viewer, so it is refused rather than stored.
+ */
+function isOwnArtifactUrl(url: string, trial: { id: string; runId: string }): boolean {
+  if (!url.startsWith(ARTIFACT_URL_PREFIX)) return false;
+  const key = url.slice(ARTIFACT_URL_PREFIX.length);
+  const prefix = trialPrefix(trial.runId, trial.id);
+  if (!key.startsWith(prefix)) return false;
+  const name = artifactNameSchema.safeParse(key.slice(prefix.length));
+  return name.success && trialArtifactKey(trial.runId, trial.id, name.data) === key;
+}
+
+function runnerEventProblem(
+  e: AnybenchEvent,
+  trial: { id: string; runId: string; attempt: number },
+): string | null {
   if (!(RUNNER_EVENT_TYPES as readonly string[]).includes(e.type)) {
     return `type ${e.type} cannot come from a runner`;
   }
@@ -153,6 +178,12 @@ function runnerEventProblem(e: AnybenchEvent, trial: { id: string; runId: string
     !(RUNNER_PHASE_TARGETS as readonly string[]).includes(e.payload.to)
   ) {
     return `trial.phase to ${e.payload.to} is not a runner edge`;
+  }
+  if (e.type === "trial.phase" && e.payload.attempt !== trial.attempt) {
+    return `trial.phase attempt must be ${trial.attempt}, got ${e.payload.attempt}`;
+  }
+  if (e.type === "trial.log_chunk" && !isOwnArtifactUrl(e.payload.url, trial)) {
+    return "trial.log_chunk url must be artifact:<key> under this trial's prefix";
   }
   return null;
 }

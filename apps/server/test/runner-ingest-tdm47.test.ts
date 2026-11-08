@@ -510,6 +510,41 @@ describe.skipIf(!available)("runner ingest routes (TDM-47, local Postgres)", () 
     expect(ok.status).toBe(200);
   });
 
+  it("trial.log_chunk url must be artifact:<key> under this trial's own prefix", async () => {
+    const t = await seedTrial();
+    const sibling = await seedTrial();
+    const chunk = (url: string) =>
+      forged(t.id, "trial.log_chunk", "trial", { stream: "stdout", offset: 0, bytes: 10, url });
+    for (const url of [
+      "javascript:alert(1)",
+      "https://evil.example/x",
+      `artifact:runs/${FIXTURE_RUN}/trials/${sibling.id}/logs/a`,
+      `artifact:runs/${FIXTURE_RUN}/trials/${t.id}/../${sibling.id}/logs/a`,
+      `artifact:runs/${FIXTURE_RUN}/trials/${t.id}/`,
+    ]) {
+      await rejected(
+        t.id,
+        [chunk(url)],
+        /body\.events\.0: trial\.log_chunk url must be artifact:<key> under this trial/,
+      );
+    }
+    // The runner's real reference (artifactUrl(plan.key)) is accepted.
+    const ok = await postBatch(t.id, 1, 0, [
+      chunk(`artifact:runs/${FIXTURE_RUN}/trials/${t.id}/logs/stdout.000001.log`),
+    ]);
+    expect(ok.status).toBe(200);
+    expect(await eventCount(t.id)).toBe(1);
+  });
+
+  it("trial.phase attempt must be the token's attempt", async () => {
+    const t = await seedTrial();
+    await rejected(
+      t.id,
+      [forged(t.id, "trial.phase", "trial", { from: "running", to: "collecting", attempt: 7 })],
+      /body\.events\.0: trial\.phase attempt must be 1, got 7/,
+    );
+  });
+
   it("400 for more than 1000 events in one batch, 413 over the body limits", async () => {
     const t = await seedTrial();
     const many = Array.from({ length: 1001 }, (_, i) => heartbeat(t.id, i, i));
