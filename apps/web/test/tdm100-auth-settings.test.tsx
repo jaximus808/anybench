@@ -320,6 +320,30 @@ describe("/settings", () => {
     await waitFor(() => expect(screen.getByTestId("anthropic-status").textContent).toBe("Not set"));
   });
 
+  it("toggles 'Start runs automatically' through PATCH /auth/me/settings", async () => {
+    let saved = false;
+    mockApi({
+      "GET /auth/me": () =>
+        json(200, { user: USER, via: { kind: "session" }, settings: { auto_start_runs: saved } }),
+      "PATCH /auth/me/settings": (body) => {
+        saved = (body as { auto_start_runs: boolean }).auto_start_runs;
+        return json(200, { auto_start_runs: saved });
+      },
+    });
+    render(<SettingsPage />);
+    const box = (await screen.findByLabelText(
+      "Start runs automatically when the test plan is proven (no Go button)",
+    )) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByText(/Billing then starts on its own/)).toBeTruthy();
+    fireEvent.click(box);
+    await waitFor(() => expect(box.checked).toBe(true));
+    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ auto_start_runs: true });
+    fireEvent.click(box);
+    await waitFor(() => expect(box.checked).toBe(false));
+    expect(saved).toBe(false);
+  });
+
   it("signs out from settings", async () => {
     mockApi();
     render(<SettingsPage />);

@@ -146,6 +146,8 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       question: "Is ripgrep faster than grep?",
       source: { kind: "github", github: "BurntSushi/ripgrep", ref: "14.1.1" },
       budget_micro_usd: "50000000",
+      // Explicit: an omitted auto_go now follows the owner's auto_start_runs (default off).
+      auto_go: true,
       ...body,
     });
     expect(res.status, JSON.stringify(res.json)).toBe(201);

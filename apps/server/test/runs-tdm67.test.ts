@@ -121,6 +121,26 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     return (await client.runs.create({ body })).run;
   }
 
+  it("auto_go: an explicit value wins, else the owner's auto_start_runs setting", async () => {
+    const carol = await seedUserTdm67(db.db, "carol-autostart");
+    const c = clientFor(h, carol);
+    const intakeOf = async (id: string) =>
+      (await db.db.select().from(runs).where(eq(runs.id, id)))[0]!.intake as { auto_go: boolean };
+
+    expect((await intakeOf((await newRun(c)).id)).auto_go).toBe(false);
+    await db.db.update(users).set({ autoStartRuns: true }).where(eq(users.id, carol));
+    expect((await intakeOf((await newRun(c)).id)).auto_go).toBe(true);
+    expect((await intakeOf((await newRun(c, { ...githubBody, auto_go: false })).id)).auto_go).toBe(
+      false,
+    );
+    // Another user's setting does not leak.
+    expect((await intakeOf((await newRun(b)).id)).auto_go).toBe(false);
+    await db.db.update(users).set({ autoStartRuns: false }).where(eq(users.id, carol));
+    expect((await intakeOf((await newRun(c, { ...githubBody, auto_go: true })).id)).auto_go).toBe(
+      true,
+    );
+  });
+
   it("401s without credentials", async () => {
     const r = await raw(h, null, "GET", "/runs");
     expect(r.status).toBe(401);
@@ -159,7 +179,8 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     expect(row!.intake).toMatchObject({
       source: githubBody.source,
       contenders: [],
-      auto_go: true,
+      // No auto_go in the body: the owner's auto_start_runs setting (default off) decides.
+      auto_go: false,
     });
 
     const evs = await readEvents(db.db, run.id as RunId);

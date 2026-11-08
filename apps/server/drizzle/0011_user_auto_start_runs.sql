@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "auto_start_runs" boolean DEFAULT false NOT NULL;

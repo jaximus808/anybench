@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ApiClient, SuggestedAlternative } from "@anybench/core";
+import Link from "next/link";
 import { api } from "../../../lib/api";
 import {
   comparedNames,
@@ -100,7 +101,13 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
   const [questionSuggested, setQuestionSuggestedState] = useState(false);
   const [optionsSuggested, setOptionsSuggested] = useState(false);
   // Kept in step with state from event handlers, for the async suggest callback.
-  const latest = useRef({ question: "", questionSuggested: false, runs: false, approvals: false });
+  const latest = useRef({
+    question: "",
+    questionSuggested: false,
+    runs: false,
+    approvals: false,
+    reviewFirst: false,
+  });
   const suggestSeq = useRef(0);
   // One key per attempt: a retry of the same form reuses it, any edit starts a new one.
   const idempotencyKey = useRef<string | null>(null);
@@ -126,9 +133,16 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
 
   useEffect(() => {
     let live = true;
-    client.auth.me().catch((err: unknown) => {
-      if (live && describeError(err).kind === "signed_out") router.replace(SIGNIN_NEW_RUN);
-    });
+    client.auth.me().then(
+      ({ settings }) => {
+        // "Start runs automatically" (Settings): the default for this run, unless already chosen.
+        if (live && settings.auto_start_runs && !latest.current.reviewFirst)
+          setForm((f) => ({ ...f, reviewFirst: false }));
+      },
+      (err: unknown) => {
+        if (live && describeError(err).kind === "signed_out") router.replace(SIGNIN_NEW_RUN);
+      },
+    );
     return () => {
       live = false;
     };
@@ -151,6 +165,7 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     idempotencyKey.current = null;
     if (key === "question") latest.current.question = value as string;
+    if (key === "reviewFirst") latest.current.reviewFirst = true;
     setForm((f) => ({ ...f, [key]: value }));
   }
   function setQuestionSuggested(v: boolean) {
@@ -697,6 +712,23 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
             The lines above are what Anybench will test. Agents read what you built, pick tasks and
             a correctness gate, and draft the test plan for you to check.
           </p>
+          <p className={styles.hint} data-slot="start-mode">
+            <span>
+              {form.reviewFirst
+                ? "You review the test plan before it starts"
+                : "Starts automatically once the test plan is proven"}
+            </span>
+            {" · "}
+            <button
+              type="button"
+              className={styles.linkButton}
+              onClick={() => update("reviewFirst", !form.reviewFirst)}
+            >
+              change
+            </button>
+            {" · "}
+            <Link href="/settings#auto-start-runs">default in Settings</Link>
+          </p>
           <Disclosure
             id="nr-options"
             label="Options (defaults are fine)"
@@ -823,7 +855,9 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
           <p className={styles.status} role="status" id="nr-start-status">
             {busy
               ? `${busy} Waited ${formatWait(nowMs - (busySince ?? nowMs))}${busy.startsWith("Starting") ? `; gives up at ${formatWait(createMs)}` : ""}.`
-              : "Free to create. Nothing is billed until you press Go."}
+              : form.reviewFirst
+                ? "Free to create. Nothing is billed until you press Go."
+                : "Free to create. Billing starts on its own once the test plan is proven."}
           </p>
         </Step>
       )}

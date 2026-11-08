@@ -652,3 +652,16 @@
   font-size: var(--text-xs);
   color: var(--accent-ink);
 }
+
+/* "change" in the Review step's start-mode line: a link-looking button. */
+.linkButton {
+  font: inherit;
+  color: var(--accent-ink);
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}

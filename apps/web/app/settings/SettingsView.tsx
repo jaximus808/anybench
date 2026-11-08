@@ -5,6 +5,7 @@ import { apiErrorMessage, POST_SIGN_IN_PATH } from "../../lib/api";
 import { signOut, useSession } from "../../lib/session";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ModelKeysSection } from "./ModelKeysSection";
+import { RunStartSection } from "./RunStartSection";
 import styles from "./settings.module.css";
 
 export function SettingsView() {
@@ -41,7 +42,7 @@ export function SettingsView() {
       </div>
     );
 
-  const { user } = session;
+  const { user, settings } = session;
   return (
     <div className={`wrap ${styles.page}`}>
       <h1>Settings</h1>
@@ -70,6 +71,7 @@ export function SettingsView() {
           <Link href="/billing">Open billing</Link>
         </p>
       </section>
+      <RunStartSection settings={settings} />
       <ApiKeysSection />
       <ModelKeysSection />
     </div>

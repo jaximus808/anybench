@@ -64,6 +64,7 @@ import { kits } from "../db/schema/kits.js";
 import { projects } from "../db/schema/projects.js";
 import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
+import { users } from "../db/schema/users.js";
 import { scopedDb } from "../db/scoped.js";
 import {
   decodeCursor,
@@ -449,10 +450,21 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
             .values({ id: projectId, ownerId: actor.userId, ...projectOf(body.source) });
         }
 
+        // auto_go: the request's explicit choice, else the owner's "Start runs automatically"
+        // setting. Either way the orchestrator's auto-go still checks the budget and billing gate.
+        let autoGo = body.auto_go;
+        if (autoGo === undefined) {
+          const [owner] = await tx
+            .select({ autoStartRuns: users.autoStartRuns })
+            .from(users)
+            .where(eq(users.id, actor.userId))
+            .limit(1);
+          autoGo = owner?.autoStartRuns ?? false;
+        }
         const intake = {
           source: body.source,
           contenders: body.contenders,
-          auto_go: body.auto_go,
+          auto_go: autoGo,
           ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
         };
         const [run] = await tx

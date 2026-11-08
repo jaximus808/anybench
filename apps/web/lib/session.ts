@@ -1,7 +1,7 @@
 "use client";
 // Who is signed in, shared by the header, /signin, /signup and /settings (TDM-100). One
 // GET /auth/me per page load; every component subscribes to the same result.
-import type { User } from "@anybench/core";
+import type { ApiClient, User, UserSettings } from "@anybench/core";
 import { ApiClientError } from "@anybench/core";
 import { useSyncExternalStore } from "react";
 import { api, apiErrorMessage, isUnreachable } from "./api";
@@ -9,7 +9,7 @@ import { api, apiErrorMessage, isUnreachable } from "./api";
 export type SessionState =
   | { status: "loading" }
   | { status: "signed_out" }
-  | { status: "signed_in"; user: User }
+  | { status: "signed_in"; user: User; settings: UserSettings }
   /** The API could not be reached or answered with an error other than 401. */
   | { status: "error"; unreachable: boolean; message: string };
 
@@ -30,7 +30,7 @@ export function loadSession(force = false): Promise<void> {
   inflight = api()
     .auth.me()
     .then(
-      ({ user }) => set({ status: "signed_in", user }),
+      ({ user, settings }) => set({ status: "signed_in", user, settings }),
       (err: unknown) => {
         if (err instanceof ApiClientError && err.status === 401) set({ status: "signed_out" });
         else
@@ -38,6 +38,16 @@ export function loadSession(force = false): Promise<void> {
       },
     );
   return inflight;
+}
+
+/** PATCH the signed-in user's settings, then share the saved values with every subscriber. */
+export async function saveSettings(
+  patch: Partial<UserSettings>,
+  client: ApiClient = api(),
+): Promise<UserSettings> {
+  const settings = await client.auth.updateSettings({ body: patch });
+  if (state.status === "signed_in") set({ ...state, settings });
+  return settings;
 }
 
 /** Revoke the session on the API, then forget it locally (even if the API call failed). */

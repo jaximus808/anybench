@@ -250,6 +250,39 @@ describe.skipIf(!hasDb)("auth routes (TDM-65)", () => {
     expect((await h.app.request("/auth/me", withSession("A".repeat(43)))).status).toBe(401);
   });
 
+  it("settings: auto_start_runs defaults off, PATCH /auth/me/settings saves it, /auth/me reads it", async () => {
+    const token = (await signIn("code-plain")).token!;
+    const me = async () =>
+      (
+        (await (await h.app.request("/auth/me", withSession(token))).json()) as {
+          settings: { auto_start_runs: boolean };
+        }
+      ).settings;
+    expect(await me()).toEqual({ auto_start_runs: false });
+
+    const patch = (body: unknown, origin: string = WEB_ORIGIN_TDM65) =>
+      h.app.request("/auth/me/settings", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+        ...withSession(token, { origin, "content-type": "application/json" }),
+      });
+    const on = await patch({ auto_start_runs: true });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toEqual({ auto_start_runs: true });
+    expect(await me()).toEqual({ auto_start_runs: true });
+
+    // Unknown keys and wrong types are refused; a foreign Origin is a CSRF 403.
+    expect((await patch({ auto_start_runs: "yes" })).status).toBe(400);
+    expect((await patch({ start: true })).status).toBe(400);
+    expect((await patch({ auto_start_runs: false }, FOREIGN_ORIGIN_TDM65)).status).toBe(403);
+    expect(await me()).toEqual({ auto_start_runs: true });
+
+    expect(await (await patch({ auto_start_runs: false })).json()).toEqual({
+      auto_start_runs: false,
+    });
+    expect((await h.app.request("/auth/me/settings", { method: "PATCH" })).status).toBe(401);
+  });
+
   it("a mutating request with a foreign Origin gets 403; the session survives", async () => {
     const token = (await signIn("code-plain")).token!;
     const foreign = await h.app.request("/auth/logout", {

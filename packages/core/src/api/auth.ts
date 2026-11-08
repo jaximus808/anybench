@@ -17,6 +17,21 @@ export const UserSchema = z.object({
 });
 export type User = z.infer<typeof UserSchema>;
 
+/**
+ * Per-user preferences, stored on the user. `auto_start_runs`: a run created without an explicit
+ * `auto_go` takes this value, so a proven test plan starts without the Go click (the budget check
+ * and the billing gate still apply).
+ */
+export const UserSettingsSchema = z.object({
+  auto_start_runs: z.boolean().default(false),
+});
+export type UserSettings = z.infer<typeof UserSettingsSchema>;
+
+/** PATCH body: only the fields to change. */
+export const UpdateUserSettingsBodySchema = z
+  .object({ auto_start_runs: z.boolean().optional() })
+  .strict();
+
 /** Where the caller's credentials came from, so a CLI can show "signed in as … with key …". */
 export const WhoAmISchema = z.object({
   user: UserSchema,
@@ -29,6 +44,8 @@ export const WhoAmISchema = z.object({
       run_ids: z.array(z.string()).nullable(),
     }),
   ]),
+  /** Absent from older servers: reads as the defaults. */
+  settings: UserSettingsSchema.default({ auto_start_runs: false }),
 });
 
 /** Only relative paths (or the web origin, checked by the server) may follow sign-in. */
@@ -69,6 +86,15 @@ export const authRoutes = defineRoutes({
     auth: ["session", "apiKey:runs:read"],
     summary: "The signed-in user and how they authenticated.",
     response: WhoAmISchema,
+  }),
+  updateSettings: defineRoute({
+    id: "auth.updateSettings",
+    method: "PATCH",
+    path: "/auth/me/settings",
+    auth: ["session"],
+    summary: "Change the signed-in user's settings; returns them all.",
+    body: UpdateUserSettingsBodySchema,
+    response: UserSettingsSchema,
   }),
   logout: defineRoute({
     id: "auth.logout",

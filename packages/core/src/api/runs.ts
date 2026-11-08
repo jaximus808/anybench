@@ -141,8 +141,11 @@ export const CreateRunBodySchema = z.object({
   budget_micro_usd: PositiveMicroUsdSchema,
   /** Contenders the user adds up front; the researcher finds the rest. */
   contenders: z.array(ContenderSchema).max(20).default([]),
-  /** Leave `awaiting_go` on its own when the estimate fits and the billing gate passes. */
-  auto_go: z.boolean().default(true),
+  /**
+   * Leave `awaiting_go` on its own when the estimate fits and the billing gate passes. Omitted:
+   * the user's `auto_start_runs` setting decides.
+   */
+  auto_go: z.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------------------------

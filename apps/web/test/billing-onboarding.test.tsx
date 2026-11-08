@@ -186,6 +186,26 @@ describe("Go bar (stripe-onboarding)", () => {
     expect(await screen.findByText("Starting the run…")).toBeTruthy();
   });
 
+  it("Go, and don't ask again: presses Go, turns on auto_start_runs, and can undo it", async () => {
+    mockApi({
+      [`POST /runs/${RUN}/go`]: () => json(200, runBody("running")),
+      "PATCH /auth/me/settings": (body) => json(200, body),
+    });
+    render(<GoBar runId={RUN} estimate={null} />);
+    fireEvent.click(screen.getByRole("link", { name: "Go, and don’t ask again" }));
+    expect(await screen.findByText("Starting the run…")).toBeTruthy();
+    expect(await screen.findByText(/Future runs start automatically/)).toBeTruthy();
+    expect(calls.map((c) => c.key)).toContain(`POST /runs/${RUN}/go`);
+    expect(calls.find((c) => c.key === "PATCH /auth/me/settings")?.body).toEqual({
+      auto_start_runs: true,
+    });
+    fireEvent.click(screen.getByRole("link", { name: "undo" }));
+    expect(await screen.findByText("Future runs wait for Go")).toBeTruthy();
+    expect(calls.filter((c) => c.key === "PATCH /auth/me/settings").at(-1)?.body).toEqual({
+      auto_start_runs: false,
+    });
+  });
+
   it("only follows an https link; anything else goes to our billing page", () => {
     expect(goCardHref("http://evil.test/", RUN)).toBe(`/billing?run=${RUN}`);
     expect(goCardHref("javascript:alert(1)", RUN)).toBe(`/billing?run=${RUN}`);

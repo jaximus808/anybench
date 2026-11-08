@@ -9,6 +9,8 @@ export const users = pgTable("users", {
   email: text("email"),
   /** Cache only: admin is decided per request from ADMIN_GITHUB_LOGINS. */
   isAdminCache: boolean("is_admin_cache").notNull().default(false),
+  /** Settings: a proven run leaves awaiting_go on its own (no Go click) unless the create says otherwise. */
+  autoStartRuns: boolean("auto_start_runs").notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

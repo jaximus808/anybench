@@ -7,6 +7,7 @@ import { ApiClientError, type RunId } from "@anybench/core";
 import { useState } from "react";
 import { apiErrorMessage } from "../../lib/api";
 import { useLiveApi } from "../../lib/live/client";
+import { saveSettings } from "../../lib/session";
 import { usd } from "./format";
 import styles from "./live.module.css";
 
@@ -82,8 +83,32 @@ export function GoFailureText({ failure }: { failure: GoFailure | null }) {
   return <>{failure.text}</>;
 }
 
+/**
+ * "Go, and don't ask again": press Go, and turn on Settings' "Start runs automatically"
+ * (auto_start_runs) so future runs skip this bar; `undo` turns it back off.
+ */
+export function useDontAskAgain(go: () => Promise<void>) {
+  const client = useLiveApi();
+  const [remembered, setRemembered] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (value: boolean) => {
+    setError(null);
+    try {
+      await saveSettings({ auto_start_runs: value }, client);
+      setRemembered(value);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  };
+  const goAndRemember = async () => {
+    await Promise.all([go(), save(true)]);
+  };
+  return { remembered, error, goAndRemember, undo: () => save(false) };
+}
+
 export function GoBar({ runId, estimate }: { runId: string; estimate: bigint | null }) {
   const { busy, started, failure, go } = useGoAction(runId);
+  const remember = useDontAskAgain(go);
   return (
     <div className={styles.alert} data-slot="go-bar" role="region" aria-label="Start the run">
       <span className={styles.alertSev}>go</span>
@@ -101,6 +126,37 @@ export function GoBar({ runId, estimate }: { runId: string; estimate: bigint | n
           {busy ? "Starting…" : "Go"}
         </button>
       )}
+      <span data-slot="go-remember">
+        {remember.error ? (
+          remember.error
+        ) : remember.remembered ? (
+          <>
+            Future runs start automatically ·{" "}
+            <a
+              href="#undo"
+              onClick={(e) => {
+                e.preventDefault();
+                void remember.undo();
+              }}
+            >
+              undo
+            </a>
+          </>
+        ) : remember.remembered === false ? (
+          "Future runs wait for Go"
+        ) : started ? null : (
+          <a
+            href="#go-dont-ask"
+            aria-disabled={busy}
+            onClick={(e) => {
+              e.preventDefault();
+              if (!busy) void remember.goAndRemember();
+            }}
+          >
+            Go, and don&rsquo;t ask again
+          </a>
+        )}
+      </span>
     </div>
   );
 }

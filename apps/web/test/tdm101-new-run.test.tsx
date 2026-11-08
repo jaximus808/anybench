@@ -398,6 +398,42 @@ describe("New run flow: order and reveal", () => {
     expect(heading(STEP3)).toBeTruthy();
   });
 
+  it("auto_start_runs on: the run defaults to starting automatically; 'change' overrides it", async () => {
+    const meAuto = route("GET", "/auth/me", () =>
+      json(200, { ...ME, settings: { auto_start_runs: true } }),
+    );
+    const { calls, client } = mockApi(
+      meAuto,
+      route("POST", "/runs", () => json(201, { run: run() })),
+    );
+    render(<NewRunForm client={client} />);
+    toReview();
+    expect(
+      await screen.findByText("Starts automatically once the test plan is proven"),
+    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "default in Settings" }).getAttribute("href")).toBe(
+      "/settings#auto-start-runs",
+    );
+    submit();
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith(`/runs/${RUN_ID}`));
+    expect((createCall(calls)?.body as { auto_go: boolean }).auto_go).toBe(true);
+
+    cleanup();
+    nav.push.mockReset();
+    const second = mockApi(
+      meAuto,
+      route("POST", "/runs", () => json(201, { run: run() })),
+    );
+    render(<NewRunForm client={second.client} />);
+    toReview();
+    await screen.findByText("Starts automatically once the test plan is proven");
+    fireEvent.click(screen.getByRole("button", { name: "change" }));
+    expect(screen.getByText("You review the test plan before it starts")).toBeTruthy();
+    submit();
+    await waitFor(() => expect(nav.push).toHaveBeenCalled());
+    expect((createCall(second.calls)?.body as { auto_go: boolean }).auto_go).toBe(false);
+  });
+
   it("Options are collapsed by default and the defaults are submitted", async () => {
     const { calls, client } = mockApi(route("POST", "/runs", () => json(201, { run: run() })));
     render(<NewRunForm client={client} />);

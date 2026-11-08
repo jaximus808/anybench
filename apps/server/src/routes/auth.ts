@@ -2,6 +2,7 @@
 //   GET  /auth/github            set the HMAC'd state cookie, 302 to GitHub
 //   GET  /auth/github/callback   verify state, exchange the code, upsert users, set anybench_session
 //   GET  /auth/me                the signed-in user (is_admin evaluated for this request)
+//   PATCH /auth/me/settings      change the signed-in user's settings (auto_start_runs)
 //   POST /auth/logout            revoke the session, clear the cookie (CSRF: allowed Origin only)
 //
 // Until GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_OAUTH_CALLBACK_URL, SESSION_SECRET and a web
@@ -20,7 +21,7 @@ import {
   type ApiErrorCode,
   type RouteResult,
 } from "@anybench/core";
-import { and, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -82,7 +83,12 @@ const StatePayloadSchema = z.object({
 
 const contract = apiRoutes.auth;
 
-function fail(c: Context<AppEnv>, code: ApiErrorCode, message: string, issues?: string[]) {
+function fail<E extends AppEnv>(
+  c: Context<E>,
+  code: ApiErrorCode,
+  message: string,
+  issues?: string[],
+) {
   return c.json(
     apiError(code, message, { request_id: c.get("requestId"), ...(issues ? { issues } : {}) }),
     API_ERROR_STATUS[code] as ContentfulStatusCode,
@@ -283,8 +289,21 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
     return c.redirect(landingUrl(web, payload.r), 302);
   });
 
-  r.get("/me", requireSession(deps), (c) => {
+  const readSettings = (userId: string) =>
+    scopedDb({ kind: "system", reason: "auth: read user settings" }, deps.db).transaction(
+      async (tx) => {
+        const [row] = await tx
+          .select({ autoStartRuns: users.autoStartRuns })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+        return { auto_start_runs: row?.autoStartRuns ?? false };
+      },
+    );
+
+  r.get("/me", requireSession(deps), async (c) => {
     const { user, isAdmin } = c.get("session");
+    const settings = await readSettings(user.id);
     const result: RouteResult<typeof contract.me> = {
       user: {
         id: user.id,
@@ -295,8 +314,37 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
         created_at: user.createdAt.toISOString(),
       },
       via: { kind: "session" },
+      settings,
     };
     return c.json(encodeRouteResponse(contract.me, result) as object, 200);
+  });
+
+  r.patch("/me/settings", requireSession(deps), async (c) => {
+    const { user } = c.get("session");
+    let body: unknown;
+    try {
+      const text = await c.req.text();
+      body = text.trim() === "" ? undefined : (JSON.parse(text) as unknown);
+    } catch {
+      return fail(c, "bad_request", "request body is not valid JSON");
+    }
+    const parsed = parseRouteRequest(contract.updateSettings, { body });
+    if (!parsed.ok)
+      return fail(c, "validation_failed", parsed.error.error.message, parsed.error.error.issues);
+    const patch = parsed.request.body;
+    if (patch.auto_start_runs !== undefined) {
+      const value = patch.auto_start_runs;
+      await scopedDb({ kind: "system", reason: "auth: update user settings" }, deps.db).transaction(
+        (tx) =>
+          tx
+            .update(users)
+            .set({ autoStartRuns: value, updatedAt: sql`now()` })
+            .where(eq(users.id, user.id)),
+      );
+      c.get("log").info({ userId: user.id, autoStartRuns: value }, "auth: settings changed");
+    }
+    const result: RouteResult<typeof contract.updateSettings> = await readSettings(user.id);
+    return c.json(encodeRouteResponse(contract.updateSettings, result) as object, 200);
   });
 
   r.post("/logout", async (c) => {
