@@ -16,7 +16,7 @@ same generic runner (`packages/envs/src/recipe.ts`). This was checked on docker-
 ## Pins
 
 - **Claude Code 2.1.319** was published 2026-11-06. It is the build TDM-16
-  (`claude-code-naive-proxy.md`, on the TDM-16 branch) verified end to end against Naïve's Anthropic
+  (`claude-code-naive-proxy.md`) verified end to end against Naïve's Anthropic
   proxy. The switch that proxy needs, `CLAUDE_CODE_MODEL_CAPABILITIES`, was found in that binary, so
   this pin takes priority over the two-weeks-old rule. (The first live run below used 2.1.310.) The npm package is a thin wrapper. Its postinstall copies the
   platform's native binary (`@anthropic-ai/claude-code-linux-{x64,arm64}`, an optional dependency at
@@ -54,7 +54,7 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  DISABLE_TELEMETRY=1  DISABLE_ERROR_R
 The image holds **no secret**. Each trial gets `ANTHROPIC_AUTH_TOKEN`, a per-trial `proxy:write` key,
 together with `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` and
 `ANTHROPIC_SMALL_FAST_MODEL` (Naïve ids such as `anthropic/claude-sonnet-4.6`). These come from the
-0600 env file that TDM-16's `provisionClaudeCodeProxyEnv` writes. TDM-16 is not on main yet. The
+0600 env file that TDM-16's `provisionClaudeCodeProxyEnv` writes. The
 health check asserts the switches and greps the pinned binary for `CLAUDE_CODE_MODEL_CAPABILITIES`,
 so a version bump that drops the switch fails the build. It makes no model call, because that needs
 the trial token. A BYOK contender overrides `ANTHROPIC_BASE_URL` (and sets `ANTHROPIC_API_KEY`) in its
@@ -236,9 +236,7 @@ heavy for every gate run on a shared Mac. Playwright has **not** run on Naïve y
 - Run agents as `eval`: `sudo -n runuser -u eval -- env HOME=/home/eval …`, or `as_user eval …` inside
   a recipe. `ANYBENCH_EVAL_USER` and `ANYBENCH_EVAL_HOME` are exported. `eval` has no sudo, and its
   health check fails if it ever gets passwordless sudo.
-- The kit adapters (`kits/tandem-vs-claude-code/adapters/*/install.sh`) still run
-  `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}`. On agent-cc that is
-  already done. Those L1 scripts should drop the install, or the `:-latest` fallback, now that
-  `CLAUDE_CODE_VERSION=2.1.319` and `TANDEM_MCP_VERSION=3.2.0` are exported.
+- The kit (`kits/tandem-vs-claude-code`, TDM-184) pins the same `CLAUDE_CODE_VERSION=2.1.319` and
+  `TANDEM_MCP_VERSION=3.2.0` that agent-cc exports, so its L1 installs are no-ops on this image.
 - The MCP config a trial writes should be `{"command":"npx","args":["--offline","-y","@jaximus/tandem-mcp@3.2.0"]}`
   (or `"command":"tandem-mcp"`), with `TANDEM_AUTOSTART=0` in its env.
