@@ -1,0 +1,13 @@
+{
+  "role": "echo",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "TDM-55 test fixture role: echoes a word back as structured output.",
+  "budget": {
+    "cap_micro_usd": 1000000,
+    "max_task_micro_usd": 50000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}
