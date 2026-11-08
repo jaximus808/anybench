@@ -1,9 +1,12 @@
 import type { NextConfig } from "next";
 import { upstreamApiUrl, WEB_API_BASE } from "./lib/api-upstream";
+import { pageExtensionsFor } from "./lib/page-extensions";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // `*.dev.tsx` routes (the /dev/live-sim simulator) exist only under `next dev`.
+  pageExtensions: pageExtensionsFor(process.env.NODE_ENV),
   // @anybench/core ships ESM from dist/; transpiling keeps its `.js` specifiers bundler-friendly.
   transpilePackages: ["@anybench/core"],
   // Same-origin API proxy (TDM-100): the browser calls /api/*, so the session cookie (and the

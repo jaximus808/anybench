@@ -109,10 +109,13 @@ export function LiveRunView({
   live,
   status,
   problem = null,
+  clockMs,
 }: {
   live: LiveRun;
   status: LiveStatus;
   problem?: string | null;
+  /** The page's "now" when it isn't the wall clock (the dev simulator's scaled clock). */
+  clockMs?: number;
 }) {
   const client = useLiveApi();
   const [ackProblem, setAckProblem] = useState<string | null>(null);
@@ -136,7 +139,7 @@ export function LiveRunView({
     const id = window.setInterval(() => setWall(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const nowMs = status === "ended" ? ms(live.lastAt ?? live.createdAt) : wall;
+  const nowMs = status === "ended" ? ms(live.lastAt ?? live.createdAt) : (clockMs ?? wall);
 
   // Keyboard: "/" or ⌘K search, Esc closes the top layer.
   useEffect(() => {

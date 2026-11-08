@@ -47,6 +47,59 @@ describe("demo run simulator", () => {
   });
 });
 
+describe("demo run simulator, tandem profile (TDM-198)", () => {
+  const demo = createDemoRun({ profile: "tandem" });
+
+  it("emits only schema-valid events with rising seqs", () => {
+    let prev = 0;
+    for (const { event } of demo.timeline) {
+      const parsed = AnybenchEventSchema.safeParse(encodeAnybenchEvent(event));
+      expect(parsed.success, `${event.seq} ${event.type}: ${parsed.error?.message}`).toBe(true);
+      expect(event.seq).toBe(prev + 1);
+      prev = event.seq;
+    }
+  });
+
+  it("is shaped like the real curated run: 2 setups × 3 tasks × 6, 5 at a time, every phase speaks", () => {
+    const events = demo.timeline.map((e) => e.event);
+    const live = applyEvents(initLive(demo.snapshot), events);
+    expect(live.state).toBe("delivered");
+    expect(countTrials(live).total).toBe(36);
+    expect(live.contenders.map((c) => c.name)).toEqual(["Claude Code solo", "Tandem ×3"]);
+    const roles = new Set(
+      events.flatMap((e) => (e.type === "agent.message" ? [e.payload.agent_role] : [])),
+    );
+    for (const r of [
+      "understander",
+      "researcher",
+      "kit_designer",
+      "env_builder",
+      "proof",
+      "analyst",
+    ])
+      expect(roles).toContain(r);
+    const env = events.flatMap((e) =>
+      e.type === "agent.message" && e.payload.agent_role === "env_builder" ? [e.payload.text] : [],
+    );
+    expect(env).toContain("scoring image: Naïve is at capacity; retrying");
+    expect(env.at(-1)).toBe("trial image: snapshot saved; every trial forks from it");
+    // Never more than 5 trials live at once.
+    let liveNow = 0;
+    let peak = 0;
+    const active = new Set<string>();
+    for (const e of events) {
+      if (e.type !== "trial.phase" || !e.source_id) continue;
+      if (["queued", "done", "failed_subject", "failed_infra", "cancelled"].includes(e.payload.to))
+        active.delete(e.source_id);
+      else active.add(e.source_id);
+      liveNow = active.size;
+      peak = Math.max(peak, liveNow);
+    }
+    expect(peak).toBeLessThanOrEqual(5);
+    expect(peak).toBe(5);
+  });
+});
+
 describe("live model", () => {
   const demo = createDemoRun();
   const half = demo.timeline.filter((e) => e.atMs < demo.durationMs * 0.45).map((e) => e.event);

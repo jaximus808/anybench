@@ -1,8 +1,16 @@
-// TEST-ONLY. A deterministic, simulated run for the live-model and live-page tests. It emits
-// the same AnybenchEvent shapes the API streams (every event parses with AnybenchEventSchema;
-// live-model.test.ts checks it). Never imported by app code: the site shows no simulated runs.
+// TEST AND DEV ONLY. A deterministic, simulated run for the live-model and live-page tests, and
+// for the dev-only /dev/live-sim page (app/dev/live-sim/page.dev.tsx, which production builds
+// leave out). It emits the same AnybenchEvent shapes the API streams (every event parses with
+// AnybenchEventSchema; live-model.test.ts checks it). Never imported by production app code: the
+// site shows no simulated runs.
 //
 // Time is compressed: a ~2 h run plays in about two minutes at speed 1.
+//
+// Two profiles:
+// - "demo" (default): 4 setups × 3 tasks × 5 repeats with Naïve agent sessions. The tests use it.
+// - "tandem": shaped like the founder's real curated-kit run. Claude Code solo vs Tandem ×3 on 3
+//   tasks × 6 repeats, 5 at a time, with the exact system lines the server emits (curated.ts,
+//   env-build.ts envBuildProgressText, proof-score.ts) under the same source ids.
 import {
   AgentSessionIdSchema,
   ContenderIdSchema,
@@ -42,6 +50,8 @@ export interface DemoOptions {
   workloads?: string[];
   repeats?: number;
   concurrency?: number;
+  /** "tandem" = shaped like the real curated Tandem run (see the header). */
+  profile?: "demo" | "tandem";
 }
 
 export interface DemoRun {
@@ -135,12 +145,44 @@ const MESSAGES: Record<string, string[]> = {
   analyst: ["Draft answer written. Numbers come from stats.json, not from me."],
 };
 
+/** System lines in the order and wording the server emits them for the curated Tandem kit. */
+export const TANDEM_LINES = {
+  understander: "using the curated Tandem kit",
+  researcher: "using the curated Tandem kit: its contenders are the baselines",
+  kitDesigner: [
+    "using the curated Tandem kit (tandem)",
+    'head-to-head profile: 36 trials (Claude Code solo vs Tandem ×3, 3 tasks × 6 repeats, no warm-up; per-task verdicts, Holm across up to 6 task × requirement tests); say "smoke" for a 3-trial check or "full benchmark" for the whole kit',
+  ],
+  /** [offset ms into env_build at speed 1, line]. Trial and scoring images build in parallel. */
+  envBuild: [
+    [1_500, "trial image: booted a Naïve computer"],
+    [2_400, "scoring image: Naïve is at capacity; retrying"],
+    [7_000, "trial image: installed the base toolchain"],
+    [9_500, "scoring image: booted a Naïve computer"],
+    [12_500, "trial image: installed the Anybench runner"],
+    [15_000, "trial image: staged the kit files"],
+    [18_000, "scoring image: installed the base toolchain"],
+    [21_000, "trial image: installed claude-code"],
+    [25_000, "trial image: installed tandem"],
+    [28_000, "scoring image: snapshot saved; every trial forks from it"],
+    [33_000, "trial image: snapshot saved; every trial forks from it"],
+  ] as [number, string][],
+  proof: [
+    "proof: curated (verified offline at bebb77e): oracle passes on 3/3 tasks; do-less fails on 3/3 tasks",
+  ],
+  analyst: [
+    "summary (no LLM): Result on wall (the primary requirement): Tandem ×3 vs Claude Code solo, per task. No setup is ranked by a composite score.",
+  ],
+} as const;
+
 export function createDemoRun(opts: DemoOptions = {}): DemoRun {
+  const tandem = opts.profile === "tandem";
   const rand = rng(opts.seed ?? 7);
-  const contenderNames = opts.contenders ?? DEFAULT_CONTENDERS;
+  const contenderNames =
+    opts.contenders ?? (tandem ? ["Claude Code solo", "Tandem ×3"] : DEFAULT_CONTENDERS);
   const workloads = opts.workloads ?? DEFAULT_WORKLOADS;
-  const repeats = opts.repeats ?? 5;
-  const concurrency = opts.concurrency ?? 14;
+  const repeats = opts.repeats ?? (tandem ? 6 : 5);
+  const concurrency = opts.concurrency ?? (tandem ? 5 : 14);
 
   const runId = RunIdSchema.parse(uuid(1, 1));
   const startedAt = Date.UTC(2026, 10, 7, 15, 0, 0);
@@ -173,7 +215,7 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
 
   const roles = Object.keys(TOOLS);
   const agentIds = new Map(roles.map((r, i) => [r, AgentSessionIdSchema.parse(uuid(4, i + 1))]));
-  const agents: AgentSession[] = roles.map((role) => ({
+  const agents: AgentSession[] = (tandem ? [] : roles).map((role) => ({
     id: agentIds.get(role)!,
     run_id: runId,
     role,
@@ -264,43 +306,83 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
     }
   };
 
-  t = 600;
-  runTo("understand");
-  agentWork("understander", t, 5000);
-  t += 5600;
-  runTo("research");
-  agentWork("researcher", t, 5200);
-  agentWork("intake", t + 1500, 4800);
-  t += 6600;
-  runTo("kit_draft");
-  agentWork("kit designer", t, 4600);
-  t += 5000;
-  runTo("env_build");
-  const recipes = ["node22", "claude-code@2.1.4", "tandem", "git"];
-  recipes.forEach((recipe, i) => {
-    const at = t + i * 700;
-    push(at, {
-      type: "computer.recipe",
-      source: "computer",
-      source_id: uuid(5, 900 + i),
+  /** A system line the way the server's curated stages emit it (source_id `<prefix>:<role>`). */
+  const say = (atMs: number, role: string, text: string, prefix = "curated") =>
+    push(atMs, {
+      type: "agent.message",
+      source: "agent_session",
+      source_id: `${prefix}:${role}`,
       severity: "info",
       payload: {
-        recipe,
-        version: "1",
-        phase: "installed",
-        step: "install",
-        arch: "x64",
-        duration_ms: 18_000 + i * 4000,
+        agent_role: role,
+        naive_seq: 0,
+        message_role: "system",
+        text,
+        truncated: false,
       },
     });
-  });
-  t += 3200;
-  runTo("proof");
-  agentWork("verifier", t, 2600);
-  t += 3000;
-  runTo("awaiting_go");
-  t += 800;
-  runTo("running", "estimate fits the run budget");
+
+  if (tandem) {
+    t = 600;
+    runTo("understand");
+    say(t + 1_100, "understander", TANDEM_LINES.understander);
+    t += 2_600;
+    runTo("research");
+    say(t + 900, "researcher", TANDEM_LINES.researcher);
+    t += 2_200;
+    runTo("kit_draft");
+    say(t + 700, "kit_designer", TANDEM_LINES.kitDesigner[0]);
+    say(t + 1_900, "kit_designer", TANDEM_LINES.kitDesigner[1]);
+    t += 3_200;
+    runTo("env_build");
+    for (const [off, line] of TANDEM_LINES.envBuild) say(t + off, "env_builder", line, "env_build");
+    t += 35_000;
+    runTo("proof");
+    say(t + 1_200, "proof", TANDEM_LINES.proof[0]);
+    t += 2_600;
+    runTo("awaiting_go");
+    // A real run waits here for the user's Go; the dev page holds the clock until Go is pressed.
+    t += 4_000;
+    runTo("running", "estimate fits the run budget");
+  } else {
+    t = 600;
+    runTo("understand");
+    agentWork("understander", t, 5000);
+    t += 5600;
+    runTo("research");
+    agentWork("researcher", t, 5200);
+    agentWork("intake", t + 1500, 4800);
+    t += 6600;
+    runTo("kit_draft");
+    agentWork("kit designer", t, 4600);
+    t += 5000;
+    runTo("env_build");
+    const recipes = ["node22", "claude-code@2.1.4", "tandem", "git"];
+    recipes.forEach((recipe, i) => {
+      const at = t + i * 700;
+      push(at, {
+        type: "computer.recipe",
+        source: "computer",
+        source_id: uuid(5, 900 + i),
+        severity: "info",
+        payload: {
+          recipe,
+          version: "1",
+          phase: "installed",
+          step: "install",
+          arch: "x64",
+          duration_ms: 18_000 + i * 4000,
+        },
+      });
+    });
+    t += 3200;
+    runTo("proof");
+    agentWork("verifier", t, 2600);
+    t += 3000;
+    runTo("awaiting_go");
+    t += 800;
+    runTo("running", "estimate fits the run budget");
+  }
   const runningAt = t;
 
   // ---- trials -----------------------------------------------------------------------------
@@ -337,9 +419,14 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
     const ev = (atMs: number, e: Record<string, unknown>) =>
       push(atMs, { source: "trial", source_id: tid, severity: "info", ...e });
 
-    const work =
-      (5200 + rand() * 6500) * prof.speed * (trial.workload_id === "bug-hunt" ? 1.25 : 1);
-    const lens = [500, 900, 500, work, 500, 600, 700, 0];
+    const work = tandem
+      ? (26_000 + rand() * 18_000) *
+        (ci === 0 ? 1 : 0.72) *
+        (trial.workload_id === "bug-hunt" ? 1.2 : 1)
+      : (5200 + rand() * 6500) * prof.speed * (trial.workload_id === "bug-hunt" ? 1.25 : 1);
+    const lens = tandem
+      ? [1_800, 3_200, 1_400, work, 900, 1_800, 900, 0]
+      : [500, 900, 500, work, 500, 600, 700, 0];
     let at = start;
     let from: TrialState = "queued";
     const infraFail = attempt === 1 && rand() < 0.04;
@@ -449,7 +536,7 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
           break;
         }
       }
-      if (to === "reviewing") {
+      if (to === "reviewing" && !tandem) {
         const rid = agentIds.get("reviewer")!;
         reviewerAt = Math.max(reviewerAt, at);
         drafts.push({
@@ -499,35 +586,42 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
   const trialsEnd = Math.max(...drafts.map((d) => d.atMs));
 
   // Spend alert part-way through, then acked.
-  push(runningAt + (trialsEnd - runningAt) * 0.7, {
-    type: "alert.fired",
-    source: "alert",
-    source_id: "run-spend-70",
-    severity: "warn",
-    payload: {
-      rule_key: "run.spend_70",
-      fingerprint: `run.spend_70:${runId}`,
-      alert_severity: "warn",
-      count: 1,
-      message: "Run spend passed 70% of its cap",
-    },
-  });
-  push(runningAt + (trialsEnd - runningAt) * 0.72, {
-    type: "alert.acked",
-    source: "alert",
-    source_id: "run-spend-70",
-    severity: "info",
-    actor: { kind: "user", id: uuid(6, 1) },
-    payload: { rule_key: "run.spend_70", acked_by: uuid(6, 1) },
-  });
+  if (!tandem)
+    push(runningAt + (trialsEnd - runningAt) * 0.7, {
+      type: "alert.fired",
+      source: "alert",
+      source_id: "run-spend-70",
+      severity: "warn",
+      payload: {
+        rule_key: "run.spend_70",
+        fingerprint: `run.spend_70:${runId}`,
+        alert_severity: "warn",
+        count: 1,
+        message: "Run spend passed 70% of its cap",
+      },
+    });
+  if (!tandem)
+    push(runningAt + (trialsEnd - runningAt) * 0.72, {
+      type: "alert.acked",
+      source: "alert",
+      source_id: "run-spend-70",
+      severity: "info",
+      actor: { kind: "user", id: uuid(6, 1) },
+      payload: { rule_key: "run.spend_70", acked_by: uuid(6, 1) },
+    });
 
   t = trialsEnd + 800;
   runTo("scoring");
   t += 2200;
   runTo("analyzing");
-  agentWork("investigator", t, 4200);
-  agentWork("analyst", t + 2400, 3000);
-  t += 6200;
+  if (tandem) {
+    say(t + 1_600, "analyst", TANDEM_LINES.analyst[0]);
+    t += 3_600;
+  } else {
+    agentWork("investigator", t, 4200);
+    agentWork("analyst", t + 2400, 3000);
+    t += 6200;
+  }
   runTo("delivered");
 
   drafts.sort((a, b) => a.atMs - b.atMs);
@@ -544,11 +638,13 @@ export function createDemoRun(opts: DemoOptions = {}): DemoRun {
     snapshot: {
       run: {
         id: runId,
-        question: "Does Tandem beat plain Claude Code, and do subagents close the gap?",
+        question: tandem
+          ? "Is Tandem faster than Claude Code solo at the same quality?"
+          : "Does Tandem beat plain Claude Code, and do subagents close the gap?",
         state: "intake",
-        budget_micro_usd: 25_000_000n,
+        budget_micro_usd: tandem ? 40_000_000n : 25_000_000n,
         spent_micro_usd: 0n,
-        estimate_micro_usd: 17_000_000n,
+        estimate_micro_usd: tandem ? 11_000_000n : 17_000_000n,
         created_at: new Date(startedAt).toISOString(),
       },
       contenders,
