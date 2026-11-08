@@ -28,6 +28,7 @@ pnpm --filter web test       # vitest + jsdom + Testing Library
   Style new components with CSS modules that use these variables.
 - `components/site/Header.tsx` (client: sticky translucent bar, mobile menu with Escape-to-close), `Footer.tsx`, `Mark.tsx`, and `nav.ts` (`NAV_LINKS`, `SIGN_IN_LINK`, `LEGAL_LINKS`). Signed-out state only so far.
 - `app/(marketing)/page.tsx`: home page placeholder; [11.2] replaces it.
+- `app/(legal)/{terms,privacy,refunds,aup}` and `app/docs/**` + `components/docs/*` ([11.9]): static legal drafts (each page opens with "Draft — pending founder/legal review"; unknown facts are `<Placeholder>`s) and the docs with a left nav (`DOCS_NAV` in `components/docs/links.ts`). The kit example on /docs/kits is validated by `safeParseKitSpec` in `test/tdm106-kit-example.test.ts`, and the driver table reads `DRIVER_DEFAULT_PROFILE` / `DRIVER_DEFAULT_COLLECTORS` from core.
 - `lib/api.ts`: `api()` / `createWebApiClient()` wrap `createApiClient` from `@anybench/core` with the cookie session (`credentials: "include"`). Base URL from `NEXT_PUBLIC_ANYBENCH_API_URL` (default `http://localhost:8787`).
 
 ## Env
