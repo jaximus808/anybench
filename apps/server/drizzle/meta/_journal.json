@@ -50,6 +50,13 @@
       "when": 1794112389575,
       "tag": "0006_leads_unique_email_repo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794112759968,
+      "tag": "0007_trial_proxy_key",
+      "breakpoints": true
     }
   ]
 }

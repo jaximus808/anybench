@@ -54,6 +54,11 @@ export const trials = pgTable(
     logOffset: bigint("log_offset", { mode: "number" }).notNull().default(0),
     costMicroUsd: microUsdZero("cost_micro_usd"),
     logsUrl: text("logs_url"),
+    /** The attempt's Naïve proxy:write key (TDM-16): its id, never the secret. */
+    proxyKeyId: text("proxy_key_id"),
+    proxyKeyCreatedAt: tstz("proxy_key_created_at"),
+    /** Which attempt the key belongs to (a re-attach reuses it, a retry mints a new one). */
+    proxyKeyAttempt: integer("proxy_key_attempt"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

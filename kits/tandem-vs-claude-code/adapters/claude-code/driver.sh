@@ -63,4 +63,10 @@ if [[ -n "${CC_DISALLOWED_TOOLS:-}" ]]; then
   args+=(--disallowedTools "${disallowed[@]}")
 fi
 cd "$ws"
-claude "${args[@]}" > "$out/stream.jsonl"
+rc=0
+claude "${args[@]}" > "$out/stream.jsonl" || rc=$?
+# Hand the workspace to the scoring computer (the hidden-tests gate reads $EVAL_OUT/workspace/),
+# as the harness driver does: without .git and node_modules, whatever the agent's exit status.
+rm -rf "$out/workspace" && mkdir -p "$out/workspace"
+(cd "$ws" && tar --exclude=.git --exclude=node_modules -cf - .) | tar -C "$out/workspace" -xf -
+exit "$rc"

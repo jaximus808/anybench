@@ -8,23 +8,16 @@
 //   kitTrialSource      trial.execute's TrialSource: the run's kit → TrialJob (trialJobFromKit).
 //   billingEstimate     PipelinePort.estimate: packages/billing estimateRunCost ([10.12]).
 //   ledgerCharges       the run-terminal billing hook: packages/billing ledger.recordRunCharges.
-import { trialJobFromKit, type TrialSource } from "@anybench/bench";
 import { createLedger, estimateRunCost } from "@anybench/billing";
-import { safeParseKitSpec } from "@anybench/core";
 import { IngestError, ingestGitHubRepo } from "@anybench/kit";
 import type { NaiveClient } from "@anybench/naive";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
 import type { Database } from "../db/client.js";
 import { agentSessions } from "../db/schema/agent_sessions.js";
-import { contenders } from "../db/schema/contenders.js";
-import { kits } from "../db/schema/kits.js";
-import { runs } from "../db/schema/runs.js";
-import { trials } from "../db/schema/trials.js";
 import type { Config } from "../config.js";
 import type { JobsPort, RunChargesHook } from "./advance.js";
 import {
-  RunStageOutputsShape,
   stageFail,
   stageHold,
   stageOk,
@@ -159,44 +152,8 @@ export function graphileJobsPort(db: Database, addJob: JobHelpers["addJob"]): Jo
 
 // ---------- trial source ----------
 
-/**
- * trial.execute's TrialSource: the trial's run kit → the runner job for its contender × workload.
- * TODO([3.8] env build): the computer spec forks the built env (stage_outputs.env.env_id is used
- * as the snapshot when set), and workload input files come with it.
- * TODO([7.x] user secrets / vault): model keys for the agent under test go in `secrets`.
- */
-export function kitTrialSource(db: Database): TrialSource {
-  return {
-    async prepare(trial) {
-      const [row] = await db
-        .select({
-          spec: kits.spec,
-          stageOutputs: runs.stageOutputs,
-          contender: contenders.source,
-          foundBy: contenders.foundBy,
-          workloadId: trials.workloadId,
-        })
-        .from(trials)
-        .innerJoin(runs, eq(runs.id, trials.runId))
-        .innerJoin(kits, eq(kits.id, runs.kitId))
-        .innerJoin(contenders, eq(contenders.id, trials.contenderId))
-        .where(and(eq(trials.id, trial.id), isNotNull(runs.kitId)))
-        .limit(1);
-      if (!row) throw new Error(`trial ${trial.id}: no run kit to prepare it from`);
-      if (row.foundBy !== "kit")
-        throw new Error(`trial ${trial.id}: contender is not a kit contender`);
-      const spec = safeParseKitSpec(row.spec);
-      if (!spec.success) throw new Error(`trial ${trial.id}: the run's kit no longer validates`);
-      const outputs = RunStageOutputsShape.safeParse(row.stageOutputs);
-      const snapshotId = outputs.success ? outputs.data.env?.env_id : null;
-      return {
-        job: trialJobFromKit(spec.data, row.contender, row.workloadId),
-        computer: snapshotId ? { snapshotId } : {},
-        secrets: {},
-      };
-    },
-  };
-}
+// The kit-backed TrialSource lives in trial-source.ts (env image, workspace prep, proxy key).
+export { kitTrialSource } from "./trial-source.js";
 
 // ---------- billing ([10.12], TDM-171) ----------
 

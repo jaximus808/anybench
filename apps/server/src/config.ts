@@ -120,6 +120,23 @@ export const EnvSchema = z.object({
    */
   NAIVE_API_KEY: optionalString,
   NAIVE_BASE_URL: optionalUrl,
+  /**
+   * Where the bun-compiled runner binaries are (runner-linux-x64/arm64), for the env build to put
+   * in every image. Default: packages/runner/dist/bin (`pnpm --filter @anybench/runner build:bin`).
+   */
+  ANYBENCH_RUNNER_BIN_DIR: optionalString,
+  /**
+   * Ceiling of each trial's Naïve proxy spend cap, integer micro-USD (default $3, the smoke
+   * profile). A contender's own cap (token cap at list price) applies when it is lower.
+   */
+  TRIAL_PROXY_CAP_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("3000000")
+      .transform((v) => BigInt(v)),
+  ),
   /** The curated kits directory (TDM-54 CuratedKitStage); default: the repo's kits/. */
   ANYBENCH_KITS_DIR: optionalString,
   /** Optional GitHub token for ingest (TDM-54 → packages/kit ingestGitHubRepo): private repos, rate limits. */

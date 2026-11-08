@@ -23,6 +23,12 @@ import { createNaiveClient } from "@anybench/naive";
 import type { JobHelpers } from "graphile-worker";
 import { z } from "zod";
 import { defaultBillingGate, type BillingGate } from "../lib/billing-gate.js";
+import { artifactStoreFromEnv, computeProviderFromConfig } from "../lib/compute.js";
+import {
+  defaultRunnerBinDir,
+  providerEnvBuild,
+  runnerInstaller,
+} from "../orchestrator/env-build.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import {
   ACTIVE_RUN_STATES,
@@ -82,6 +88,7 @@ export interface RunAdvanceJobOptions {
 
 /** Production pipeline: real GitHub ingest and estimate, the rest held until its ticket lands. */
 export function defaultPipeline(ctx: JobContext): PipelinePort {
+  const provider = computeProviderFromConfig(ctx.config);
   return {
     ...unbuiltPipeline,
     ingest: githubIngest(ctx.config.GITHUB_TOKEN ? { githubToken: ctx.config.GITHUB_TOKEN } : {}),
@@ -91,6 +98,21 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
       ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {},
     ),
     score: kitScore(),
+    // [3.8] env build on the trials' provider (Naïve), when there is one.
+    ...(provider
+      ? {
+          buildEnv: providerEnvBuild({
+            db: ctx.db,
+            provider,
+            runner: () =>
+              runnerInstaller({
+                binDir: defaultRunnerBinDir(ctx.config.ANYBENCH_RUNNER_BIN_DIR),
+                artifacts: artifactStoreFromEnv(),
+              }),
+            log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),
+          }),
+        }
+      : {}),
   };
 }
 

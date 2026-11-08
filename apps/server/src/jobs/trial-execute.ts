@@ -58,6 +58,12 @@ import type { Config } from "../config.js";
 import type { Database, DbTx } from "../db/client.js";
 import { events } from "../db/schema/events.js";
 import { trials } from "../db/schema/trials.js";
+import {
+  artifactStoreFromEnv,
+  computeProviderFromConfig,
+  fallbackBundleUpload,
+  proxyDepsFromConfig,
+} from "../lib/compute.js";
 import { drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
@@ -364,6 +370,23 @@ export interface TrialExecuteJobOptions {
   fallbackUpload?: (ctx: JobContext) => ExecutorDeps["fallbackUpload"];
   timing?: Partial<ExecutorTiming>;
   runnerBin?: ExecutorDeps["runnerBin"];
+  /** Per-trial Naïve proxy keys (TDM-16/TDM-39): liveProxyKeys + liveLedgerSpend in production. */
+  naiveProxy?: (ctx: JobContext) => ExecutorDeps["naiveProxy"] | null;
+}
+
+/** Record the attempt's proxy key id and creation time on the trial (never the secret). */
+export function recordProxyKey(db: Database): NonNullable<ExecutorDeps["onProxyKeyMinted"]> {
+  return async (trial, key) => {
+    await db
+      .update(trials)
+      .set({
+        proxyKeyId: key.keyId,
+        proxyKeyCreatedAt: new Date(key.createdAt),
+        proxyKeyAttempt: trial.attempt,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(trials.id, trial.id));
+  };
 }
 
 /** Until [3.8] / [5.9] wire a real one: every prepare fails (failed_infra, retried, then final). */
@@ -428,6 +451,7 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
       if (!ingest) log.warn("PUBLIC_API_URL or RUNNER_TOKEN_SECRET unset: runner is file-only");
       const actor: EventActor = { kind: "worker", id: ctx.workerId };
       const fallbackUpload = options.fallbackUpload?.(ctx);
+      const naiveProxy = options.naiveProxy?.(ctx) ?? null;
       const deps: ExecutorDeps = {
         store,
         registry,
@@ -439,6 +463,7 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
         ...(options.timing ? { timing: options.timing } : {}),
         ...(options.runnerBin ? { runnerBin: options.runnerBin } : {}),
         ...(fallbackUpload ? { fallbackUpload } : {}),
+        ...(naiveProxy ? { naiveProxy, onProxyKeyMinted: recordProxyKey(ctx.db) } : {}),
       };
       const outcome = await executeTrial(deps, payload.trial_id, {
         retryNow: payload.retry,
@@ -462,8 +487,25 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
   });
 }
 
-// The run orchestrator's kit-backed source (TDM-54): the run's kit → the trial's runner job.
-export const trialExecuteJob = createTrialExecuteJob({ source: (ctx) => kitTrialSource(ctx.db) });
+/**
+ * Production wiring: NaiveProvider when NAIVE_API_KEY is set (else the job refuses to run; tests
+ * pass a FakeProvider), the kit-backed source with per-trial Naïve proxy keys, and the fs/read
+ * bundle fallback into the artifact store when S3_BUCKET is set.
+ */
+export function defaultTrialExecuteOptions(): TrialExecuteJobOptions {
+  return {
+    provider: (ctx) => computeProviderFromConfig(ctx.config),
+    source: (ctx) =>
+      kitTrialSource(ctx.db, { proxyCapMicroUsd: ctx.config.TRIAL_PROXY_CAP_MICRO_USD }),
+    naiveProxy: (ctx) => proxyDepsFromConfig(ctx.config),
+    fallbackUpload: () => {
+      const store = artifactStoreFromEnv();
+      return store ? fallbackBundleUpload(store) : undefined;
+    },
+  };
+}
+
+export const trialExecuteJob = createTrialExecuteJob(defaultTrialExecuteOptions());
 
 /** trial.reattach: hand every orphaned mid-execution trial to a new trial.execute. */
 export function createTrialReattachJob() {

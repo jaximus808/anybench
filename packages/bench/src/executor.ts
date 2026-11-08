@@ -360,6 +360,11 @@ export interface ExecutorDeps {
    * (`liveProxyKeys(admin)` + `liveLedgerSpend(admin)`, or the fakes in tests).
    */
   naiveProxy?: { keys: NaiveProxyKeysApi; spend: ProxySpendSource; baseUrl?: string };
+  /**
+   * Called once a trial's proxy key is minted, with its id and creation time (never the secret),
+   * so the worker can record them on the trial. A failure is logged, never fatal.
+   */
+  onProxyKeyMinted?: (trial: ExecTrial, key: { keyId: string; createdAt: string }) => Promise<void>;
   actor?: EventActor;
   logger?: ExecLogger;
   now?: () => number;
@@ -1425,6 +1430,11 @@ class TrialExecution {
       { trialId: this.trialId, keyId: credential.keyId, createdAt: credential.createdAt },
       "naive proxy key minted",
     );
+    await this.deps
+      .onProxyKeyMinted?.(this.t, { keyId: credential.keyId, createdAt: credential.createdAt })
+      .catch((err: unknown) => {
+        this.deps.logger?.warn({ err, trialId: this.trialId }, "recording the proxy key failed");
+      });
     this.installProxyKey({
       revoke: () => revokeTrialProxyCredential(np.keys, credential),
       enforce: async () =>

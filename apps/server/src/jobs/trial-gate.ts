@@ -64,6 +64,7 @@ import { drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
 import { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey } from "./trial-execute.js";
+import { artifactStoreFromEnv, computeProviderFromConfig } from "../lib/compute.js";
 import { defineJob, type JobContext } from "./types.js";
 
 export { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey };
@@ -138,6 +139,16 @@ export const localKitFiles: KitFilesPort = {
     return collectScoringFiles(fileURLToPath(kit.filesUrl), gates);
   },
 };
+
+/**
+ * The run's scoring image (env_build: the base recipes only, never a subject file), from
+ * stage_outputs.env.detail.scoring_snapshot_id. Null: a fresh base computer.
+ */
+export function scoringSnapshotOf(stageOutputs: unknown): string | null {
+  const id = (stageOutputs as { env?: { detail?: { scoring_snapshot_id?: unknown } } } | null)?.env
+    ?.detail?.scoring_snapshot_id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
 
 // ---------------------------------------------------------------------------------------------
 // The work
@@ -333,7 +344,11 @@ export async function gateTrial(
         gates,
         frozen,
         scoring,
-        ...(deps.profile ? { profile: deps.profile } : {}),
+        ...(deps.profile
+          ? { profile: deps.profile }
+          : scoringSnapshotOf(run?.stageOutputs)
+            ? { profile: { snapshotId: scoringSnapshotOf(run?.stageOutputs)! } }
+            : {}),
         subjectSnapshotIds: subjectSnaps.flatMap((r) => (r.snapshotId ? [r.snapshotId] : [])),
       },
       {
@@ -436,7 +451,7 @@ export async function gateTrial(
 // Job
 
 export interface TrialGateJobOptions {
-  /** The scoring provider. TODO([3.1]/[5.9]): a provider factory from config. */
+  /** The scoring provider (production: the trials' provider, lib/compute.ts). */
   provider?: (ctx: JobContext) => ComputeProvider | null;
   /** Presigned downloads (ArtifactStore). */
   artifacts?: (ctx: JobContext) => ArtifactDownloads | null;
@@ -490,4 +505,8 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
   });
 }
 
-export const trialGateJob = createTrialGateJob();
+/** Production wiring: the scoring computer on the same provider as the trials, bundles from S3. */
+export const trialGateJob = createTrialGateJob({
+  provider: (ctx) => computeProviderFromConfig(ctx.config),
+  artifacts: () => artifactStoreFromEnv(),
+});

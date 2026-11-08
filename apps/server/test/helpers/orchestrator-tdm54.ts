@@ -3,6 +3,7 @@
 // a way to kill one mid-job (abort it, keep its lease, make its heartbeat stale).
 import { readFileSync } from "node:fs";
 import { AnybenchEventSchema, type KitSpec, type ProjectDigest, type RunId } from "@anybench/core";
+import { FakeProxyKeys, FakeProxySpend } from "@anybench/naive";
 import type { FakeProvider } from "@anybench/providers";
 import { and, eq, sql } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
@@ -159,9 +160,18 @@ export function workerTdm54(
     timing: { leaseRefreshMs: 50, trialPollMs: 10, busyRetryMs: 10 },
     ...orchestrator,
   });
+  // Proxy-token kits (the Tandem kit, AB_TOKEN_SOURCE=naive_proxy) get a fake Naïve proxy key;
+  // the fake shell has no chmod / umask / stat, so answer TDM-16's env-file checks.
+  fake.onExec(/proxy\.env|chmod 700/, (c) => {
+    if (!c.command.includes("stat -c")) return { exitCode: 0 };
+    const text = c.readFile(`${c.home}/.anybench/proxy.env`) ?? "";
+    return { exitCode: 0, stdout: `600 ${new TextEncoder().encode(text).byteLength}\n` };
+  });
+  const proxy = { keys: new FakeProxyKeys(), spend: new FakeProxySpend() };
   const trialExecute = createTrialExecuteJob({
     provider: () => fake,
     source: (c) => kitTrialSource(c.db),
+    naiveProxy: () => proxy,
     timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 2_000, startTimeoutMs: 2_000 },
   });
   for (const j of [runAdvance, trialExecute, testGateJobTdm54()]) handlers.set(j.name, j as JobDef);
