@@ -56,19 +56,44 @@ LOCAL_DATABASE_URL=postgres://anybench:anybench@localhost:55432/anybench NAIVE_L
   run test/agent-session-naive-live-tdm55.test.ts --reporter=verbose
 ```
 
-First run (21:18 PT) and second run with capacity retry (21:19–21:22 PT): every call answered
-`429 rate_limited "the service is at capacity"` after ~15 s, including `agents.list` and
-`credits.show`:
+The echo fixture role (`packages/agents/test/fixtures-tdm55/roles/echo`, model
+`deepseek/deepseek-v4-flash-0731`, harness `pi`) as agent `anybench-tdm55-echo`, budget 50,000 µ$.
+
+**Naïve capacity flapped the whole time.** 21:18–21:22 PT every call (even `agents.list` and
+`credits.show`) answered `429 rate_limited "the service is at capacity"` after ~15 s:
 
 ```
-NaiveError: the service is at capacity
-Serialized Error: { code: 'rate_limited', status: 429, requestId: 'req_537nas5952ayq2z4nsn07q005r', ... }
 credits.show err 15079 ms 429 rate_limited the service is at capacity
 agents.findByName err 15035 ms 429 rate_limited the service is at capacity
 ```
 
-So Naïve was refusing the whole organization at the time, not only computer creates (TDM-16 saw
-the 429 on computer create only). Spend: 0 µ$ (nothing was created).
+At 21:24 it came back (`credits.show ok 1300 ms`, balance 249,450,290 µ$) and one run went through:
+
+```
+sync: created anybench-tdm55-echo v1
+first: {"ok":true,"value":{"output":{"echo":"anybench","length":8},"costMicroUsd":"664",
+  "sessionId":"80a28928-bdf6-8b95-aad9-b012f20d17cf","naiveSessionId":"ses_jxqqsp2vthd3bv5e045rmtcrer",
+  "replayed":false}} 8738 ms
+row: status done, stop end_turn, last_seq 26, cost 664 µ$; 26 agent_events (message.accepted,
+  session.running, message.completed, message.delta, span.transcript_load.start/end,
+  span.harness_load.start/end, span.tools_resolve.start/end, span.harness_build.start/end,
+  span.model_gate.start/end, span.model_request.start/end, tool.started, tool.completed,
+  session.usage, session.idle); 1 agent.message; cost_entries 664
+```
+
+(The second `syncAgents` in the same test answered `unchanged`.) The replay with the same key
+then hit a 429 on `sessions.get` (the resume read): a transient error, so runAgentStage threw, as
+designed. A second test run created `ses_v5z3nprjkhx68nk26zyj5phphv`; its stream reads kept
+answering 429 through 6 stage retries (each one resumed the same session, no second create), and
+Naïve itself ended that session `idle / error` after consuming 321 µ$. A third run never got past
+sync (429). Replay-without-paying-twice is therefore proven on FakeNaive only
+(`agent-session-tdm55.test.ts`).
+
+Observations: a real session logs ~26 events for one short answer, most of them `span.*`
+timings; `message.accepted` is on the stream (not on `sessions.events` by default). Only one
+`agent.message` reached the run (the final answer; the task message is `role: "user"`).
+
+**Live spend: 985 µ$ total** (664 + 321), from the 249,450,290 µ$ balance.
 
 Gotcha: `.env` sets `LOCAL_DATABASE_URL` to a database the local Docker Postgres does not accept,
 so live DB tests skip with "password authentication failed" unless it is overridden on the

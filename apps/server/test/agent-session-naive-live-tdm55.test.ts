@@ -107,9 +107,8 @@ describe.skipIf(!available)("runAgentStage on live Naïve (TDM-55)", () => {
     expect(row).toMatchObject({ status: "done", naiveSessionId: r.value.naiveSessionId });
     expect(evs.length).toBe(row!.lastSeq);
 
-    const replay = await runAgentStage(
-      { db: fresh.db, client },
-      { ctx: { ...ctx, emit: async () => {} }, ...args },
+    const replay = await retryOnNaiveCapacity("replay", () =>
+      runAgentStage({ db: fresh.db, client }, { ctx: { ...ctx, emit: async () => {} }, ...args }),
     );
     expect(replay).toMatchObject({
       ok: true,
