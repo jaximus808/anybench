@@ -4,6 +4,10 @@
 //
 // Money stays integer micro-USD (bigint). Spend comes from each event's cost_delta_micro_usd,
 // which is "the spend this event adds to the run" per the core event contract.
+//
+// Untrusted data (TDM-75, followup 37): event payloads come from runners and agents. Only plain
+// text is kept from them (React escapes it); no URL from an event (trial.log_chunk.url,
+// trial.gate.evidence_url, trial.network.canary_url) is ever stored or rendered.
 import type {
   AgentSession,
   Alert,
@@ -241,22 +245,196 @@ export function initLive(s: LiveSnapshot): LiveRun {
   };
 }
 
-/** Add trials that appeared after the snapshot (from a trials.list refetch). */
-export function mergeTrials(live: LiveRun, list: Trial[]): LiveRun {
-  const trials = { ...live.trials };
-  for (const t of list) if (!trials[t.id]) trials[t.id] = trialFromApi(t);
+/** The row for trials the stream named before trials.list could place them. */
+export const UNPLACED = "unplaced";
+
+/** Rows for every contender a trial names, even when runs.contenders didn't list it. */
+function withContenders(contenders: LiveContender[], trials: Iterable<LiveTrial>): LiveContender[] {
+  const out = contenders.slice();
+  for (const t of trials) {
+    if (out.some((c) => c.id === t.contenderId)) continue;
+    out.push({
+      id: t.contenderId,
+      name: t.contenderId === UNPLACED ? "not placed yet" : `setup ${t.contenderId.slice(0, 8)}`,
+    });
+  }
+  // Placeholder rows go last.
+  return out.sort((a, b) => Number(a.id === UNPLACED) - Number(b.id === UNPLACED));
+}
+
+function reindex(live: LiveRun, trials: Record<string, LiveTrial>): LiveRun {
   const all = Object.values(trials);
+  const contenders = withContenders(
+    live.contenders.filter((c) => c.id !== UNPLACED || all.some((t) => t.contenderId === UNPLACED)),
+    all,
+  );
   return {
     ...live,
     trials,
-    trialOrder: orderTrials(trials, live.contenders),
+    contenders,
+    trialOrder: orderTrials(trials, contenders),
     workloads: workloadsOf(all),
     repeats: all.reduce((m, t) => Math.max(m, t.repeat + 1), 0),
-    needsTrialRefresh: false,
+  };
+}
+
+/**
+ * Merge a trials.list refetch: new trials are added, and trials the stream created before they
+ * could be placed get their contender, workload and repeat. Live state from events is kept.
+ */
+export function mergeTrials(live: LiveRun, list: Trial[]): LiveRun {
+  const trials = { ...live.trials };
+  for (const t of list) {
+    const cur = trials[t.id];
+    trials[t.id] = cur
+      ? { ...cur, contenderId: t.contender_id, workload: t.workload_id, repeat: t.repeat }
+      : trialFromApi(t);
+  }
+  return { ...reindex(live, trials), needsTrialRefresh: false };
+}
+
+function placeholderTrial(live: LiveRun, id: string, state: TrialState, at: string): LiveTrial {
+  const n = Object.values(live.trials).filter((t) => t.contenderId === UNPLACED).length;
+  return {
+    id,
+    contenderId: UNPLACED,
+    workload: UNPLACED,
+    repeat: n,
+    attempt: 1,
+    state,
+    failureClass: null,
+    startedAt: null,
+    endedAt: null,
+    phaseAt: at,
+    heartbeatAt: null,
+    costMicroUsd: 0n,
+    gate: null,
+    logBytes: 0,
+    seqs: [],
+  };
+}
+
+/**
+ * Re-read agent sessions (runs.get or runs.agents): statuses, budgets and pending prompts come
+ * from the API, so finished sessions show as done. What the stream already said (last tool,
+ * activity, spend so far) is kept when the API row lags behind it.
+ */
+export function mergeAgents(live: LiveRun, sessions: AgentSession[]): LiveRun {
+  const agents = { ...live.agents };
+  const order = live.agentOrder.slice();
+  for (const s of sessions) {
+    const fresh = agentFromApi(s);
+    const cur = agents[s.id];
+    agents[s.id] = cur
+      ? {
+          ...cur,
+          role: fresh.role,
+          status: fresh.status,
+          budgetMicroUsd: fresh.budgetMicroUsd,
+          costMicroUsd:
+            fresh.costMicroUsd > cur.costMicroUsd ? fresh.costMicroUsd : cur.costMicroUsd,
+          lastTool: fresh.lastTool ?? cur.lastTool,
+          startedAt: fresh.startedAt ?? cur.startedAt,
+          endedAt: fresh.endedAt,
+          pending: fresh.pending,
+        }
+      : fresh;
+    if (!order.includes(s.id)) order.push(s.id);
+  }
+  return { ...live, agents, agentOrder: order };
+}
+
+/** Re-read open alerts: fills in alert ids and drops alerts the API says are resolved. */
+export function mergeAlerts(live: LiveRun, alerts: Alert[]): LiveRun {
+  const byRule = new Map(alerts.map((a) => [a.rule_key, a]));
+  const next = live.alerts
+    .filter((a) => {
+      const row = byRule.get(a.ruleKey);
+      return !row || row.status !== "resolved";
+    })
+    .map((a) => {
+      const row = byRule.get(a.ruleKey);
+      return row
+        ? {
+            ...a,
+            id: row.id as string,
+            status: row.status === "acked" ? ("acked" as const) : a.status,
+          }
+        : a;
+    });
+  for (const a of alerts)
+    if (a.status !== "resolved" && !next.some((x) => x.ruleKey === a.rule_key))
+      next.push({
+        id: a.id as string,
+        ruleKey: a.rule_key,
+        severity: a.severity,
+        message: a.message,
+        count: a.count,
+        status: a.status === "acked" ? "acked" : "open",
+        firstSeen: a.first_seen,
+      });
+  return { ...live, alerts: next };
+}
+
+/**
+ * History from before the snapshot (events.list, seq <= lastSeq). The snapshot already reflects
+ * these events, so they never move spend, trial states or alerts. They add feed lines, the run's
+ * stage history, and trials the snapshot couldn't list (trials.list unavailable), at their latest
+ * state.
+ */
+export function seedHistory(live: LiveRun, events: AnybenchEvent[]): LiveRun {
+  const hist = events
+    .filter((e) => e.seq <= live.lastSeq && !live.feed.some((f) => f.seq === e.seq))
+    .sort((a, b) => a.seq - b.seq);
+  if (hist.length === 0) return live;
+  let trials = live.trials;
+  let next: LiveRun = live;
+  const states: { state: RunState; at: string }[] = [];
+  const items: FeedItem[] = [];
+  for (const ev of hist) {
+    if (ev.type === "run.state_changed") states.push({ state: ev.payload.to, at: ev.at });
+    if (ev.type === "trial.phase" && ev.source_id) {
+      const cur = trials[ev.source_id];
+      if (!cur || cur.contenderId === UNPLACED) {
+        const t = cur ?? placeholderTrial(next, ev.source_id, ev.payload.to, ev.at);
+        trials = {
+          ...trials,
+          [t.id]: { ...t, state: ev.payload.to, attempt: ev.payload.attempt, phaseAt: ev.at },
+        };
+        next = { ...next, trials };
+      }
+    }
+    if (ev.type !== "trial.heartbeat") items.push(feedItem(next, ev));
+  }
+  const reindexed = trials === live.trials ? next : reindex(next, trials);
+  const merged = [...items, ...live.feed].sort((a, b) => a.seq - b.seq);
+  return {
+    ...reindexed,
+    feed: merged.length > FEED_CAP ? merged.slice(merged.length - FEED_CAP) : merged,
+    // The snapshot's own entry stays last: it is the state now.
+    stateHistory: states.length
+      ? [...states, live.stateHistory[live.stateHistory.length - 1]!]
+      : live.stateHistory,
   };
 }
 
 const short = (s: string, n = 140) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** Words for trial states (plan.md 17.2 rule 10): an infra failure is ours, never billed. */
+export const TRIAL_STATE_WORD: Record<TrialState, string> = {
+  queued: "queued",
+  forking: "forking",
+  installing: "installing",
+  warming: "warming",
+  running: "running",
+  collecting: "collecting",
+  gating: "gating",
+  reviewing: "reviewing",
+  done: "done",
+  failed_subject: "failed (the setup under test)",
+  failed_infra: "our failure, not billed",
+  cancelled: "cancelled",
+};
 
 /** A trial's human label: "tandem ×3 · auth-refactor #2". */
 export function trialLabel(live: LiveRun, t: LiveTrial): string {
@@ -272,7 +450,7 @@ export function describeEvent(live: LiveRun, ev: AnybenchEvent): string {
     case "run.state_changed":
       return `Run ${ev.payload.from ?? "created"} → ${ev.payload.to}${ev.payload.reason ? `: ${ev.payload.reason}` : ""}`;
     case "trial.phase":
-      return `${who ?? "trial"}: ${ev.payload.to.replace("_", " ")}${ev.payload.reason ? ` (${ev.payload.reason})` : ""}${ev.payload.attempt > 1 ? `, attempt ${ev.payload.attempt}` : ""}`;
+      return `${who ?? "trial"}: ${ev.payload.from === "failed_infra" && ev.payload.to === "queued" ? "retrying" : TRIAL_STATE_WORD[ev.payload.to]}${ev.payload.reason ? ` (${ev.payload.reason})` : ""}${ev.payload.attempt > 1 ? `, attempt ${ev.payload.attempt}` : ""}`;
     case "trial.heartbeat":
       return `${who ?? "trial"}: heartbeat in ${ev.payload.phase}`;
     case "trial.log_chunk":
@@ -380,8 +558,14 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
         : ev.type === "computer.created" || ev.type === "computer.destroyed"
           ? (ev.payload.trial_id ?? null)
           : null;
-  const trial = trialId ? next.trials[trialId] : undefined;
-  if (trialId && !trial && ev.source === "trial") next.needsTrialRefresh = true;
+  let trial = trialId ? next.trials[trialId] : undefined;
+  if (trialId && !trial && ev.type === "trial.phase") {
+    // Count it now; the trials.list refetch places it in its row.
+    trial = placeholderTrial(next, trialId, ev.payload.to, ev.at);
+    next = reindex(next, { ...next.trials, [trialId]: trial });
+  }
+  if (trialId && (!trial || trial.contenderId === UNPLACED) && ev.source === "trial")
+    next.needsTrialRefresh = true;
 
   if (trial) {
     const t: LiveTrial = {
@@ -437,7 +621,8 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
       next.alerts = [
         ...rest,
         {
-          id: prior?.id ?? null,
+          // source_id is the alert id (core event contract), so a stream-born alert can be acked.
+          id: ev.source_id ?? prior?.id ?? null,
           ruleKey: ev.payload.rule_key,
           severity: ev.payload.alert_severity,
           message: ev.payload.message,
@@ -461,28 +646,27 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
   }
 
   // Heartbeats are noise in the feed; they still update the trial above.
-  if (ev.type !== "trial.heartbeat") {
-    next.feed = pushCapped(
-      next.feed,
-      {
-        seq: ev.seq,
-        at: ev.at,
-        type: ev.type,
-        source: ev.source,
-        sourceId: ev.source_id,
-        severity: ev.severity,
-        text: describeEvent(next, ev),
-        costMicroUsd: ev.cost_delta_micro_usd,
-        phaseTo: ev.type === "trial.phase" ? ev.payload.to : null,
-        role:
-          ev.type === "agent.tool.started" || ev.type === "agent.message"
-            ? ev.payload.agent_role
-            : null,
-      },
-      FEED_CAP,
-    );
-  }
+  if (ev.type !== "trial.heartbeat")
+    next.feed = pushCapped(next.feed, feedItem(next, ev), FEED_CAP);
   return next;
+}
+
+function feedItem(live: LiveRun, ev: AnybenchEvent): FeedItem {
+  return {
+    seq: ev.seq,
+    at: ev.at,
+    type: ev.type,
+    source: ev.source,
+    sourceId: ev.source_id,
+    severity: ev.severity,
+    text: describeEvent(live, ev),
+    costMicroUsd: ev.cost_delta_micro_usd,
+    phaseTo: ev.type === "trial.phase" ? ev.payload.to : null,
+    role:
+      ev.type === "agent.tool.started" || ev.type === "agent.message"
+        ? ev.payload.agent_role
+        : null,
+  };
 }
 
 export function applyEvents(live: LiveRun, events: AnybenchEvent[]): LiveRun {

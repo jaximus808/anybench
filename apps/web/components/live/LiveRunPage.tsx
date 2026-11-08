@@ -5,9 +5,9 @@
 //
 // It shows counts and gate results only. Speed and quality numbers come from the report, after
 // the correctness gate and the statistics (no number without a gate).
-import { apiRoutes, type AlertId } from "@anybench/core";
+import { apiRoutes, type AlertId, type ApiClient } from "@anybench/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../../lib/api";
+import { LiveApiContext, useLiveApi } from "../../lib/live/client";
 import {
   countTrials,
   STAGES,
@@ -16,7 +16,12 @@ import {
   type LiveRun,
   type SearchHit,
 } from "../../lib/live/model";
-import { useLiveRun, type LiveStatus } from "../../lib/live/useLiveRun";
+import {
+  describeApiError,
+  useLiveRun,
+  type LiveStatus,
+  type UseLiveRunOptions,
+} from "../../lib/live/useLiveRun";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
@@ -53,8 +58,28 @@ const RUN_STATE_WORD: Record<string, string> = {
   cancelled: "cancelled",
 };
 
-export function LiveRunPage({ runId }: { runId: string }) {
-  const { live, status, error } = useLiveRun(runId);
+/**
+ * The live run page. `client` defaults to the web app's API client (lib/api.ts); tests pass one
+ * over a fake fetch.
+ */
+export function LiveRunPage({
+  runId,
+  client,
+  options,
+}: {
+  runId: string;
+  client?: ApiClient;
+  options?: UseLiveRunOptions;
+}) {
+  return (
+    <LiveApiContext.Provider value={client ?? null}>
+      <LiveRunLoader runId={runId} options={options} />
+    </LiveApiContext.Provider>
+  );
+}
+
+function LiveRunLoader({ runId, options }: { runId: string; options?: UseLiveRunOptions }) {
+  const { live, status, error } = useLiveRun(runId, options);
 
   if (!live) {
     return (
@@ -62,19 +87,32 @@ export function LiveRunPage({ runId }: { runId: string }) {
         {status === "error" ? (
           <>
             <p className="eyebrow">Couldn’t open this run</p>
-            <p>{error}</p>
+            <p role="alert">{error}</p>
           </>
         ) : (
-          <p className="eyebrow">Connecting to the run…</p>
+          <>
+            <p className="eyebrow">Connecting to the run…</p>
+            {error ? <p role="status">{error} Retrying…</p> : null}
+          </>
         )}
       </div>
     );
   }
-  return <LiveRunView live={live} status={status} />;
+  return <LiveRunView live={live} status={status} problem={error} />;
 }
 
 /** The page for a loaded run. Exported so tests can render it from a fixture. */
-export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatus }) {
+export function LiveRunView({
+  live,
+  status,
+  problem = null,
+}: {
+  live: LiveRun;
+  status: LiveStatus;
+  problem?: string | null;
+}) {
+  const client = useLiveApi();
+  const [ackProblem, setAckProblem] = useState<string | null>(null);
   const [filter, setFilter] = useState<GridFilter>("all");
   const [drawer, setDrawerState] = useState<DrawerRef>(null);
   const [palette, setPalette] = useState(false);
@@ -143,12 +181,14 @@ export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatu
   const openAlerts = live.alerts.filter((a) => a.status === "open" && !acked.includes(a.ruleKey));
   const ack = (ruleKey: string, id: string | null) => {
     setAcked((a) => [...a, ruleKey]);
-    // POST /alerts/:id/ack (idempotent). Alerts first seen on the stream have no id
-    // until the next snapshot; acking them is local until then.
+    setAckProblem(null);
+    // POST /alerts/:id/ack (idempotent). The id is the alert.fired event's source_id, or the
+    // snapshot's row id. If the API refuses, the alert comes back and we say why.
     if (id) {
-      void api()
-        .call(apiRoutes.alerts.ack, { params: { id: id as AlertId } })
-        .catch(() => setAcked((a) => a.filter((k) => k !== ruleKey)));
+      void client.call(apiRoutes.alerts.ack, { params: { id: id as AlertId } }).catch((e) => {
+        setAcked((a) => a.filter((k) => k !== ruleKey));
+        setAckProblem(`Couldn't acknowledge the alert. ${describeApiError(e)}`);
+      });
     }
   };
 
@@ -192,6 +232,11 @@ export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatu
               {RUN_STATE_WORD[live.state] && !ended ? (
                 <span className={styles.holdPill}>{RUN_STATE_WORD[live.state]}</span>
               ) : null}
+              {status === "reconnecting" || status === "error" ? (
+                <span className={styles.holdPill} data-testid="stream-status">
+                  {status === "reconnecting" ? "reconnecting" : "offline"}
+                </span>
+              ) : null}
             </p>
             <h1 className={styles.question}>{live.question}</h1>
           </div>
@@ -220,6 +265,12 @@ export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatu
           ))}
         </ol>
 
+        {problem || ackProblem ? (
+          <p className={styles.alert} data-sev="warn" role="status">
+            <span className={styles.alertMsg}>{ackProblem ?? problem}</span>
+          </p>
+        ) : null}
+
         {openAlerts.map((a) => (
           <div key={a.ruleKey} className={styles.alert} data-sev={a.severity} role="alert">
             <span className={styles.alertSev}>{a.severity}</span>
@@ -235,8 +286,8 @@ export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatu
           {chip("all", "trials done", counts.done, `/${counts.total}`)}
           {chip("active", "running now", counts.running)}
           {chip("passed", "passed gate", counts.passed)}
-          {chip("failed", "failed gate", counts.failed)}
-          {chip("infra", "infra failures", counts.infra)}
+          {chip("failed", "failed", counts.failed)}
+          {chip("infra", "our failures, not billed", counts.infra)}
           <div className={styles.spend}>
             <span className={styles.counterValue}>
               <span className="num">{usd(live.spentMicroUsd)}</span>
@@ -276,7 +327,7 @@ export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatu
                 <li data-tone="active">running</li>
                 <li data-tone="passed">passed gate</li>
                 <li data-tone="failed">failed</li>
-                <li data-tone="infra">infra, retried</li>
+                <li data-tone="infra">our failure, not billed</li>
               </ul>
             </section>
             <NowRunning live={live} nowMs={nowMs} onOpen={openTrial} />

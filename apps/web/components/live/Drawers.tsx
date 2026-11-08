@@ -2,6 +2,7 @@
 // Drill-downs as slide-over drawers on the same page (deep-linked with ?trial= / ?agent=), so
 // you never leave the live view. The trial drawer fetches the trial detail and tails its log.
 import {
+  ApiClientError,
   apiRoutes,
   isFinalTrialState,
   TRIAL_PHASES,
@@ -9,9 +10,11 @@ import {
   type TrialId,
 } from "@anybench/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api } from "../../lib/api";
+import { useLiveApi } from "../../lib/live/client";
+import { describeApiError } from "../../lib/live/useLiveRun";
 import {
   tileTone,
+  TRIAL_STATE_WORD,
   trialLabel,
   type LiveAgent,
   type LiveRun,
@@ -67,12 +70,15 @@ function Stat({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+const LOG_POLL_MS = 3000;
+const LOG_POLL_MAX_MS = 30_000;
+
 const TONE_TEXT = {
   queued: "Queued",
   active: "Running",
   passed: "Passed gate",
   failed: "Failed",
-  infra: "Infra failure (retried)",
+  infra: "Our failure, not billed",
   cancelled: "Cancelled",
 } as const;
 
@@ -100,35 +106,64 @@ export function TrialDrawer({
   const [detail, setDetail] = useState<TrialDetail | null>(null);
   const [log, setLog] = useState<string>("");
   const [logErr, setLogErr] = useState<string | null>(null);
+  const client = useLiveApi();
+  const finalRef = useRef(final);
+  finalRef.current = final;
+
+  // Detail (gate evidence, metrics, machine): again once the trial is final.
+  useEffect(() => {
+    let stop = false;
+    client
+      .call(apiRoutes.trials.get, { params: { id: trial.id as TrialId } })
+      .then((r) => !stop && setDetail(r.trial))
+      .catch(() => undefined);
+    return () => {
+      stop = true;
+    };
+  }, [client, trial.id, final]);
+
+  // The log tail: poll by byte offset until the trial is final AND the log is read to its end
+  // (`eof` alone can arrive between segments of a live trial). Errors retry with backoff; only
+  // auth failures stop. The text is redacted server-side and rendered as text.
   useEffect(() => {
     let stop = false;
     let offset = 0;
+    let wait = LOG_POLL_MS;
     let timer: number | undefined;
     const id = trial.id as TrialId;
-    api()
-      .call(apiRoutes.trials.get, { params: { id } })
-      .then((r) => !stop && setDetail(r.trial))
-      .catch(() => undefined);
     const poll = async () => {
       try {
-        const r = await api().call(apiRoutes.trials.log, {
+        const r = await client.call(apiRoutes.trials.log, {
           params: { id },
           query: { stream: "stdout", offset, bytes: 64 * 1024 },
         });
         if (stop) return;
+        setLogErr(null);
+        wait = LOG_POLL_MS;
         offset = r.next_offset;
         if (r.text) setLog((prev) => (prev + r.text).slice(-64 * 1024));
-        if (!r.eof) timer = window.setTimeout(poll, 3000);
+        if (r.eof && finalRef.current) return;
       } catch (e) {
-        if (!stop) setLogErr(e instanceof Error ? e.message : String(e));
+        if (stop) return;
+        if (e instanceof ApiClientError && (e.status === 401 || e.status === 403)) {
+          setLogErr(describeApiError(e));
+          return;
+        }
+        setLogErr(
+          e instanceof ApiClientError && e.status === 404
+            ? "the log isn’t available yet"
+            : describeApiError(e),
+        );
+        wait = Math.min(wait * 2, LOG_POLL_MAX_MS);
       }
+      timer = window.setTimeout(() => void poll(), wait);
     };
     void poll();
     return () => {
       stop = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [trial.id]);
+  }, [client, trial.id]);
 
   const tailRef = useRef<HTMLPreElement>(null);
   useLayoutEffect(() => {
@@ -238,7 +273,7 @@ export function TrialDrawer({
             .filter((x) => x.phaseTo === "failed_infra" || x.phaseTo === "failed_subject")
             .map((x) => (
               <li key={x.seq} data-state="fail">
-                <span className={styles.tlName}>{x.phaseTo}</span>
+                <span className={styles.tlName}>{TRIAL_STATE_WORD[x.phaseTo!]}</span>
                 <span className="num">{clock(ms(x.at) - start)}</span>
                 <span />
               </li>

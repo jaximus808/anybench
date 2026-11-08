@@ -30,7 +30,7 @@ const TONE_WORD: Record<TileTone, string> = {
   active: "running",
   passed: "passed gate",
   failed: "failed",
-  infra: "infra failure",
+  infra: "our failure, not billed",
   cancelled: "cancelled",
 };
 
