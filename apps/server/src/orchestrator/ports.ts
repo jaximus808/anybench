@@ -123,6 +123,12 @@ export interface KitDesign {
   spec: KitSpec;
   /** `upload:<id>` of the kit folder, once [7.4] uploads exist. */
   files_upload_id?: string;
+  /**
+   * Absolute path of the kit directory on the worker's disk (TDM-44 contract C1): the curated kit
+   * dir, or `<ANYBENCH_GENERATED_KITS_DIR>/<run_id>/v<n>/` for a generated kit. Stored as a
+   * file:// kits.files_url so env_build and proof read the kit's files. Wins over files_upload_id.
+   */
+  files_dir?: string;
 }
 
 export const EnvBuildSchema = z.object({

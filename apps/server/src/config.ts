@@ -139,6 +139,11 @@ export const EnvSchema = z.object({
   ),
   /** The curated kits directory (TDM-54 CuratedKitStage); default: the repo's kits/. */
   ANYBENCH_KITS_DIR: optionalString,
+  /**
+   * Where generated kits are written (TDM-44 contract C1), as `<dir>/<run_id>/v<n>/`; default
+   * ~/.anybench/generated-kits (orchestrator/generated-kits.ts generatedKitDir).
+   */
+  ANYBENCH_GENERATED_KITS_DIR: optionalString,
   /** Optional GitHub token for ingest (TDM-54 → packages/kit ingestGitHubRepo): private repos, rate limits. */
   GITHUB_TOKEN: optionalString,
   COMPUTER_BLOCK_PRICE_MICRO_USD: z.preprocess(

@@ -30,6 +30,8 @@
 // proofAccepted; the checks it did not run stay `pass: false`), and the analyst's report must parse with ReportSchema, whose refinements refuse a
 // measured value without a passing gate.
 import { randomBytes } from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   isTerminalRunState,
   RUN_MAX_PROOF_REPAIRS,
@@ -77,6 +79,7 @@ import {
   UnderstandingSchema,
   type AgentStagePort,
   type EnvBuild,
+  type KitDesign,
   type PipelinePort,
   type Research,
   type RunStageOutputs,
@@ -227,6 +230,17 @@ type Step =
   | { next: "stop"; outcome: Exclude<AdvanceOutcome, { kind: "busy" | "gone" }> };
 
 const CONTINUE: Step = { next: "continue" };
+
+/**
+ * kits.files_url for a designed kit (TDM-44 contract C1): `file://<files_dir>` when the designer
+ * wrote the kit to disk (env_build and proof need it), else `upload:<id>`, else null.
+ */
+export function kitFilesUrl(
+  design: Pick<KitDesign, "files_dir" | "files_upload_id">,
+): string | null {
+  if (design.files_dir) return pathToFileURL(path.resolve(design.files_dir)).href;
+  return design.files_upload_id ? `upload:${design.files_upload_id}` : null;
+}
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -749,7 +763,7 @@ class RunAdvance {
       const issues = formatSchemaIssues(spec.error).slice(0, 5).join("; ");
       return this.hold(run, "needs_human", `the kit designer's kit is invalid: ${issues}`);
     }
-    const filesUrl = r.value.files_upload_id ? `upload:${r.value.files_upload_id}` : null;
+    const filesUrl = kitFilesUrl(r.value);
     const draftedFrom = current?.id ?? null;
     return this.advance(run, {
       writes: async (tx, locked) => {

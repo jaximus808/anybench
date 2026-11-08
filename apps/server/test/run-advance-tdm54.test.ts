@@ -5,7 +5,7 @@
 import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLedger } from "@anybench/billing";
 import { loadKit, validateKitDir } from "@anybench/kit";
 import { safeParseKitSpec } from "@anybench/core";
@@ -568,6 +568,8 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect((run.stageOutputs as { held_from?: string }).held_from).toBe("env_build");
     const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
     expect(kit!.version).toBe(1);
+    // Contract C1 (TDM-44): the curated kit's directory is its file:// files_url.
+    expect(kit!.filesUrl).toBe(pathToFileURL(path.join(curatedDir, CURATED_TANDEM_KIT)).href);
     expect((kit!.spec as { subject: { name: string } }).subject.name).toBe(
       (await loadKit(path.join(curatedDir, CURATED_TANDEM_KIT))).spec.subject.name,
     );
@@ -673,6 +675,9 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       expect(
         said.map((e) => (e.payload as { text: string }).text).some((t) => t.startsWith(expected)),
       ).toBe(true);
+      expect(kit!.filesUrl).toBe(
+        pathToFileURL(path.join(defaultKitsDir(), CURATED_TANDEM_KIT)).href,
+      );
       const stored = safeParseKitSpec(kit!.spec);
       expect(stored.success && trialCount(stored.data)).toBe(
         expected.startsWith("smoke") ? 3 : trialCount(full.spec),

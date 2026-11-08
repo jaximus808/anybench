@@ -182,10 +182,12 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
         return stageHold(loaded.reason);
       }
       const kit = loaded.kit;
+      // The kit's files on disk (contract C1): kits.files_url = file://<dir> for env_build/proof.
+      const files_dir = kit.dir;
       await say(ctx, "kit_designer", `using the curated Tandem kit (${CURATED_TANDEM_KIT})`);
       if (wantsFullBenchmark(ctx.run.question)) {
         await say(ctx, "kit_designer", `full profile: ${trialCount(kit.spec)} trials`);
-        return stageOk({ spec: kit.spec });
+        return stageOk({ spec: kit.spec, files_dir });
       }
       const smoke = smokeProfile(kit.spec);
       if (!smoke.ok) return stageHold(smoke.reason);
@@ -194,7 +196,7 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
         "kit_designer",
         `smoke profile: ${trialCount(smoke.spec)} trials (${SMOKE_WORKLOAD}, 1 repeat, no warm-up, TANDEM_WORKERS=3); ask for a "full benchmark" for the whole kit`,
       );
-      return stageOk({ spec: smoke.spec });
+      return stageOk({ spec: smoke.spec, files_dir });
     },
 
     async analyze(ctx, input) {
