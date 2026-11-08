@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" },
+    "body": { "type": "string" },
+    "underspecified": { "type": "boolean" },
+    "why": { "type": "string" }
+  },
+  "required": ["title", "body", "underspecified", "why"],
+  "additionalProperties": false
+}

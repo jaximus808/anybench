@@ -1,0 +1,13 @@
+{
+  "role": "issue-writer",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench issue writer (E6 6.6 step 6): a user-style bug report for one task mined from a repo's history, written from the failing tests' symptoms only (never the diff), or 'underspecified'.",
+  "budget": {
+    "cap_micro_usd": 2000000,
+    "max_task_micro_usd": 50000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

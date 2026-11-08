@@ -9,3 +9,5 @@ export * from "./understander.js";
 export * from "./kit-designer.js";
 // TDM-187 [16.16]: the skeptic role's input (no score field), output, verification and model rule.
 export * from "./skeptic.js";
+// TDM-60 [6.6] step 6: the issue writer (mined tasks → user-style issues from symptoms only).
+export * from "./issue-writer.js";
