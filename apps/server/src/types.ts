@@ -9,6 +9,7 @@ import type { EventFanout } from "./lib/events.js";
 import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { JobQueue } from "./lib/job-queue.js";
 import type { Logger } from "./lib/logger.js";
+import type { TrialLogReader } from "./lib/trial-logs.js";
 import type { SentryHandle } from "./lib/sentry.js";
 import type { EventsWriter, TrialArtifactStore } from "./routes/runner.js";
 
@@ -35,6 +36,11 @@ export interface AppDeps {
   events?: EventsWriter;
   /** Trial artifact storage (`@anybench/envs` ArtifactStore). Upload routes answer 503 without it. */
   artifacts?: TrialArtifactStore;
+  /**
+   * Server-side ranged reads of trial log segments (TDM-74). Default in the entries:
+   * lib/trial-logs.ts artifactLogReader over the ArtifactStore. Log routes answer 503 without it.
+   */
+  trialLogs?: TrialLogReader;
   /** The run gate's billing check (TDM-67). Default: lib/billing-gate.ts defaultBillingGate. */
   billingGate?: BillingGate;
   /** Enqueues graphile-worker jobs (TDM-67). Default: graphile_worker.add_job on `db`. */

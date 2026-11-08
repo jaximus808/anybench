@@ -74,6 +74,11 @@ export const EnvSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().min(10).max(60_000).default(1_000),
   ),
+  /** `GET /trials/:id/log/stream` (TDM-74): re-authenticate an open log tail this often. */
+  LOG_STREAM_AUTH_RECHECK_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(10).max(300_000).default(30_000),
+  ),
   // ── Auth (TDM-65, plan.md section 9). Optional at boot (the worker never needs them); the
   // /auth routes answer 503 until GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and SESSION_SECRET are set.
   GITHUB_CLIENT_ID: optionalString,

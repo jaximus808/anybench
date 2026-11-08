@@ -13,6 +13,7 @@ import {
 } from "./boot.js";
 import { createDb } from "./db/client.js";
 import { EventFanout } from "./lib/events.js";
+import { artifactLogReader } from "./lib/trial-logs.js";
 
 loadDotEnv();
 const config = loadConfigOrExit("api");
@@ -34,6 +35,7 @@ const app = createApp({
   db: dbh.db,
   sentry,
   artifacts,
+  ...(artifacts ? { trialLogs: artifactLogReader(artifacts) } : {}), // TDM-74 log reads
   ...(eventFanout ? { eventFanout } : {}),
 });
 const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {

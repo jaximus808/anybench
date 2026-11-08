@@ -9,6 +9,7 @@ import { createApp } from "./app.js";
 import { bootRuntime } from "./boot.js";
 import { loadConfig } from "./config.js";
 import { createDb } from "./db/client.js";
+import { artifactLogReader } from "./lib/trial-logs.js";
 import type { AppEnv } from "./types.js";
 
 let appPromise: Promise<Hono<AppEnv>> | undefined;
@@ -28,7 +29,14 @@ export async function buildServerlessApp(
   // 'error' event would crash the instance. The pool drops the dead client by itself.
   dbh.pool.on("error", (err) => runtime.logger.warn({ err }, "db: idle client error"));
   const artifacts = source.S3_BUCKET ? ArtifactStore.fromEnv(source) : undefined; // TDM-47 uploads
-  return createApp({ config, db: dbh.db, artifacts, ...runtime });
+  const trialLogs = artifacts ? artifactLogReader(artifacts) : undefined; // TDM-74 log reads
+  return createApp({
+    config,
+    db: dbh.db,
+    artifacts,
+    ...(trialLogs ? { trialLogs } : {}),
+    ...runtime,
+  });
 }
 
 const buildApp = () => buildServerlessApp();
