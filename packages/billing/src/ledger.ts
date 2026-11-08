@@ -66,6 +66,7 @@ import {
   computeDecision,
   CostPlusPricingSchema,
   runFeeDecision,
+  type CancelCause,
 } from "./pricing.js";
 import {
   billingAccounts,
@@ -420,11 +421,12 @@ async function lockRun(
   runId: string,
   userId: string,
   asserted: boolean | null | undefined,
-): Promise<{ comp: Comp | null; state: RunState }> {
+): Promise<{ comp: Comp | null; state: RunState; cancelCause: CancelCause }> {
   const [run] = await tx
     .select({
       ownerId: runs.ownerId,
       state: runs.state,
+      cancelCause: runs.cancelCause,
       compedBy: runs.compedBy,
       compInterventionId: runs.compInterventionId,
     })
@@ -442,7 +444,8 @@ async function lockRun(
       `caller says comped=${String(asserted)} but run ${runId} is ${comp ? "comped" : "not comped"}`,
     );
   }
-  return { comp, state: run.state };
+  // A cancel by us (kill switch, pause, auto-action) bills nothing; null (older rows) = the user.
+  return { comp, state: run.state, cancelCause: run.cancelCause === "ours" ? "ours" : "user" };
 }
 
 /** Every trial of a run, under FOR SHARE, so their states cannot change until we commit. */
@@ -529,9 +532,8 @@ export function createLedger(db: LedgerDb): Ledger {
           );
         }
         const runTrials = await lockRunTrials(tx, runId, input.userId);
-        // TODO(9.3 auto-actions): pass the stored cancel cause once runs record one; until then a
-        // cancelled run is treated as user-cancelled (compute billed, no run fee).
-        const decision = computeDecision(computer, run.state, runTrials);
+        // runs.cancel_cause (TDM-54): a user cancel bills the compute used, one of ours bills nothing.
+        const decision = computeDecision(computer, run.state, runTrials, run.cancelCause);
         if (!decision.billable) {
           return { status: "skipped", reason: decision.reason, detail: decision.detail };
         }

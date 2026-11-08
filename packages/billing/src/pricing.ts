@@ -84,9 +84,9 @@ export type RunFeeDecision =
   | { billable: false; reason: "run_not_final" | "cancelled" | "failed_not_subject" };
 
 /**
- * Who cancelled a run. TODO(9.3 auto-actions, kill switch, admin): runs do not record a cancel
- * reason yet, so every cancelled run is treated as user-cancelled. Once 9.3 stores one, a cancel
- * caused by us (kill switch, auto-action, admin) must map to `ours` and bill nothing.
+ * Who cancelled a run: `runs.cancel_cause` (TDM-54). The cancel route stores `user`; the
+ * orchestrator stores `ours` for a kill switch or ANYBENCH_PAUSE (and 9.3 auto-actions / admin
+ * must too). A cancel by us bills nothing. Rows from before TDM-54 have none and count as `user`.
  */
 export type CancelCause = "user" | "ours";
 

@@ -10,7 +10,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { RUN_STATES } from "./_enums.js";
+import { RUN_CANCEL_CAUSES, RUN_STATES } from "./_enums.js";
 import { createdAt, idPk, inList, microUsd, microUsdZero, tstz, updatedAt } from "./_shared.js";
 import { interventions } from "./interventions.js";
 import { kits } from "./kits.js";
@@ -47,6 +47,20 @@ export const runs = pgTable(
     /** Next events.seq for this run; bumped atomically by the event writer. */
     nextSeq: bigint("next_seq", { mode: "number" }).notNull().default(1),
     cancelRequestedAt: tstz("cancel_requested_at"),
+    /**
+     * Who cancelled the run (TDM-54): `user` (POST /runs/:id/cancel) or `ours` (a kill switch,
+     * ANYBENCH_PAUSE, the 9.3 auto-actions). Billing ([10.12]) bills compute only for `user`.
+     */
+    cancelCause: text("cancel_cause", { enum: RUN_CANCEL_CAUSES }),
+    /**
+     * What the orchestrator ([5.9], jobs/run-advance.ts) keeps between stages: the understander's
+     * and researcher's outputs, the env build, the score, a hold's `held_from`, `finalized_at`.
+     * Shape: RunStageOutputsSchema in jobs/run-advance.ts.
+     */
+    stageOutputs: jsonb("stage_outputs").notNull().default({}),
+    /** run.advance lease (TDM-54): `<worker id>~<worker started ms>~<nonce>`, like trials. */
+    advanceLeaseOwner: text("advance_lease_owner"),
+    advanceLeaseUntil: tstz("advance_lease_until"),
     pausedReason: text("paused_reason"),
     compedBy: text("comped_by"),
     compedReason: text("comped_reason"),
@@ -64,5 +78,9 @@ export const runs = pgTable(
       .where(sql`${t.intake} ? 'idempotency_key'`),
     check("runs_state_check", inList(t.state, RUN_STATES)),
     check("runs_budget_nonneg", sql`${t.budgetMicroUsd} >= 0`),
+    check(
+      "runs_cancel_cause_check",
+      sql`${sql.identifier("cancel_cause")} is null or ${inList(t.cancelCause, RUN_CANCEL_CAUSES)}`,
+    ),
   ],
 );

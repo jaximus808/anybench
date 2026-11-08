@@ -114,6 +114,14 @@ export const EnvSchema = z.object({
    * for computer cost and leak alerts (TDM-31). Default: Naïve's default 2 vCPU / 4 GiB size at
    * $0.0084 per vCPU-block + $0.0027 per GiB-block (docs/findings/naive-platform-hosting.md).
    */
+  /**
+   * Naïve API key (TDM-54): the run orchestrator cancels a cancelled run's live Naïve sessions.
+   * E6 agent roles use it to run sessions. Unset = no session can be cancelled (none are started).
+   */
+  NAIVE_API_KEY: optionalString,
+  NAIVE_BASE_URL: optionalUrl,
+  /** Optional GitHub token for ingest (TDM-54 → packages/kit ingestGitHubRepo): private repos, rate limits. */
+  GITHUB_TOKEN: optionalString,
   COMPUTER_BLOCK_PRICE_MICRO_USD: z.preprocess(
     emptyToUndefined,
     z

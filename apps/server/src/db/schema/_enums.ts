@@ -58,6 +58,8 @@ export const ALERT_SCOPES = ["global", "user", "run", "trial", "computer"] as co
 export const ALERT_CHANNEL_KINDS = ["in_app", "email", "slack", "tandem"] as const;
 export const ALERT_DELIVERY_STATUSES = ["pending", "sent", "failed"] as const;
 
+/** runs.cancel_cause (TDM-54): the user cancelled, or we did (kill switch, pause, auto-action). */
+export const RUN_CANCEL_CAUSES = ["user", "ours"] as const;
 export const KILL_SWITCH_SCOPES = ["global", "run", "user"] as const;
 
 export const COMPUTER_STATUSES = [

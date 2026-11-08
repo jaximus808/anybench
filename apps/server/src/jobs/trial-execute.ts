@@ -62,6 +62,7 @@ import { drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
+import { kitTrialSource } from "../orchestrator/defaults.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { defineJob, type JobContext } from "./types.js";
 
@@ -461,7 +462,8 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
   });
 }
 
-export const trialExecuteJob = createTrialExecuteJob();
+// The run orchestrator's kit-backed source (TDM-54): the run's kit → the trial's runner job.
+export const trialExecuteJob = createTrialExecuteJob({ source: (ctx) => kitTrialSource(ctx.db) });
 
 /** trial.reattach: hand every orphaned mid-execution trial to a new trial.execute. */
 export function createTrialReattachJob() {

@@ -106,6 +106,8 @@ export const runs = pgTable("runs", {
   state: text("state", { enum: RUN_STATES }).notNull(),
   compedBy: text("comped_by"),
   compInterventionId: uuid("comp_intervention_id"),
+  /** `user` | `ours` (TDM-54, set by the cancel route and the orchestrator); null = not cancelled. */
+  cancelCause: text("cancel_cause"),
 });
 
 /**

@@ -588,6 +588,8 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
         .set({
           state: t.to,
           cancelRequestedAt: sql`coalesce(${runs.cancelRequestedAt}, now())`,
+          // The user asked (billing [10.12] bills the compute already used; a kill switch is `ours`).
+          cancelCause: sql`coalesce(${runs.cancelCause}, 'user')`,
           updatedAt: sql`now()`,
         })
         .where(eq(runs.id, params.id))
@@ -598,7 +600,8 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
           ...(body.reason ? { reason: body.reason } : {}),
         }),
       ]);
-      // The worker stops live Naïve sessions and trial computers ([5.9]).
+      // The orchestrator (jobs/run-advance.ts) stops live Naïve sessions and queued trials; running
+      // trials see cancel_requested_at and stop themselves.
       await enqueueAdvance(deps, tx, { run_id: params.id, reason: "cancelled" }, "cancelled");
       return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 } };
     });
