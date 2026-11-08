@@ -4,3 +4,5 @@ export * from "./http-agent/index.js";
 export * from "./cli/index.js";
 // TDM-41 [4.9]: driver.type harness (Tandem adapter: kits/tandem-vs-claude-code/adapters/tandem/).
 export * from "./harness/index.js";
+// TDM-39 [4.7]: driver.type coding-agent (headless Claude Code).
+export * from "./coding-agent/index.js";

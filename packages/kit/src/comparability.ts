@@ -252,6 +252,9 @@ function scanScript(text: string): ScriptPin[] {
 
 const list = (ids: readonly string[]) => ids.join(", ");
 
+/** driver.env key that picks a coding agent's token source (drivers/coding-agent TOKEN_SOURCE_ENV). */
+const TOKEN_SOURCE_ENV_NAME = "ANYBENCH_TOKEN_SOURCE";
+
 /** Every comparability problem with a kit. Errors make the kit invalid; warnings do not. */
 export function comparabilityIssues(
   spec: KitSpec,
@@ -465,6 +468,25 @@ export function comparabilityIssues(
       );
     }
   });
+
+  // 4b. One token source for every agent contender (TDM-39): the Naïve proxy (default) and a
+  // direct Anthropic key differ in effort, thinking and price, so mixing them measures the source.
+  if (!varyKeys.has(TOKEN_SOURCE_ENV_NAME)) {
+    const agents = spec.contenders
+      .map((c, i) => [i, c] as const)
+      .filter(([, c]) => c.driver.type === "coding-agent" || c.driver.type === "harness");
+    const sources = agents.map(([, c]) => c.driver.env?.[TOKEN_SOURCE_ENV_NAME] ?? "naive-proxy");
+    if (new Set(sources).size > 1) {
+      const j = sources.findIndex((v) => v !== sources[0]);
+      const [i, c] = agents[j]!;
+      add(
+        "error",
+        "token_source_unequal",
+        [...base(i), "driver", "env", TOKEN_SOURCE_ENV_NAME],
+        `contenders get their tokens from different sources (${agents.map(([, a], k) => `${a.id} ${sources[k]}`).join(", ")}): set the same ${TOKEN_SOURCE_ENV_NAME} on every agent contender (default naive-proxy); '${c.id}' differs`,
+      );
+    }
+  }
 
   // 5. Contender order rotates per round from a seed.
   const setups =

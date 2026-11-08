@@ -35,6 +35,7 @@ export type KitIssueCode =
   | "token_cap_conflict"
   | "assist_unequal"
   | "subagents_not_disabled"
+  | "token_source_unequal"
   | "order_not_rotated";
 
 export interface KitIssue {

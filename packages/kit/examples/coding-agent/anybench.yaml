@@ -1,0 +1,115 @@
+# Example kit for driver.type: coding-agent (headless Claude Code), TDM-39 [4.7].
+# Validate with: anybench kit validate packages/kit/examples/coding-agent
+# adapters/claude-code/driver.sh, gates/hidden-tests/check.sh and proof/do_less/skip-tests/driver.sh
+# are rendered by @anybench/kit (renderCodingAgentDriverScript, renderCodingAgentGateScript,
+# renderCodingAgentDoLessDriverScript) from packages/kit/test/tdm39-coding-agent-example-config.ts;
+# regenerate them rather than editing by hand.
+schema_version: 2
+
+subject:
+  kind: agent
+  name: claude-code
+  summary: Headless Claude Code with a plain CLAUDE.md, on one small coding task graded by hidden tests.
+  better_means:
+    - the hidden tests pass
+    - costs less per solved task
+    - finishes sooner
+
+contenders:
+  - id: claude-code
+    name: plain Claude Code
+    role: subject
+    source:
+      upload: [adapters/claude-code/CLAUDE.md]
+    driver:
+      type: coding-agent
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 1800
+      # Comparable setups (plan.md 17.2 rule 4): a pinned model and Claude Code release, and one
+      # token source for every contender. Tokens come from the Naïve proxy (the default
+      # ANYBENCH_TOKEN_SOURCE), so the model is a Naïve catalogue id.
+      model: anthropic/claude-sonnet-4.6
+      token_cap_tokens: 2000000
+      max_turns: 40
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
+
+workloads:
+  - id: slugify
+    title: Implement slugify() from a short spec
+    instruction: workloads/slugify/instruction.md
+    setup: workloads/slugify/setup.sh
+    timeout_s: 1800
+    params: { hidden_tests: 7 }
+
+gates:
+  - id: hidden-tests
+    kind: hidden-tests
+    description: >-
+      Runs gates/hidden-tests/<workload>/*.test.js (never in the workspace) against the frozen
+      workspace as the contender uid. Passes only when every hidden test passes.
+    timeout_s: 600
+
+requirements:
+  - id: tests-pass
+    type: measured
+    title: Hidden tests pass
+    metric: gate_pass_rate
+    unit: ratio
+    better: higher
+    gate_id: hidden-tests
+  - id: cost
+    type: measured
+    title: Cost per solved task
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    gate_id: hidden-tests
+  - id: wall
+    type: measured
+    title: Wall-clock time to finish
+    metric: wall_s
+    unit: s
+    better: lower
+    gate_id: hidden-tests
+
+proof:
+  oracle:
+    id: reference-solution
+    dir: proof/oracle/
+    contender: claude-code
+    driver_patch: proof/oracle/driver.sh
+    gates: [hidden-tests]
+    description: Applies proof/oracle/<workload>/ (the reference solution) instead of running Claude Code.
+  do_less:
+    - id: skip-tests
+      dir: proof/do_less/skip-tests/
+      contender: claude-code
+      driver_patch: proof/do_less/skip-tests/driver.sh
+      description: 'CLAUDE.md says "skip the tests" and a 3-turn cap; must fail the hidden tests.'
+  regression:
+    id: no-tests
+    dir: proof/regression/no-tests/
+    contender: claude-code
+    env:
+      CLAUDE_MD_OVERLAY: proof/regression/no-tests/CLAUDE.md
+    description: A CLAUDE.md that says "do not write or run tests"; must score lower.
+
+# The Naïve proxy credential is minted per trial by the worker (TDM-16); no secret to declare.
+
+collect:
+  - src/**
+
+scoring:
+  weights: { tests-pass: 60, cost: 20, wall: 20 }
+repeats: 10
+schedule: { order_seed: 1 }
+
+env:
+  profile: agent-cc
+  resources: { vcpu: 4, memory_gb: 8, disk_gb: 20 }
+  os_packages: [git]
+  toolchains:
+    - { name: node, version: "22" }
+  network:
+    allow: [api.vetta.sh]
