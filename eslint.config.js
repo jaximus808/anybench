@@ -11,6 +11,7 @@ export default tseslint.config(
       "**/coverage/**",
       "docs/**",
       "kits/**",
+      "**/*.tmp.mjs", // throwaway local scripts, gitignored
     ],
   },
   js.configs.recommended,

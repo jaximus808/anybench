@@ -14,3 +14,5 @@ apps/server/drizzle/meta/
 packages/kit/test/fixtures/kits-tdm33/
 # Recorded collector output (hyperfine, k6, naive proxy), kept as the tools emitted it (TDM-169)
 packages/bench/fixtures/
+# throwaway local scripts (gitignored)
+*.tmp.mjs
