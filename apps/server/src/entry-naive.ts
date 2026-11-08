@@ -69,7 +69,14 @@ export function getNaiveApp(): Promise<Hono<AppEnv>> {
   // Fluid compute serves many requests per instance at once, so the pool gets a few connections
   // (Neon's PgBouncer pooler multiplexes them).
   appPromise ??= Promise.resolve()
-    .then(() => buildServerlessApp(naiveEnvSource(process.env), { poolMax: 5 }))
+    .then(() => {
+      const source = naiveEnvSource(process.env);
+      // Code that reads process.env directly (getDb(), scopedDb's default db) must never reach the
+      // platform's managed, no-RLS Postgres: point the process-wide names at Neon too.
+      process.env.DATABASE_URL = source.DATABASE_URL;
+      process.env.DATABASE_URL_DIRECT = source.DATABASE_URL_DIRECT;
+      return buildServerlessApp(source, { poolMax: 5 });
+    })
     .catch((err: unknown) => {
       appPromise = undefined;
       throw err;

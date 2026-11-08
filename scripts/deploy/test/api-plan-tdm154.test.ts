@@ -104,6 +104,21 @@ describe("planSecrets (TDM-154)", () => {
     expect(plan.allowedOrigins).toEqual(["https://anybench.jaxonp.com"]);
   });
 
+  it("behind the web's same-origin proxy: keeps /api in the callback and base, Lax, no Domain", () => {
+    const plan = planSecrets(env, "https://anybench.vercel.app/api/");
+    expect(plan.baseUrl).toBe("https://anybench.vercel.app/api");
+    expect(plan.callbackUrl).toBe("https://anybench.vercel.app/api/auth/github/callback");
+    expect(plan.secrets.GITHUB_OAUTH_CALLBACK_URL).toBe(plan.callbackUrl);
+    expect(plan.sameSite).toBe("lax");
+    expect(plan.cookieDomain).toBeUndefined();
+    expect(plan.secrets.SESSION_COOKIE_SAMESITE).toBe("lax");
+    expect(plan.secrets.SESSION_COOKIE_DOMAIN).toBeUndefined();
+    expect(planSecrets(env, "https://anybench-api-x.vercel.app/").baseUrl).toBe(
+      "https://anybench-api-x.vercel.app",
+    );
+    expect(() => planSecrets(env, "https://anybench.vercel.app/api?x=1")).toThrow(/query/);
+  });
+
   it("refuses a plain-http API URL", () => {
     expect(() => planSecrets(env, "http://localhost:8787")).toThrow(/https/);
   });

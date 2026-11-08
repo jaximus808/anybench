@@ -177,18 +177,28 @@ export const SSE_MAX_DURATION_MS = 240_000;
 
 export interface SecretPlan {
   secrets: Partial<Record<OwnedSecret, string>>;
+  /** The API base the browser uses, with its path (`https://anybench.vercel.app/api`), no trailing slash. */
+  baseUrl: string;
   callbackUrl: string;
   allowedOrigins: string[];
   sameSite: "lax" | "none";
   cookieDomain: string | undefined;
 }
 
-/** The app secrets for an API served at `publicUrl`. */
+/**
+ * The app secrets for an API the browser reaches at `publicUrl`. That may carry a base path: behind
+ * the web app's same-origin proxy it is `https://anybench.vercel.app/api`, and the callback, the
+ * OAuth state cookie path (derived from the callback by the server) and the live checks keep it.
+ * SameSite and the cookie Domain follow that browser-facing host, not the app's own host.
+ */
 export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
   const api = new URL(publicUrl);
   if (api.protocol !== "https:") throw new Error(`API URL must be https (got ${api.origin})`);
+  if (api.search || api.hash) throw new Error("API URL must not carry a query or fragment");
+  const basePath = api.pathname.replace(/\/+$/, "");
+  const baseUrl = `${api.origin}${basePath}`;
   const web = new URL(env.DEPLOY_API_WEB_URL);
-  const callbackUrl = new URL("/auth/github/callback", api.origin).toString();
+  const callbackUrl = `${baseUrl}/auth/github/callback`;
   const allowedOrigins = [
     ...new Set(
       [web.origin, ...env.DEPLOY_API_EXTRA_ORIGINS.split(",")]
@@ -199,7 +209,8 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
   ];
   const crossSite = siteOf(api.hostname) !== siteOf(web.hostname);
   // api.anybench.jaxonp.com + anybench.jaxonp.com share `.anybench.jaxonp.com`; *.vercel.app hosts
-  // cannot share a cookie at all (public suffix), so the cookie stays host-only on the API.
+  // cannot share a cookie at all (public suffix), so the cookie stays host-only on the API. Behind
+  // the same-origin proxy the hosts are equal: same site, Lax, host-only on the web host.
   const cookieDomain =
     !crossSite && api.hostname.endsWith(`.${web.hostname}`) ? `.${web.hostname}` : undefined;
   const sameSite = crossSite ? "none" : "lax";
@@ -238,7 +249,7 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
       if (env[k]) s[k] = env[k];
     }
   }
-  return { secrets: s, callbackUrl, allowedOrigins, sameSite, cookieDomain };
+  return { secrets: s, baseUrl, callbackUrl, allowedOrigins, sameSite, cookieDomain };
 }
 
 /**

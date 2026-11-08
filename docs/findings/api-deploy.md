@@ -139,7 +139,11 @@ The web app is at `https://anybench.vercel.app`, and the API is at `https://anyb
 - A `SameSite=Lax` session cookie would not ride the web app's `fetch(…, {credentials: "include"})`. The deploy therefore sets `SESSION_COOKIE_SAMESITE=none` (new config, default `lax`; `none` requires Secure). CSRF protection is unchanged: it is the Origin allowlist check.
 - No `Domain` is possible: a cookie cannot be scoped to a public suffix. The session cookie is host-only on the API host.
 - **Browsers that block third-party cookies (Safari by default, Firefox ETP strict, Chrome with 3PC off) will still drop it**, so `/auth/me` from the web app would answer 401 there. Two ways out: (a) the custom domains (`anybench.jaxonp.com` + `api.anybench.jaxonp.com` are same-site; re-running the deploy with them switches to `lax` and `Domain=.anybench.jaxonp.com` automatically), or (b) a Next.js rewrite in apps/web (`/api/:path*` → the API), so that the browser only ever talks to its own origin.
-- The OAuth state cookie stays `SameSite=Lax` and host-only on `Path=/auth/github`. GitHub's redirect back to the API is a top-level GET, which Lax cookies ride.
+- The OAuth state cookie stays `SameSite=Lax` and host-only. Its `Path` is the parent of `GITHUB_OAUTH_CALLBACK_URL`'s path: `/auth/github` on the API's own host, and `/api/auth/github` behind the proxy. GitHub's redirect back to the callback is a top-level GET, which Lax cookies ride.
+
+### Behind the web app's same-origin proxy (TDM-100)
+
+When apps/web rewrites `anybench.vercel.app/api/*` to the API, set `DEPLOY_API_PUBLIC_URL=https://anybench.vercel.app/api` and re-run the deploy. `planSecrets` keeps the `/api` base path: the callback becomes `https://anybench.vercel.app/api/auth/github/callback`, and the live checks hit `/api/health` and `/api/auth/github`. SameSite and Domain follow the browser-facing host, so it is Lax with no Domain (host-only on anybench.vercel.app). The state cookie path follows the callback, as above. Update the GitHub OAuth app's callback to match.
 
 ## Founder actions
 

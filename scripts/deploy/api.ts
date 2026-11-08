@@ -275,7 +275,7 @@ async function main(): Promise<void> {
 
   let failed = false;
   if (!flag("no-verify")) {
-    for (const c of await verify(new URL(publicUrl).origin, env, plan)) {
+    for (const c of await verify(plan.baseUrl, env, plan)) {
       say(`check ${c.name}: ${c.ok ? "ok" : "FAILED"}`, c.detail);
       failed ||= !c.ok;
     }

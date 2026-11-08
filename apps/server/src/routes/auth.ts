@@ -46,11 +46,30 @@ import {
 } from "../lib/session.js";
 import type { AppDeps, AppEnv } from "../types.js";
 
-/** Short-lived cookie binding the OAuth round trip to this browser. Host-only on the API. */
+/** Short-lived cookie binding the OAuth round trip to this browser. Host-only on the host serving it. */
 export const OAUTH_STATE_COOKIE = "anybench_oauth_state";
 export const OAUTH_STATE_TTL_SEC = 10 * 60;
 const STATE_PURPOSE = "oauth-state";
-const STATE_COOKIE_PATH = "/auth/github";
+const DEFAULT_STATE_COOKIE_PATH = "/auth/github";
+
+/**
+ * Path of the OAuth state cookie: the parent of GITHUB_OAUTH_CALLBACK_URL's path, i.e. the path
+ * the browser sees. Behind the web app's same-origin proxy (`anybench.vercel.app/api/*` → the API)
+ * that is `/api/auth/github`; a fixed `/auth/github` would never ride back to the callback there.
+ * Without a callback URL (sign-in unconfigured, or tests with an injected GitHub) it is
+ * `/auth/github`.
+ */
+export function stateCookiePath(callbackUrl: string | undefined): string {
+  if (!callbackUrl) return DEFAULT_STATE_COOKIE_PATH;
+  let pathname: string;
+  try {
+    pathname = new URL(callbackUrl).pathname;
+  } catch {
+    return DEFAULT_STATE_COOKIE_PATH;
+  }
+  const parent = pathname.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
+  return parent === "" ? "/" : parent;
+}
 
 const StatePayloadSchema = z.object({
   /** Random nonce, also sent to GitHub as `state`. */
@@ -121,7 +140,7 @@ function githubFor(deps: AppDeps): GitHubOAuth | undefined {
 
 function clearStateCookie(c: Context<AppEnv>, deps: AppDeps): void {
   deleteCookie(c, OAUTH_STATE_COOKIE, {
-    path: STATE_COOKIE_PATH,
+    path: stateCookiePath(deps.config.GITHUB_OAUTH_CALLBACK_URL),
     httpOnly: true,
     secure: cookieSecure(deps.config),
     sameSite: "Lax",
@@ -189,7 +208,7 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
       }),
     ).toString("base64url");
     setCookie(c, OAUTH_STATE_COOKIE, signValue(secret, STATE_PURPOSE, payload), {
-      path: STATE_COOKIE_PATH,
+      path: stateCookiePath(deps.config.GITHUB_OAUTH_CALLBACK_URL),
       httpOnly: true,
       secure: cookieSecure(deps.config),
       // Lax: GitHub's redirect back is a top-level GET navigation, which Lax cookies ride.

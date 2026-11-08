@@ -127,6 +127,9 @@ describe("Naïve handler over node:http (TDM-154)", () => {
 
   it("boots on the next request once the secrets exist and routes the restored path", async () => {
     const url = db?.url ?? "postgres://anybench:anybench@127.0.0.1:1/none";
+    // What the platform injects on a fullstack app: its own managed (no-RLS) Postgres.
+    process.env.DATABASE_URL = "postgres://platform:managed@platform-db.invalid/app";
+    process.env.DATABASE_URL_DIRECT = "postgres://platform:managed@platform-db.invalid/app";
     process.env.ANYBENCH_DATABASE_URL = url;
     process.env.ANYBENCH_DATABASE_URL_DIRECT = url;
     const res = await fetch(`${base}/api/app?__path=/health`);
@@ -138,6 +141,9 @@ describe("Naïve handler over node:http (TDM-154)", () => {
       expect(res.status).toBe(503);
       expect(body).toMatchObject({ ok: false, db: { ok: false } });
     }
+    // getDb() and scopedDb's default read process.env directly: they must see Neon, never the platform DB.
+    expect(process.env.DATABASE_URL).toBe(url);
+    expect(process.env.DATABASE_URL_DIRECT).toBe(url);
     const nf = await fetch(`${base}/api/app?__path=/nope-tdm154`);
     expect(nf.status).toBe(404);
   });
