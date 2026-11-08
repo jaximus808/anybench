@@ -26,7 +26,8 @@
 // hook, then `stage_outputs.finalized_at`.
 //
 // No speed or quality number without a correctness gate: only proven kits leave proof (all six
-// checks), and the analyst's report must parse with ReportSchema, whose refinements refuse a
+// checks, or a curated kit's signed-off offline proof accepted for that kit row: proof-score.ts
+// proofAccepted; the checks it did not run stay `pass: false`), and the analyst's report must parse with ReportSchema, whose refinements refuse a
 // measured value without a passing gate.
 import { randomBytes } from "node:crypto";
 import {
@@ -51,7 +52,7 @@ import {
 } from "@anybench/core";
 import { expandTrials, expandTrialsInputFromKit, TRIAL_MAX_ATTEMPTS } from "@anybench/bench";
 import { eq, sql } from "drizzle-orm";
-import type { z } from "zod";
+import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { contenders } from "../db/schema/contenders.js";
 import { kits } from "../db/schema/kits.js";
@@ -62,11 +63,14 @@ import { trials } from "../db/schema/trials.js";
 import type { BillingGate } from "../lib/billing-gate.js";
 import { appendEvents } from "../lib/events.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
-import { isProven, kitSpecHash, proofOf } from "../routes/kits.js";
+import { kitSpecHash, proofOf } from "../routes/kits.js";
+import { proofAccepted } from "./proof-score.js";
 import {
   AnalysisSchema,
   EnvBuildSchema,
   ProofResultsSchema,
+  CuratedProofSchema,
+  type ProofBasis,
   ResearchSchema,
   RunIntakeSchema,
   RunStageOutputsShape,
@@ -238,6 +242,7 @@ export function stageTrialOf(t: TrialRow, slugs: Map<string, string>): StageTria
   return {
     id: t.id,
     contender: slugs.get(t.contenderId) ?? t.contenderId,
+    contender_id: t.contenderId,
     workload_id: t.workloadId,
     repeat: t.repeat,
     state: t.state,
@@ -787,14 +792,34 @@ class RunAdvance {
     );
     if (r === "interrupted") return CONTINUE;
     if (!r.ok) return this.refused(run, r);
-    const proof = await this.parsed(run, ProofResultsSchema, r.value, "the proof results");
+    const proof = await this.parsed(
+      run,
+      z.union([ProofResultsSchema, CuratedProofSchema]),
+      r.value,
+      "the proof results",
+    );
     if (!proof.ok) return proof.step;
     const kitId = kit.row.id;
+    // A curated kit's signed-off offline proof: its checks go on the kit row as they are (the
+    // ones not run say so), and the sign-off it was accepted on goes in stage_outputs.
+    const checks = Array.isArray(proof.value) ? proof.value : proof.value.checks;
+    const basis: ProofBasis | null = Array.isArray(proof.value)
+      ? null
+      : {
+          basis: proof.value.basis,
+          label: proof.value.label,
+          source: proof.value.source,
+          commit: proof.value.commit,
+          sha256: proof.value.sha256,
+          verified: proof.value.verified,
+          kit_id: kitId,
+        };
     return this.save(run, {
+      ...(basis ? { outputs: { proof_basis: basis } } : {}),
       writes: async (tx) => {
         await tx
           .update(kits)
-          .set({ proof: toJsonValue(proof.value) })
+          .set({ proof: toJsonValue(checks) })
           .where(eq(kits.id, kitId));
       },
     });
@@ -825,7 +850,7 @@ class RunAdvance {
     const kit = await this.loadKit(run);
     if (!kit) return this.hold(run, "needs_human", "proof needs a valid kit");
     if (kit.row.proof === null) return this.prove(run, kit);
-    if (isProven(kit.row.proof)) {
+    if (proofAccepted(kit.row, run.stageOutputs)) {
       return this.estimate(run, kit, (estimate) =>
         this.advance(run, { set: { estimateMicroUsd: estimate } }),
       );
@@ -854,7 +879,9 @@ class RunAdvance {
     if (!kit) return this.wait(run.state, "no valid kit");
     // A kit edited in awaiting_go starts unproven: rerun the proof here (no edge back to proof).
     if (kit.row.proof === null) return this.prove(run, kit);
-    if (!isProven(kit.row.proof)) return this.wait(run.state, "the kit has not passed its proof");
+    if (!proofAccepted(kit.row, run.stageOutputs)) {
+      return this.wait(run.state, "the kit has not passed its proof");
+    }
     if (run.estimateMicroUsd === null) {
       return this.estimate(run, kit, (estimate) =>
         this.save(run, { set: { estimateMicroUsd: estimate } }),
@@ -1008,13 +1035,16 @@ class RunAdvance {
     if (!kit) return this.hold(run, "needs_human", "analysis needs a valid kit");
     const trialsIn = await this.stageTrials(run);
     const proof = proofOf(kit.row.proof);
-    const score = this.outputs(run).score ?? null;
+    const outputs = this.outputs(run);
+    const score = outputs.score ?? null;
+    const basis = outputs.proof_basis?.kit_id === kit.row.id ? outputs.proof_basis : null;
     const r = await this.callStage(run, (ctx) =>
       this.deps.agents.analyze(ctx, {
         kit_id: kit.row.id,
         kit: kit.spec,
         score,
         proof,
+        proof_basis: basis,
         trials: trialsIn,
       }),
     );

@@ -26,6 +26,7 @@ import {
   RunSourceSchema,
   RunStateSchema,
   ContenderSchema,
+  ProofCheckNameSchema,
   SubjectKindSchema,
   type AnybenchEvent,
   type KitSpec,
@@ -133,10 +134,42 @@ export type EnvBuild = z.infer<typeof EnvBuildSchema>;
 
 export const ProofResultsSchema = z.array(ProofCheckResultSchema);
 
+/**
+ * A curated kit's proof: its committed, signed-off offline proof results (kits/<slug>/PROOF.md)
+ * instead of the proof suite ([4.12]). `checks` holds all six checks: the ones the offline run
+ * verified pass with their evidence, the rest are `pass: false` with reason "not run". The
+ * orchestrator accepts it for this kit (stage_outputs.proof_basis), never isProven: the kit stays
+ * "not proven" everywhere a proven kit is claimed.
+ */
+export const CuratedProofSchema = z.object({
+  basis: z.literal("curated"),
+  /** `proof: curated (verified offline at <short commit>)`. */
+  label: z.string().min(1),
+  /** Repo path of the signed-off proof output. */
+  source: z.string().min(1),
+  /** The commit that generated and signed it off. */
+  commit: z.string().regex(/^[0-9a-f]{40}$/),
+  /** sha256 of `source` as signed off. */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  /** The checks the offline run verified (they must pass in `checks`). */
+  verified: z.array(ProofCheckNameSchema).min(1),
+  checks: ProofResultsSchema,
+});
+export type CuratedProof = z.infer<typeof CuratedProofSchema>;
+
+/** stage_outputs.proof_basis: the curated sign-off accepted for one kit row. */
+export const ProofBasisSchema = CuratedProofSchema.omit({ checks: true }).extend({
+  kit_id: z.string().min(1),
+});
+export type ProofBasis = z.infer<typeof ProofBasisSchema>;
+
 /** One settled trial as the scorer and the analyst see it. */
 export interface StageTrial {
   id: string;
+  /** The kit contender id (slug). */
   contender: string;
+  /** contenders.id of that contender in this run. */
+  contender_id: string;
   workload_id: string;
   /** Measured repeats are 0-based; warm-ups are stored as -1, -2, … and never scored. */
   repeat: number;
@@ -185,6 +218,8 @@ export interface AgentStagePort {
       kit: KitSpec;
       score: unknown;
       proof: ProofCheckResult[];
+      /** Set when the proof stage accepted a curated sign-off for this kit. */
+      proof_basis?: ProofBasis | null;
       trials: StageTrial[];
     },
   ): Promise<StageResult<unknown>>;
@@ -198,11 +233,14 @@ export interface PipelinePort {
     ctx: StageContext,
     input: { kit_id: string; kit: KitSpec },
   ): Promise<StageResult<unknown>>;
-  /** The six proof checks (plan 17.2 rule 9) on the scoring computer. */
+  /**
+   * The six proof checks (plan 17.2 rule 9) on the scoring computer, or a curated kit's
+   * signed-off offline proof (CuratedProofSchema).
+   */
   prove(
     ctx: StageContext,
     input: { kit_id: string; kit: KitSpec; env: EnvBuild | null },
-  ): Promise<StageResult<ProofCheckResult[]>>;
+  ): Promise<StageResult<ProofCheckResult[] | CuratedProof>>;
   /** [10.12] estimateRunCost: integer micro-USD for the whole run. */
   estimate(
     ctx: StageContext,
@@ -270,6 +308,8 @@ export const RunStageOutputsShape = z.looseObject({
   research: ResearchSchema.optional(),
   env: EnvBuildSchema.optional(),
   score: z.unknown().optional(),
+  /** Set when the proof stage accepted a curated kit's signed-off offline proof. */
+  proof_basis: ProofBasisSchema.optional(),
   /** needs_human / paused_budget: the state to resume into. */
   held_from: RunStateSchema.optional(),
   hold_reason: z.string().optional(),

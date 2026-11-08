@@ -83,10 +83,10 @@ import type { BillingGate } from "../lib/billing-gate.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
+import { proofAccepted } from "../orchestrator/proof-score.js";
 import type { AppDeps } from "../types.js";
 import {
   insertKitVersion,
-  isProven,
   KIT_BODY_LIMIT_BYTES,
   kitSpecHash,
   kitSpecIssues,
@@ -320,11 +320,16 @@ async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
     });
     return { ok: false, status: 409, message: t.ok ? "run is not awaiting go" : t.error.message };
   }
-  // No speed or quality number without a correctness gate: Go needs all six proof checks passed.
+  // No speed or quality number without a correctness gate: Go needs all six proof checks passed,
+  // or a curated kit's signed-off offline proof accepted for this kit (stage_outputs.proof_basis).
   const [kit] = run.kitId
-    ? await tx.select({ proof: kits.proof }).from(kits).where(eq(kits.id, run.kitId)).limit(1)
+    ? await tx
+        .select({ id: kits.id, proof: kits.proof })
+        .from(kits)
+        .where(eq(kits.id, run.kitId))
+        .limit(1)
     : [];
-  if (!kit || !isProven(kit.proof)) {
+  if (!kit || !proofAccepted(kit, run.stageOutputs)) {
     return { ok: false, status: 409, message: "the run's kit has not passed all six proof checks" };
   }
   if (run.estimateMicroUsd === null) {

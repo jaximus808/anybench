@@ -14,7 +14,9 @@
 //
 // Ports (orchestrator/ports.ts): the E6 agent roles are not built yet. Default agents are the
 // CuratedKitStage (orchestrator/curated.ts): the Tandem repo gets the curated Tandem kit, any other
-// repo holds in `needs_human` at kit design (TODO [6.6] TDM-60); the analyst is not built ([6.8]); GitHub ingest, the cost estimate,
+// repo holds in `needs_human` at kit design (TODO [6.6] TDM-60); the Tandem kit's analyst is the
+// deterministic summary (proof-score.ts), others are not built ([6.8]). Proof is the curated kit's
+// signed-off offline proof (others hold: [4.12]); scoring is scoreKit. GitHub ingest, the cost estimate,
 // Naïve session cancel and the billing hook (ledger.recordRunCharges) are real. Pass `createRunAdvanceJob({agents, pipeline, ...})` to plug real ones in.
 import { leaseOwnerBase } from "@anybench/bench";
 import { createNaiveClient } from "@anybench/naive";
@@ -39,6 +41,7 @@ import {
   naiveSessionCanceller,
 } from "../orchestrator/defaults.js";
 import { curatedKitStages } from "../orchestrator/curated.js";
+import { curatedProof, kitScore } from "../orchestrator/proof-score.js";
 import {
   noSessionCanceller,
   unbuiltPipeline,
@@ -83,6 +86,11 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
     ...unbuiltPipeline,
     ingest: githubIngest(ctx.config.GITHUB_TOKEN ? { githubToken: ctx.config.GITHUB_TOKEN } : {}),
     estimate: billingEstimate(ctx.config),
+    // The curated kit's signed-off offline proof; any other kit holds ([4.12] proof suite).
+    prove: curatedProof(
+      ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {},
+    ),
+    score: kitScore(),
   };
 }
 

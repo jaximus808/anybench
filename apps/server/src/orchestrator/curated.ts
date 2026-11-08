@@ -8,7 +8,8 @@
 //               TANDEM_WORKERS 3: 3 trials) unless the question asks for a "full benchmark".
 //               Any other repo → needs_human with CURATED_KIT_UNAVAILABLE.
 //               TODO([6.6] TDM-60 kit designer): design kits for any repo on Naïve.
-//   analyze     not built ([6.8]).
+//   analyze     the Tandem repo: the deterministic summary (proof-score.ts summaryAnalyst, no LLM)
+//               with the Naïve-proxy disclosure; any other repo: not built ([6.8]).
 //
 // Events: each stage writes an `agent.message` (source_id `curated:<role>`) so the live run page
 // shows what happened; the orchestrator writes run.state_changed for every transition.
@@ -26,6 +27,7 @@ import {
   type StageContext,
   type Understanding,
 } from "./ports.js";
+import { summaryAnalyst, TANDEM_DISCLOSURE } from "./proof-score.js";
 
 export const CURATED_TANDEM_KIT = "tandem-vs-claude-code";
 export const CURATED_KIT_UNAVAILABLE =
@@ -195,6 +197,10 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       return stageOk({ spec: smoke.spec });
     },
 
-    analyze: unbuiltAgentStages.analyze,
+    async analyze(ctx, input) {
+      // TODO([6.8] analyst): the Naïve analyst for any kit.
+      if (!isTandemRepo(ctx.run.intake.source)) return unbuiltAgentStages.analyze(ctx, input);
+      return summaryAnalyst({ disclosure: TANDEM_DISCLOSURE })(ctx, input);
+    },
   };
 }
