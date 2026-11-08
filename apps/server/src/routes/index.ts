@@ -11,21 +11,33 @@
 import type { Hono } from "hono";
 import { corsMiddleware } from "../lib/cors.js";
 import { csrfMiddleware } from "../lib/csrf.js";
-import { sessionAuthenticator } from "../lib/session.js";
+import {
+  apiKeyOrSessionAuthenticator,
+  memoizeAuthenticate,
+  requireScope,
+} from "../lib/auth-key.js";
 import type { AppDeps, AppEnv } from "../types.js";
+import { apiKeysRoutes } from "./api-keys.js";
 import { authRoutes } from "./auth.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 
 export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
-  // TDM-65: tenant routes authenticate with the session cookie unless the caller wired its own.
+  // TDM-65/TDM-66: tenant routes take a Bearer API key or the session cookie unless the caller
+  // wired its own authenticator; either way each Request is resolved once.
   const deps: AppDeps = {
     ...appDeps,
-    authenticate: appDeps.authenticate ?? sessionAuthenticator(appDeps),
+    authenticate: memoizeAuthenticate(
+      appDeps.authenticate ?? apiKeyOrSessionAuthenticator(appDeps),
+    ),
   };
   // TDM-65: CORS and CSRF must run before every route, so this line stays first.
   app.use(corsMiddleware(deps.config), csrfMiddleware(deps.config));
+  app.route("/api-keys", apiKeysRoutes(deps));
   app.route("/auth", authRoutes(deps));
   app.route("/health", healthRoutes(deps));
+  // TDM-66: events need `events:read`; a run-scoped key only reaches its own runs.
+  app.use("/runs/:id/events", requireScope(deps, "events:read", { runIdParam: "id" }));
+  app.use("/runs/:id/stream", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.route("/runs", eventsRoutes(deps));
 }

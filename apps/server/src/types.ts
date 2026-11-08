@@ -3,7 +3,7 @@
 import type { RequestIdVariables } from "hono/request-id";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
-import type { DbActor } from "./db/scoped.js";
+import type { AuthActor } from "./lib/auth-key.js";
 import type { EventFanout } from "./lib/events.js";
 import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { Logger } from "./lib/logger.js";
@@ -17,9 +17,10 @@ export interface AppDeps {
   sentry: SentryHandle;
   /**
    * Who is calling a tenant route (session cookie or API key), or null when nobody is signed in.
-   * Wired by the auth ticket; until then tenant routes (events, TDM-72) answer 401.
+   * Default (TDM-66): apiKeyOrSessionAuthenticator, memoized per Request. The actor is a DbActor
+   * for scopedDb, plus the API key's scopes and run_ids when it came from a key.
    */
-  authenticate?: (req: Request) => Promise<DbActor | null>;
+  authenticate?: (req: Request) => Promise<AuthActor | null>;
   /**
    * The shared LISTEN connection (TDM-72), only in long-lived processes with
    * EVENTS_STREAM_MODE=listen. Without it the event stream polls.
