@@ -1,10 +1,11 @@
 "use client";
 // The /signin and /signup card (TDM-100). Sign-up is open to anyone: the API creates the account
-// on the first GitHub sign-in, so both pages start the same OAuth round trip and land on
-// POST_SIGN_IN_PATH. The email-and-password form ([17.2]) goes in the marked slot below.
+// on the first GitHub sign-in, so both pages start the same OAuth round trip and land on a
+// same-origin `?redirect_to=` (else POST_SIGN_IN_PATH). The email-and-password form ([17.2]) goes in
+// the marked slot below.
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { githubSignInUrl, POST_SIGN_IN_PATH } from "../../lib/api";
+import { githubSignInUrl, POST_SIGN_IN_PATH, safeRedirectPath } from "../../lib/api";
 import { useSession } from "../../lib/session";
 import styles from "./AuthPanel.module.css";
 
@@ -36,10 +37,13 @@ export function authErrorMessage(code: string | null): string | null {
 export function AuthPanel({ mode }: { mode: AuthMode }) {
   const session = useSession();
   const [authError, setAuthError] = useState<string | null>(null);
+  const [redirectTo, setRedirectTo] = useState<string>(POST_SIGN_IN_PATH);
   const copy = COPY[mode];
 
   useEffect(() => {
-    setAuthError(authErrorMessage(new URLSearchParams(window.location.search).get("auth_error")));
+    const q = new URLSearchParams(window.location.search);
+    setAuthError(authErrorMessage(q.get("auth_error")));
+    setRedirectTo(safeRedirectPath(q.get("redirect_to"), window.location.origin));
   }, []);
 
   return (
@@ -69,7 +73,7 @@ export function AuthPanel({ mode }: { mode: AuthMode }) {
       ) : null}
 
       <div className={styles.providers}>
-        <a className={`btn ${styles.github}`} href={githubSignInUrl(POST_SIGN_IN_PATH)}>
+        <a className={`btn ${styles.github}`} href={githubSignInUrl(redirectTo)}>
           <GitHubIcon />
           {copy.cta}
         </a>

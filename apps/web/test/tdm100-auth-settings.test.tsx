@@ -6,7 +6,7 @@ import SettingsPage from "../app/settings/page";
 import SignInPage from "../app/signin/page";
 import SignUpPage from "../app/signup/page";
 import { Header } from "../components/site/Header";
-import { apiErrorMessage, githubSignInUrl } from "../lib/api";
+import { apiErrorMessage, githubSignInUrl, safeRedirectPath } from "../lib/api";
 import { resetSessionForTests } from "../lib/session";
 
 const API = "/api";
@@ -172,6 +172,40 @@ describe("/signin and /signup", () => {
     render(<SignInPage />);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Can't reach the Anybench API");
+  });
+
+  it("honours a same-origin redirect_to and refuses anything else", async () => {
+    mockApi({ "GET /auth/me": unauthorized });
+    window.history.pushState({}, "", "/signin?redirect_to=%2Fruns%3Fpage%3D2");
+    render(<SignInPage />);
+    const gh = screen.getByRole("link", { name: "Continue with GitHub" });
+    await waitFor(() =>
+      expect(gh.getAttribute("href")).toBe(
+        `${API}/auth/github?redirect_to=${encodeURIComponent("/runs?page=2")}`,
+      ),
+    );
+    window.history.pushState({}, "", "/");
+
+    const o = "https://anybench.test";
+    expect(safeRedirectPath("/runs", o)).toBe("/runs");
+    expect(safeRedirectPath("/runs/abc?x=1#y", o)).toBe("/runs/abc?x=1#y");
+    for (const bad of [
+      null,
+      "",
+      "runs",
+      "https://evil.test/x",
+      "//evil.test",
+      "/\\evil.test",
+      "/\u0000x",
+      "/signin",
+      "/signup/",
+    ]) {
+      expect(safeRedirectPath(bad, o), String(bad)).toBe("/runs/new");
+    }
+    // Encoded tricks stay on this origin as a plain path, never protocol-relative.
+    const enc = safeRedirectPath("/%5Cevil.test", o);
+    expect(new URL(enc, o).origin).toBe(o);
+    expect(enc.startsWith("//")).toBe(false);
   });
 
   it("shows GitHub's auth_error from the query string", async () => {

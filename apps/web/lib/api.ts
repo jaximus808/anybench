@@ -34,8 +34,38 @@ export function api(): ApiClient {
   return cached;
 }
 
-/** Where every sign-in and sign-up lands (TDM-100). The run form is TDM-101. */
+/** Where sign-in and sign-up land when no `redirect_to` is given (TDM-100). The run form is TDM-101. */
 export const POST_SIGN_IN_PATH = "/runs/new";
+
+/** Pages a post-sign-in redirect must not point back at (it would loop). */
+const AUTH_PAGES = new Set(["/signin", "/signup"]);
+
+/**
+ * A `redirect_to` from the query string, if it is a same-origin relative path; else
+ * POST_SIGN_IN_PATH. Refuses absolute and protocol-relative URLs (`//evil.com`, `/\evil.com`),
+ * anything that resolves off `origin`, and the sign-in pages themselves. The API re-checks it.
+ */
+export function safeRedirectPath(raw: string | null | undefined, origin: string): string {
+  if (!raw || raw.length > 2048 || !raw.startsWith("/") || raw.startsWith("//")) {
+    return POST_SIGN_IN_PATH;
+  }
+  // Backslashes and control characters: browsers fold them into `/` or drop them (`/\evil.com`).
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (c === 0x5c || c < 0x20 || c === 0x7f) return POST_SIGN_IN_PATH;
+  }
+  let url: URL;
+  try {
+    url = new URL(raw, origin);
+  } catch {
+    return POST_SIGN_IN_PATH;
+  }
+  if (url.origin !== new URL(origin).origin || url.pathname.startsWith("//")) {
+    return POST_SIGN_IN_PATH;
+  }
+  if (AUTH_PAGES.has(url.pathname.replace(/\/+$/, "") || "/")) return POST_SIGN_IN_PATH;
+  return `${url.pathname}${url.search}${url.hash}`;
+}
 
 /**
  * The GitHub OAuth start URL, through the same-origin proxy (`/api/auth/github?redirect_to=…`), so
