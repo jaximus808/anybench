@@ -44,6 +44,8 @@ export const GateResultSchema = z.strictObject({
    * API). The trial then leaves the gate's tally and every requirement on the gate, instead of
    * counting as a failure; `pass` is ignored. Omitted means it applies. (TDM-174; TDM-51's gate
    * runner writes the same optional field.)
+   * TDM-51's gate runner stores a not-applicable gate with `pass: false`, so a scorer that
+   * ignores this field still fails closed.
    */
   applicable: z.boolean().optional(),
 });
