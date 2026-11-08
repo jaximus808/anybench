@@ -129,6 +129,21 @@ From the log:
 The frozen workspace held `FAKE_PLAN.json README.md package.json src/add.ts src/mul.ts`, with no
 `.mcp.json` and no `AGENTS.md`.
 
+## With the real approver (@anybench/approver `eval-approver`, after TDM-52 merged)
+
+On the host (macOS arm64), with Tandem 0.2.0, gateway 3.2.0, the Claude Code stand-in, 2 workers
+on the toy workload, and `TANDEM_APPROVER_BIN` pointing at a shim for
+`node packages/approver/dist/bin.js`:
+
+| policy | run.json | `approvals.summary.json` |
+|---|---|---|
+| auto | `completed`, 30.6 s | approvals 3 (`human-sim` 1 = the epic, `policy:auto` 2), latency p50 0 ms, p95 974 ms |
+| human-sim | `completed`, 20.6 s | approvals 3 (`human-sim` 1, `policy:epic` 2), latency p50 847 ms, p95 850 ms |
+
+`approver.log` ends with `simulated approvals: 3, latency p50 … ms, p95 … ms`. Both approvers
+write the same `approvals.jsonl` fields (`simulated`, `decision`, `target`, `decided_by`,
+`latency_ms`), so the collector reads either one.
+
 ## Gates in the flagship kit
 
 `gates/hidden-tests/check.sh` and `gates/api-load/check.sh` now follow the gate runner contract
@@ -144,7 +159,8 @@ closed, and api-load on the oracle passed (p95 99.8 ms at 50 req/s over 150 requ
 ## Open
 
 - The flagship's `human_in_loop.policy: llm-reviewer` needs `eval-approver` on the subject
-  computer, from TDM-52 plus a recipe. Without it, run.sh fails the trial (`approver_failed`)
+  computer (an env recipe has to install @anybench/approver), plus `TANDEM_APPROVER_ARGS`
+  (`--reviewer-model … --reviewer-agent-id … --review-budget-micro-usd …`). Without it, run.sh fails the trial (`approver_failed`)
   rather than approve automatically. TDM-184 moves the kit to `auto`.
 - The real runner (TDM-46) doesn't run `workloads/<id>/setup.sh` and doesn't copy `EVAL_WS` into
   the bundle. The harness driver copies the workspace itself (`$EVAL_OUT/workspace/`). The
