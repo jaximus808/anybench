@@ -19,7 +19,6 @@ import {
   type RouteSpec,
 } from "@anybench/core";
 import type { Context, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AppEnv } from "../types.js";
 import { actorCanAccessRun, type ActorEnv, type AuthActor } from "./auth-key.js";
@@ -55,17 +54,34 @@ export function fail(
   );
 }
 
-/** hono/body-limit with a 413 ApiErrorBody (`payload_too_large`). Put it before the auth guard. */
+/**
+ * A 413 ApiErrorBody (`payload_too_large`) for bodies over `maxBytes`. Put it before the auth guard.
+ *
+ * Not hono/body-limit: without a Content-Length (a chunked body, which the web app's same-origin
+ * proxy can forward) it swaps in a counting stream, and reading that stream on the deployed API
+ * never finished: every signed-in POST through the proxy hung until a 504. Here a declared length
+ * is checked up front, and an undeclared one is read once (Hono caches it for the handler) and
+ * measured.
+ */
 export function bodyLimitOf(maxBytes: number): MiddlewareHandler<ActorEnv> {
-  return bodyLimit({
-    maxSize: maxBytes,
-    onError: (c) =>
+  return async (c, next) => {
+    const tooBig = () =>
       fail(
         c as ActorContext,
         "payload_too_large",
         `request body is over the ${maxBytes} byte limit`,
-      ),
-  });
+      );
+    const declared = c.req.header("content-length");
+    if (declared !== undefined) {
+      const n = Number(declared);
+      if (!Number.isFinite(n) || n > maxBytes) return tooBig();
+      return next();
+    }
+    if (c.req.method === "GET" || c.req.method === "HEAD") return next();
+    const text = await c.req.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) return tooBig();
+    return next();
+  };
 }
 
 /** A Postgres unique violation (23505) on `constraint`, looking through Drizzle's error wrapper. */
