@@ -15,7 +15,8 @@
   "files": [
     "dist",
     "scout",
-    "account-manager"
+    "account-manager",
+    "writer"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import {
   DEFAULT_REPLY_MODEL_CAP_MICRO_USD,
   OPTIN_SOURCE,
+  PUBLIC_CONTACT_SOURCE,
   PgFunnel,
   PgLeadStore,
   PgReplyStore,
@@ -40,7 +41,7 @@ const formatMicroUsd = (m: bigint) => formatUsd(m, { decimals: 4 });
 export const OUTREACH_USAGE = `Usage:
   anybench outreach queries
   anybench outreach source --query <saved-query-id> --limit <N> [options]
-  anybench outreach import <file.csv> --source hackathon_optin [--dry-run] [--json]
+  anybench outreach import <file.csv> --source hackathon_optin|public_contact [--dry-run] [--json]
   anybench outreach poll [--no-model] [--no-slack] [--dry-run] [--json]     (alias: replies)
   anybench outreach stats [--json]
 
@@ -57,7 +58,10 @@ suppressed addresses, and write leads (source=context_dev, status=new).
   --cache-dir <dir>              GitHub cache (default ~/.anybench/cache/outreach-github)
 
 import: CSV with a header row and columns name,email,repo (repo may be blank; owner/repo or a
-github.com URL). Only --source hackathon_optin is accepted.
+github.com URL). --source hackathon_optin: people who asked to be benchmarked. --source
+public_contact: addresses a project publishes for contact (site contact page/footer or a README
+contact line; never commits, profiles, LinkedIn or a finder); extra required column
+email_source_url (https, where it is published) and optional email_snippet.
 
 poll: read new replies in our AgentMail inbox ($OUTREACH_FROM_ADDRESS, via Monid; reads are free),
 classify each (interested, question, not_now, unsubscribe, bounce_or_auto, unclear) by rules, then
@@ -72,7 +76,7 @@ to $SLACK_WEBHOOK_URL when it is set (unless --no-slack).
 stats: the funnel from the DB (sourced → scouted → fit → drafted → approved → sent → replied →
 interested → unsubscribed, distinct leads), suppressions and recorded spend. Counts only.
 
-Common: --database-url <url> (default $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev
+Common: --database-url <url> (default $OUTREACH_DATABASE_URL, else $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev
 DB), --dry-run (write nothing), --json.`;
 
 export const DEFAULT_LOCAL_DB_URL = "postgres://anybench:anybench@localhost:55432/anybench";
@@ -195,7 +199,11 @@ export async function runOutreach(
   }
 
   const databaseUrl =
-    v["database-url"] ?? env.DATABASE_URL ?? env.LOCAL_DATABASE_URL ?? DEFAULT_LOCAL_DB_URL;
+    v["database-url"] ??
+    env.OUTREACH_DATABASE_URL ??
+    env.DATABASE_URL ??
+    env.LOCAL_DATABASE_URL ??
+    DEFAULT_LOCAL_DB_URL;
   const open = deps.openStore ?? openPgStore;
 
   if (sub === "import") {
@@ -204,10 +212,11 @@ export async function runOutreach(
       err("outreach import takes exactly one CSV file");
       return 2;
     }
-    if (v.source !== OPTIN_SOURCE) {
-      err(`outreach import requires --source ${OPTIN_SOURCE}`);
+    if (v.source !== OPTIN_SOURCE && v.source !== PUBLIC_CONTACT_SOURCE) {
+      err(`outreach import requires --source ${OPTIN_SOURCE} or ${PUBLIC_CONTACT_SOURCE}`);
       return 2;
     }
+    const source = v.source;
     let csv: string;
     try {
       csv = await readFile(file, "utf8");
@@ -224,11 +233,12 @@ export async function runOutreach(
         file: basename(file),
         store: db.store,
         dryRun: v["dry-run"],
+        source,
         ...(deps.now ? { now: deps.now } : {}),
       });
       if (v.json) out(json(r));
       else {
-        out(`imported ${r.imported.length} of ${r.rows} rows (source=${OPTIN_SOURCE})`);
+        out(`imported ${r.imported.length} of ${r.rows} rows (source=${source})`);
         for (const s of r.skipped)
           out(`  row ${s.row}: ${s.reason}${s.detail ? ` (${s.detail})` : ""}`);
       }

@@ -15,3 +15,5 @@ export * from "./issue-writer.js";
 export * from "./scout.js";
 // TDM-167 [15.8a]: the outreach account manager (reply classifier).
 export * from "./account-manager.js";
+// TDM-165 [15.5a]: the outreach writer (subject + personal opening of a draft).
+export * from "./writer.js";

@@ -1,0 +1,13 @@
+{
+  "role": "writer",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench outreach writer (E15 15.5a): writes the subject and the one personal opening of a draft from a scout brief.",
+  "budget": {
+    "cap_micro_usd": 1000000,
+    "max_task_micro_usd": 100000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

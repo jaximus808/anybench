@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "subject": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120
+    },
+    "opening": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 800
+    }
+  },
+  "required": ["subject", "opening"],
+  "additionalProperties": false
+}

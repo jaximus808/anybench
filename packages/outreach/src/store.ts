@@ -5,7 +5,7 @@
 import { LeadIdSchema, newId } from "@anybench/core";
 import { z } from "zod";
 
-export const LEAD_SOURCES = ["context_dev", "hackathon_optin"] as const;
+export const LEAD_SOURCES = ["context_dev", "hackathon_optin", "public_contact"] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
 
 export const NewLeadSchema = z.object({

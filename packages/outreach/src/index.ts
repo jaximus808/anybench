@@ -20,3 +20,6 @@ export * from "./rule10.js";
 // 15.8a reply polling + funnel stats (TDM-167).
 export * from "./replies.js";
 export * from "./stats.js";
+// 15.5a writer + founder review queue (TDM-165).
+export * from "./writer.js";
+export * from "./drafts.js";

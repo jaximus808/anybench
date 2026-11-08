@@ -35,7 +35,7 @@ reading or writing the database.
   --run-cap-micro-usd <N>      all spend per run, Naïve + email lookups (default $OUTREACH_SCOUT_RUN_CAP_MICRO_USD or 3000000 = $3)
   --model <id>                 override the scout model (packages/agents/scout/config.json)
   --out <file>                 write the full report (briefs included) as JSON
-  --database-url <url>         default $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev DB
+  --database-url <url>         default $OUTREACH_DATABASE_URL, $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev DB
   --find-email                 for scored leads with no email: Hunter via Monid (needs MONID_API_KEY;
                                $0.0245 per address found, counted against the run cap)
   --dry-run                    write nothing to the database (sessions still run and spend)
@@ -179,7 +179,11 @@ export async function runOutreachScout(
   try {
     if (adHoc.length === 0) {
       const databaseUrl =
-        v["database-url"] ?? env.DATABASE_URL ?? env.LOCAL_DATABASE_URL ?? DEFAULT_LOCAL_DB_URL;
+        v["database-url"] ??
+        env.OUTREACH_DATABASE_URL ??
+        env.DATABASE_URL ??
+        env.LOCAL_DATABASE_URL ??
+        DEFAULT_LOCAL_DB_URL;
       opened = await (deps.openStore ?? openPgStore)(databaseUrl);
     }
     const report = await runScout({

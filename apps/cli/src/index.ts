@@ -6,19 +6,23 @@ import { fileURLToPath } from "node:url";
 import { runKitValidate } from "./commands/kit-validate.js";
 import { runOutreach } from "./commands/outreach.js";
 import { runOutreachScout } from "./commands/outreach-scout.js";
+import { runOutreachDraft, runOutreachReview } from "./commands/outreach-review.js";
 
 export { runKitValidate } from "./commands/kit-validate.js";
 export { runOutreach } from "./commands/outreach.js";
 export { runOutreachScout } from "./commands/outreach-scout.js";
+export { runOutreachDraft, runOutreachReview } from "./commands/outreach-review.js";
 
 export async function main(argv: readonly string[]): Promise<number> {
   const [group, command, ...rest] = argv;
   if (group === "kit" && command === "validate") return runKitValidate(rest);
   // `outreach scout` before the `outreach` catch-all (TDM-163), which would reject it as unknown.
   if (group === "outreach" && command === "scout") return runOutreachScout(rest);
+  if (group === "outreach" && command === "draft") return runOutreachDraft(rest);
+  if (group === "outreach" && command === "review") return runOutreachReview(rest);
   if (group === "outreach") return runOutreach(argv.slice(1));
   process.stderr.write(
-    "Usage: anybench kit validate [dir] [--json] [--quiet]\n       anybench outreach <queries|source|import|scout|poll|stats> --help\n",
+    "Usage: anybench kit validate [dir] [--json] [--quiet]\n       anybench outreach <queries|source|import|scout|draft|review|poll|stats> --help\n",
   );
   return 2;
 }
