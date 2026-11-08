@@ -35,7 +35,7 @@ export interface LiveSnapshot {
     | "spent_micro_usd"
     | "estimate_micro_usd"
     | "created_at"
-  > & { paused_reason?: string | null };
+  > & { paused_reason?: string | null; kit_id?: string | null };
   contenders: LiveContender[];
   trials: Trial[];
   agents: AgentSession[];
@@ -109,6 +109,8 @@ export interface FeedItem {
   phaseTo: TrialState | null;
   /** agent events only: the agent's role. */
   role: string | null;
+  /** The trial the event is about (trial events, and computer/usage events that name one). */
+  trialId: string | null;
 }
 
 export interface LiveAlert {
@@ -129,6 +131,8 @@ export interface LiveRun {
   budgetMicroUsd: bigint;
   spentMicroUsd: bigint;
   estimateMicroUsd: bigint | null;
+  /** The run's kit once kit_draft wrote one (the Go hero reads its plan). */
+  kitId: string | null;
   createdAt: string;
   contenders: LiveContender[];
   workloads: string[];
@@ -223,6 +227,7 @@ export function initLive(s: LiveSnapshot): LiveRun {
     budgetMicroUsd: s.run.budget_micro_usd,
     spentMicroUsd: s.run.spent_micro_usd,
     estimateMicroUsd: s.run.estimate_micro_usd,
+    kitId: s.run.kit_id ?? null,
     createdAt: s.run.created_at,
     contenders: s.contenders,
     workloads: workloadsOf(Object.values(trials)),
@@ -349,6 +354,20 @@ export function mergeAgents(live: LiveRun, sessions: AgentSession[]): LiveRun {
     if (!order.includes(s.id)) order.push(s.id);
   }
   return { ...live, agents, agentOrder: order };
+}
+
+/**
+ * Re-read the run row (runs.get): the estimate and the kit land on the row, not in events, so a
+ * page opened before kit_draft/proof would otherwise never see them. Spend stays the sum of the
+ * events folded so far.
+ */
+export function mergeRun(
+  live: LiveRun,
+  run: Pick<Run, "estimate_micro_usd"> & { kit_id?: string | null },
+): LiveRun {
+  const kitId = run.kit_id ?? live.kitId;
+  if (run.estimate_micro_usd === live.estimateMicroUsd && kitId === live.kitId) return live;
+  return { ...live, estimateMicroUsd: run.estimate_micro_usd, kitId };
 }
 
 /** Re-read open alerts: fills in alert ids and drops alerts the API says are resolved. */
@@ -557,14 +576,7 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
     spentMicroUsd: live.spentMicroUsd + ev.cost_delta_micro_usd,
   };
 
-  const trialId =
-    ev.source === "trial"
-      ? ev.source_id
-      : ev.type === "usage.recorded"
-        ? (ev.payload.trial_id ?? null)
-        : ev.type === "computer.created" || ev.type === "computer.destroyed"
-          ? (ev.payload.trial_id ?? null)
-          : null;
+  const trialId = eventTrialId(ev);
   let trial = trialId ? next.trials[trialId] : undefined;
   if (trialId && !trial && ev.type === "trial.phase") {
     // Count it now; the trials.list refetch places it in its row.
@@ -665,6 +677,15 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
   return next;
 }
 
+/** The trial an event is about, if any. */
+function eventTrialId(ev: AnybenchEvent): string | null {
+  if (ev.source === "trial") return ev.source_id;
+  if (ev.type === "usage.recorded") return ev.payload.trial_id ?? null;
+  if (ev.type === "computer.created" || ev.type === "computer.destroyed")
+    return ev.payload.trial_id ?? null;
+  return null;
+}
+
 function feedItem(live: LiveRun, ev: AnybenchEvent): FeedItem {
   return {
     seq: ev.seq,
@@ -680,6 +701,7 @@ function feedItem(live: LiveRun, ev: AnybenchEvent): FeedItem {
       ev.type === "agent.tool.started" || ev.type === "agent.message"
         ? ev.payload.agent_role
         : null,
+    trialId: eventTrialId(ev),
   };
 }
 

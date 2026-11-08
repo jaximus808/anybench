@@ -29,6 +29,7 @@ import {
   initLive,
   mergeAgents,
   mergeAlerts,
+  mergeRun,
   mergeTrials,
   seedHistory,
   type LiveRun,
@@ -235,7 +236,12 @@ export function useLiveRun(runId: string, opts: UseLiveRunOptions = {}): LiveHan
         const detail = await client.call(apiRoutes.runs.get, { params: { id } }, { signal });
         if (!signal.aborted)
           setLive((prev) =>
-            prev ? mergeAlerts(mergeAgents(prev, detail.agents), detail.open_alerts) : prev,
+            prev
+              ? mergeRun(
+                  mergeAlerts(mergeAgents(prev, detail.agents), detail.open_alerts),
+                  detail.run,
+                )
+              : prev,
           );
       } catch {
         // Keep what we have; the next refresh tries again.

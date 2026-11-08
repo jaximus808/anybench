@@ -80,12 +80,10 @@ function TrialView({
         ? (TRIAL_STAGE[t.state] ?? "booting")
         : "result";
   const at = STEPS.indexOf(stage as (typeof STEPS)[number]);
-  const events = filterFeed(live.feed, {
-    query: "",
-    sources: [],
-    minSeverity: "info",
-    sourceId: id,
-  }).slice(-6);
+  // Its own events, including the computer and usage events that name it.
+  const events = filterFeed(live.feed, { query: "", sources: [], minSeverity: "debug" })
+    .filter((e) => (e.sourceId === id || e.trialId === id) && e.type !== "trial.log_chunk")
+    .slice(-6);
   const vm = t.computerId
     ? `VM ${t.computerId.slice(-6)}`
     : tone === "active"

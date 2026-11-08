@@ -250,3 +250,25 @@ describe("runningView", () => {
     expect(keys.join(" ")).not.toMatch(/speed|score|quality|rank|wall/i);
   });
 });
+
+describe("run row and event→trial (from launch-ux-wip)", () => {
+  it("mergeRun picks up the estimate and kit written after the page opened", async () => {
+    const { mergeRun } = await import("../lib/live/model");
+    const live = initLive({
+      ...demo.snapshot,
+      run: { ...demo.snapshot.run, estimate_micro_usd: null },
+    });
+    expect(live.estimateMicroUsd).toBeNull();
+    const next = mergeRun(live, { estimate_micro_usd: 9_000_000n, kit_id: "kit-1" });
+    expect(next.estimateMicroUsd).toBe(9_000_000n);
+    expect(next.kitId).toBe("kit-1");
+    expect(mergeRun(next, { estimate_micro_usd: 9_000_000n, kit_id: null })).toBe(next);
+  });
+
+  it("feed items name the trial a computer event is about", () => {
+    const live = applyEvents(initLive(demo.snapshot), events.slice(0, 400));
+    const comp = live.feed.find((f) => f.type === "computer.created");
+    expect(comp?.trialId).toBeTruthy();
+    expect(live.trials[comp!.trialId!]).toBeDefined();
+  });
+});
