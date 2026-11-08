@@ -257,6 +257,46 @@ cd apps/server && LOCAL_DATABASE_URL=postgres://anybench:anybench@localhost:5543
 Expected size: two image builds, plus about 44 proof computers for a kit like the live one above
 (20 trials and 24 gate runs on docker-local).
 
+### Live attempt 2, 2026-11-08 07:51–07:53Z (the orchestrator's live window): held by the skeptic
+
+Before the run I checked Naïve health: `credits.show` + `computers.list` answered in 2.0 s.
+The balance was 226,883,903 µ$. 11 computers were up, all from the founder's run
+(`ab-01a1b9ee…`), none of them mine. Proof concurrency was set to 3 (env build uses 2 and runs
+before proof).
+
+```
+run 01a1ba24-640e-75eb-9e8d-373e48d733af  (BurntSushi/ripgrep, auto_go off)
+07:51:49.589Z  null → intake (created)
+               intake → understand → research → kit_draft
+               (the events were printed after the job finished, at 07:53:37Z; the run took 108 s)
+               understander: software / cli / ready, 2 verified claims              3,530 µ$
+               kit designer: first draft valid (kit v1 written + validated)       135,516 µ$
+               skeptic (openai/gpt-5-mini): hold, 1 block / 1 warn                    7,933 µ$
+kit_draft → needs_human: "the kit skeptic refused the kit: hold: skeptic: BLOCK contamination
+  anybench.yaml:67 the gate's reference is captured from the subject (the pinned ripgrep release).
+  That makes the oracle dependent on the subject under test; an independent, external oracle or a
+  clear cross-check mechanism that refuses to accept a subject-derived reference unless an
+  independent baseline pre-agrees is necessary …"
+```
+
+- No env build and no proof ran, so no computer was created: 0 proof computers, 0 blocks.
+- Afterwards `computers.list()` returned the same 11 computers, all the founder's. No 429 or 5xx
+  appeared in the log.
+- Session spend was 146,979 µ$. The balance fell by 588,579 µ$ over the window, but that
+  includes the founder's 11 computers running at the same time.
+
+**Why it held.** The block is a false positive against the C5 contract. The skeptic asks for "a
+clear cross-check mechanism that refuses to accept a subject-derived reference unless an
+independent baseline pre-agrees", and the proof suite already enforces exactly that. With the
+oracle on the subject, `oracle_passes` fails when no different baseline passes the gate on every
+captured reference, and an unconfirmed capture is deleted. The ripgrep and fd kits proved this
+on docker-local, where gnu-grep and gnu-find confirmed the captures.
+
+The skeptic prompt's rule 7 ("the oracle is the subject's own code") did not carve out this
+case. It now does (`packages/agents/skeptic/prompt.md`): the rule flags only a capture with no
+independent baseline, or one whose baseline is the same program. Contamination findings hold
+rather than repair, so the designer could not fix this one by itself.
+
 ## Live spend (Naïve)
 
 | what | µ$ |
@@ -267,7 +307,8 @@ Expected size: two image builds, plus about 44 proof computers for a kit like th
 | kit designer, Tandem | 0 (holds before any session) |
 | e2e attempt 1 (stopped in 429 retries, nothing created) | 0 |
 | model listing (`models.list`) | 0 |
-| **total** | **137,240** |
+| e2e attempt 2: understander 3,530 + designer 135,516 + skeptic 7,933 (held at kit_draft, no computers) | 146,979 |
+| **total** | **284,219** |
 
 Session costs are from `agent_sessions.cost_micro_usd`. No computers were created on Naïve.
 
@@ -301,3 +342,42 @@ tests), mined on docker-local `golang:1.26-bookworm`. The gate ran on an ubuntu:
 built with env-build's scoring recipe list (`toolchainRecipes` + `withRecipes`).
 `trial-source-demo.test.ts` covers the env-build wiring on Postgres + FakeProvider: go lands on
 both images and in their recorded recipes, and an unknown toolchain holds.
+
+## Mining inside the pipeline (v1 scope (b), docker-local + FakeNaive)
+
+`orchestrator/mine-stage.ts` `mineForRun` is what kit_draft calls for a coding-agent or harness
+understanding whose history is minable:
+
+1. It clones at the digest's ref (`~/.anybench/clones/<owner>__<repo>`, fetched again on reuse).
+2. It checks the mine cache (`~/.anybench/mine/<sha256(url, commit, MINER_VERSION)>.json`): a
+   retried or crashed stage reuses the mine and needs no computer.
+3. Otherwise it uses ONE mining computer from the run's provider. The computer is tagged
+   `ab-infra-mine-<run8>` (our infra cost, never on the user's trials) and gets git-time plus a
+   recipe per digest language. Mining runs `mineRepoTasks` with a 25 min `deadline` and
+   maxVerify 40 (target 30). The computer is destroyed in `finally` with the env build's
+   429-retrying destroy.
+4. Fewer than 3 verified tasks hold with "only N task(s) verified from the history (need 3): C
+   candidate(s) over M commits; drops: …".
+
+Then come issue writing (`designMinedAgentKit`), `materializeAgentKit`, validation and the
+skeptic, ending in `files_dir`. The contender adapters come from a template. The default is the
+Tandem repo → kits/tandem-vs-claude-code; any other harness holds with "no contender adapter for
+this harness yet". The Tandem repo stays curated unless the question asks for a mined kit
+(`wantsMinedKit`: "mined", "from its own history").
+
+`focusFailToPass` cuts FAIL_TO_PASS to the tests whose names appear in lines the commit's test
+diff added. The other tests move to PASS_TO_PASS, where the gate still requires them to pass.
+This matters when a Go test file does not compile before the fix: the miner then sees the whole
+package go from fail to pass. Focused tasks are listed in `design/tasks.json`
+(`fail_to_pass_focused`).
+
+`apps/server/test/mine-stage-tdm60.test.ts` (5 tests, all pass):
+- no provider and no cache → hold;
+- the languages → recipes mapping;
+- a non-GitHub source → hold;
+- docker-local: exactly one computer tagged `ab-infra-mine-0195f3a2`, gone afterwards; one cache
+  file; the rerun with `provider: null` returns `cached: true` with the same tasks; `minTasks: 99`
+  holds with the counts;
+- the orchestrator: POST /runs for a fixture harness repo → understand (FakeNaive) → kit_draft
+  (docker-local mining, FakeNaive issues) → env_build → proof (FakePipeline) → **awaiting_go**,
+  with kit v1 at `<generated>/<run>/v1` (claude-code-solo vs tandem, ≥ 3 workloads).

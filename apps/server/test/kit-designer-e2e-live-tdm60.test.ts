@@ -19,8 +19,16 @@ import { createNaiveClient } from "@anybench/naive";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { agentSessions, events, kits, runs } from "../src/db/schema/index.js";
-import { createRunAdvanceJob } from "../src/jobs/run-advance.js";
+import {
+  agentSessions,
+  computers as computersTable,
+  events,
+  kits,
+  runs,
+} from "../src/db/schema/index.js";
+import { configuredSecretValues, proofStage } from "../src/jobs/proof.js";
+import { createRunAdvanceJob, defaultPipeline } from "../src/jobs/run-advance.js";
+import { computeProviderFromConfig, proxyDepsFromConfig } from "../src/lib/compute.js";
 import type { JobContext, JobDef } from "../src/jobs/types.js";
 import { createLogger } from "../src/lib/logger.js";
 import { MemQueueTdm54 } from "./helpers/orchestrator-tdm54.js";
@@ -79,7 +87,28 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
         workerStartedAt: new Date(),
       };
       const queue = new MemQueueTdm54();
-      const job = createRunAdvanceJob({ jobs: () => queue }) as JobDef;
+      // At most TDM60_E2E_PROOF_CONCURRENCY Naïve computers at once in proof (env build uses 2,
+      // and runs before proof): the production pipeline with a bounded proof suite.
+      const concurrency = Number(process.env.TDM60_E2E_PROOF_CONCURRENCY ?? "3");
+      const job = createRunAdvanceJob({
+        jobs: () => queue,
+        pipeline: (c) => ({
+          ...defaultPipeline(c),
+          prove: proofStage({
+            db: c.db,
+            provider: computeProviderFromConfig(c.config),
+            secretValues: () =>
+              configuredSecretValues(c.config as unknown as Record<string, unknown>),
+            pricePerBlockMicroUsd: c.config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+            ...(proxyDepsFromConfig(c.config)
+              ? { naiveProxy: proxyDepsFromConfig(c.config)! }
+              : {}),
+            proxyCapMicroUsd: c.config.TRIAL_PROXY_CAP_MICRO_USD,
+            suite: { concurrency },
+            log: (msg, data) => log(`proof: ${msg}`, data ?? {}),
+          }),
+        }),
+      }) as JobDef;
 
       const res = await api.app.request("http://api.test/runs", {
         method: "POST",
@@ -106,6 +135,12 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
       };
       const row = async () => (await h.db.select().from(runs).where(eq(runs.id, runId)))[0]!;
       let seenEvents = 0;
+      const transitions: {
+        from: string | null;
+        to: string | null;
+        at: string;
+        reason: string | null;
+      }[] = [];
       const printEvents = async () => {
         const evs = await h.db
           .select()
@@ -157,6 +192,7 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
         .select()
         .from(agentSessions)
         .where(eq(agentSessions.runId, runId));
+      const computerRows = await h.db.select().from(computersTable);
       const balanceAfter = (await naive.credits.show()).balanceMicroUsd;
       const computers = await naive.computers.list();
       const summary = {
@@ -165,6 +201,8 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
         state: final.state,
         paused_reason: final.pausedReason,
         stopped,
+        transitions,
+        stage_outputs: final.stageOutputs,
         estimate_micro_usd: final.estimateMicroUsd,
         kits: kitRows.map((k) => ({
           version: k.version,
@@ -177,6 +215,12 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
           status: s.status,
           cost_micro_usd: s.costMicroUsd,
         })),
+        proof_computers: {
+          count: computerRows.length,
+          destroyed: computerRows.filter((c) => c.destroyedAt !== null).length,
+          blocks: computerRows.reduce((n, c) => n + c.blocksBilled, 0),
+          cost_micro_usd: computerRows.reduce((n, c) => n + c.costMicroUsd, 0n),
+        },
         balance_before: balanceBefore,
         balance_after: balanceAfter,
         spent_micro_usd: balanceBefore - balanceAfter,
