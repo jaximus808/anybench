@@ -93,6 +93,11 @@ export const EnvSchema = z.object({
   /** Where sign-in lands afterwards; defaults to the first ALLOWED_ORIGINS entry. */
   PUBLIC_WEB_URL: optionalUrl,
   /**
+   * Public base URL of this API (TDM-49): the runner ingest URL the worker writes into each
+   * trial.json. Unset = runners are file-only (the worker follows status.json).
+   */
+  PUBLIC_API_URL: optionalUrl,
+  /**
    * Price of one eval-computer billing block (Naïve: 10 min, paid in advance), integer micro-USD,
    * for computer cost and leak alerts (TDM-31). Default: Naïve's default 2 vCPU / 4 GiB size at
    * $0.0084 per vCPU-block + $0.0027 per GiB-block (docs/findings/naive-platform-hosting.md).

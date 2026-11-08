@@ -22,10 +22,11 @@
   },
   "dependencies": {
     "@anybench/core": "workspace:*",
+    "@anybench/envs": "workspace:*",
     "@anybench/kit": "workspace:*",
     "@anybench/naive": "workspace:*",
     "@anybench/providers": "workspace:*",
-    "@anybench/envs": "workspace:*",
+    "@anybench/runner": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {

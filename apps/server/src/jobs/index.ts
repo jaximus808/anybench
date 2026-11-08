@@ -10,8 +10,17 @@
 import { computerReapJob } from "./computer-reap.js";
 import { heartbeatJob } from "./heartbeat.js";
 import { runAdvanceJob } from "./run-advance.js";
+import { trialExecuteJob, trialGateStubJob, trialReattachJob } from "./trial-execute.js";
 import type { JobDef } from "./types.js";
 
-export const JOBS: readonly JobDef[] = [heartbeatJob, computerReapJob, runAdvanceJob];
+export const JOBS: readonly JobDef[] = [
+  heartbeatJob,
+  computerReapJob,
+  runAdvanceJob,
+  trialExecuteJob,
+  trialReattachJob,
+  // STUB until [5.6] (gate runner) merges; [5.6] replaces this entry with its own trial.gate.
+  trialGateStubJob,
+];
 
 export { defineJob, type JobContext, type JobDef } from "./types.js";
