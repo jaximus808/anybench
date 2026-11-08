@@ -17,7 +17,7 @@
 //   --down      stop and delete every worker computer (back to running the worker elsewhere).
 //   --force     replace the worker computer even when nothing changed.
 //
-// Safety: BILLING_MODE must be test; the Neon URLs must not be the prod branch's. Secrets reach the
+// Safety: BILLING_MODE must be test or live; the Neon URLs must not be the prod branch's. Secrets reach the
 // computer only as an fs write body (~/.anybench/worker.env, mode 600), never argv or a log line.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";

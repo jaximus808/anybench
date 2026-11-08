@@ -36,6 +36,10 @@ export const DeployEnvSchema = z
     STRIPE_TEST_WEBHOOK_SECRET: opt,
     STRIPE_TEST_METER_ID: opt,
     STRIPE_TEST_PRICE_USAGE: opt,
+    STRIPE_LIVE_SECRET_KEY: opt,
+    STRIPE_LIVE_WEBHOOK_SECRET: opt,
+    STRIPE_LIVE_METER_ID: opt,
+    STRIPE_LIVE_PRICE_USAGE: opt,
     SENTRY_DSN: opt,
     PUBLISH_SIGNING_KEY_ID: opt,
     PUBLISH_SIGNING_PRIVATE_KEY_DER_B64: opt,
@@ -61,13 +65,17 @@ export const DeployEnvSchema = z
     DEPLOY_API_PUBLIC_URL: z.preprocess(blank, z.url().optional()),
   })
   .superRefine((env, ctx) => {
-    // This deploy is test-mode only: refuse a live billing mode outright.
-    if (env.BILLING_MODE !== "test") {
+    // test or live (10.11 cutover); off is local dev only.
+    if (env.BILLING_MODE !== "test" && env.BILLING_MODE !== "live") {
       ctx.addIssue({
         code: "custom",
         path: ["BILLING_MODE"],
-        message: `must be test for this deploy (got ${env.BILLING_MODE}); live billing is refused`,
+        message: `must be test or live for this deploy (got ${env.BILLING_MODE})`,
       });
+    }
+    if (env.BILLING_MODE === "live") {
+      // Live takes money: every live value must be present and look right (names only, no values).
+      for (const issue of liveBillingIssues(env)) ctx.addIssue({ code: "custom", ...issue });
     }
     if (env.STRIPE_TEST_SECRET_KEY && !/^(sk|rk)_test_/.test(env.STRIPE_TEST_SECRET_KEY)) {
       ctx.addIssue({
@@ -91,6 +99,32 @@ export const DeployEnvSchema = z
     }
   });
 export type DeployEnv = z.infer<typeof DeployEnvSchema>;
+
+const LIVE_VARS = [
+  ["STRIPE_LIVE_SECRET_KEY", /^(sk|rk)_live_/, "must be a live key (sk_live_ or rk_live_)"],
+  ["STRIPE_LIVE_WEBHOOK_SECRET", /^whsec_/, "must be a webhook signing secret (whsec_...)"],
+  ["STRIPE_LIVE_METER_ID", /^mtr_/, "must be a meter id (mtr_...)"],
+  ["STRIPE_LIVE_PRICE_USAGE", /^price_/, "must be a price id (price_...)"],
+] as const;
+
+/** Why the STRIPE_LIVE_* set cannot be deployed, by name only (never a value). */
+export function liveBillingIssues(
+  env: Record<string, unknown>,
+): { path: string[]; message: string }[] {
+  const out: { path: string[]; message: string }[] = [];
+  for (const [name, shape, message] of LIVE_VARS) {
+    const v = env[name];
+    if (typeof v !== "string" || v === "") {
+      out.push({
+        path: [name],
+        message: "is required when BILLING_MODE=live (run scripts/ops/stripe-go-live.ts)",
+      });
+    } else if (!shape.test(v)) {
+      out.push({ path: [name], message });
+    }
+  }
+  return out;
+}
 
 export function sameDatabase(a: string, b: string): boolean {
   try {
@@ -157,7 +191,7 @@ export const OWNED_SECRETS = [
   "ANYBENCH_DATABASE_URL_DIRECT",
   "BILLING_MODE",
   "STRIPE_SECRET_KEY",
-  // Link a card + the Stripe webhook (stripe-onboarding): test-mode values only before 10.11.
+  // Link a card + the Stripe webhook (stripe-onboarding): the TEST or LIVE set, per BILLING_MODE.
   "STRIPE_WEBHOOK_SECRET",
   "STRIPE_METER_ID",
   "STRIPE_PRICE_USAGE",
@@ -239,7 +273,7 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
     LOG_LEVEL: "info",
     ANYBENCH_DATABASE_URL: env.DATABASE_URL,
     ANYBENCH_DATABASE_URL_DIRECT: env.DATABASE_URL_DIRECT,
-    BILLING_MODE: "test",
+    BILLING_MODE: env.BILLING_MODE === "live" ? "live" : "test",
     GITHUB_CLIENT_ID: env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: env.GITHUB_CLIENT_SECRET,
     GITHUB_OAUTH_CALLBACK_URL: callbackUrl,
@@ -252,10 +286,24 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
     EVENTS_POLL_INTERVAL_MS: "1000",
   };
   if (cookieDomain) s.SESSION_COOKIE_DOMAIN = cookieDomain;
-  if (env.STRIPE_TEST_SECRET_KEY) s.STRIPE_SECRET_KEY = env.STRIPE_TEST_SECRET_KEY;
-  if (env.STRIPE_TEST_WEBHOOK_SECRET) s.STRIPE_WEBHOOK_SECRET = env.STRIPE_TEST_WEBHOOK_SECRET;
-  if (env.STRIPE_TEST_METER_ID) s.STRIPE_METER_ID = env.STRIPE_TEST_METER_ID;
-  if (env.STRIPE_TEST_PRICE_USAGE) s.STRIPE_PRICE_USAGE = env.STRIPE_TEST_PRICE_USAGE;
+  const stripe =
+    env.BILLING_MODE === "live"
+      ? {
+          key: env.STRIPE_LIVE_SECRET_KEY,
+          webhook: env.STRIPE_LIVE_WEBHOOK_SECRET,
+          meter: env.STRIPE_LIVE_METER_ID,
+          price: env.STRIPE_LIVE_PRICE_USAGE,
+        }
+      : {
+          key: env.STRIPE_TEST_SECRET_KEY,
+          webhook: env.STRIPE_TEST_WEBHOOK_SECRET,
+          meter: env.STRIPE_TEST_METER_ID,
+          price: env.STRIPE_TEST_PRICE_USAGE,
+        };
+  if (stripe.key) s.STRIPE_SECRET_KEY = stripe.key;
+  if (stripe.webhook) s.STRIPE_WEBHOOK_SECRET = stripe.webhook;
+  if (stripe.meter) s.STRIPE_METER_ID = stripe.meter;
+  if (stripe.price) s.STRIPE_PRICE_USAGE = stripe.price;
   if (env.ADMIN_GITHUB_LOGINS) s.ADMIN_GITHUB_LOGINS = env.ADMIN_GITHUB_LOGINS;
   if (env.RUNNER_TOKEN_SECRET) s.RUNNER_TOKEN_SECRET = env.RUNNER_TOKEN_SECRET;
   if (env.SENTRY_DSN) s.SENTRY_DSN = env.SENTRY_DSN;

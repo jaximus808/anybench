@@ -63,9 +63,9 @@ describe("parseWorkerDeployEnv", () => {
     return "";
   };
 
-  it("refuses live billing, the prod branch and a pooled direct URL, all at once, by name only", () => {
+  it("refuses billing off, the prod branch and a pooled direct URL, all at once, by name only", () => {
     const msg = failure({
-      BILLING_MODE: "live",
+      BILLING_MODE: "off",
       DATABASE_URL_PROD: SECRETS.DATABASE_URL,
       DATABASE_URL_DIRECT: "postgres://u:PW_DIRECT_wn1@ep-dev-1-pooler.us-west-2.aws.neon.tech/db",
     });
@@ -96,6 +96,28 @@ describe("planWorkerEnv + renderEnvFile", () => {
     expect(Object.keys(vars)).not.toContain("GITHUB_CLIENT_SECRET");
     expect(Object.keys(vars)).not.toContain("SESSION_SECRET");
     expect(Object.keys(vars)).not.toContain("DATABASE_URL_DIRECT_PROD");
+  });
+
+  it("live: needs a live key and gives the worker that key with BILLING_MODE=live", () => {
+    const failure = (over: Record<string, string>) => {
+      try {
+        parseWorkerDeployEnv(baseEnv(over));
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return "";
+    };
+    expect(failure({ BILLING_MODE: "live" })).toMatch(/STRIPE_LIVE_SECRET_KEY: is required/);
+    expect(failure({ BILLING_MODE: "live", STRIPE_LIVE_SECRET_KEY: "sk_test_x" })).toMatch(
+      /STRIPE_LIVE_SECRET_KEY/,
+    );
+    const vars = planWorkerEnv(
+      parseWorkerDeployEnv(
+        baseEnv({ BILLING_MODE: "live", STRIPE_LIVE_SECRET_KEY: "sk_live_LIVE_wn1" }),
+      ),
+    );
+    expect(vars.BILLING_MODE).toBe("live");
+    expect(vars.STRIPE_SECRET_KEY).toBe("sk_live_LIVE_wn1");
   });
 
   it("DEPLOY_WORKER_PUBLIC_API_URL overrides the runner ingest base", () => {

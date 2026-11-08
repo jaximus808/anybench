@@ -126,7 +126,7 @@ export function billingRoutes(deps: BillingRouteDeps): Hono<ActorEnv> {
       },
       grants: [],
       invoices: [],
-      mode: port ? port.mode : deps.config.BILLING_MODE === "off" ? "off" : "test",
+      mode: port ? port.mode : deps.config.BILLING_MODE,
     };
     return c.json(encodeRouteResponse(contract.summary, result) as object, 200);
   });

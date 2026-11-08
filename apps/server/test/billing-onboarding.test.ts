@@ -156,20 +156,29 @@ describe("accountGateDecision (stripe-onboarding)", () => {
     ).toBe("insufficient_credit");
   });
 
-  it("stripeBillingFromConfig is test mode only: off, live and no key all give null", () => {
+  it("stripeBillingFromConfig: off and no key give null; test and live each use their own set", () => {
     const testKey = `sk_test_${"Qq1Ww2Ee3R".repeat(3)}`;
+    const liveKey = `sk_live_${"Qq1Ww2Ee3R".repeat(3)}`;
     const cfg = (env: Record<string, string>) => loadConfig({ LOG_LEVEL: "silent", ...env });
     expect(stripeBillingFromConfig(cfg({ BILLING_MODE: "off" }))).toBeNull();
     expect(stripeBillingFromConfig(cfg({ BILLING_MODE: "test" }))).toBeNull();
+    expect(stripeBillingFromConfig(cfg({ BILLING_MODE: "live" }))).toBeNull();
+    // A test key never serves live mode, even when it is the only key present.
     expect(
-      stripeBillingFromConfig(
-        cfg({ BILLING_MODE: "live", STRIPE_SECRET_KEY: `sk_live_${"Qq1Ww2Ee3R".repeat(3)}` }),
-      ),
+      stripeBillingFromConfig(cfg({ BILLING_MODE: "live", STRIPE_TEST_SECRET_KEY: testKey })),
     ).toBeNull();
     const port = stripeBillingFromConfig(
       cfg({ BILLING_MODE: "test", STRIPE_TEST_SECRET_KEY: testKey }),
     );
     expect(port?.mode).toBe("test");
+    const live = stripeBillingFromConfig(
+      cfg({ BILLING_MODE: "live", STRIPE_LIVE_SECRET_KEY: liveKey }),
+    );
+    expect(live?.mode).toBe("live");
+    const liveGeneric = stripeBillingFromConfig(
+      cfg({ BILLING_MODE: "live", STRIPE_SECRET_KEY: liveKey }),
+    );
+    expect(liveGeneric?.mode).toBe("live");
   });
 });
 

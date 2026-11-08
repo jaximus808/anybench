@@ -43,6 +43,7 @@ export const WorkerDeployEnvSchema = z
     DATABASE_URL_DIRECT_PROD: opt,
     BILLING_MODE: z.preprocess(blank, z.string().default("test")),
     STRIPE_TEST_SECRET_KEY: opt,
+    STRIPE_LIVE_SECRET_KEY: opt,
     RUNNER_TOKEN_SECRET: opt,
     PUBLIC_API_URL: z.preprocess(blank, z.url().optional()),
     SENTRY_DSN: opt,
@@ -68,11 +69,19 @@ export const WorkerDeployEnvSchema = z
     DEPLOY_WORKER_PUBLIC_API_URL: z.preprocess(blank, z.url().optional()),
   })
   .superRefine((env, ctx) => {
-    if (env.BILLING_MODE !== "test") {
+    if (env.BILLING_MODE !== "test" && env.BILLING_MODE !== "live") {
       ctx.addIssue({
         code: "custom",
         path: ["BILLING_MODE"],
-        message: `must be test for this deploy (got ${env.BILLING_MODE}); live billing is refused`,
+        message: `must be test or live for this deploy (got ${env.BILLING_MODE})`,
+      });
+    }
+    // The worker's meter reporter only needs the key (meter events go by event name).
+    if (env.BILLING_MODE === "live" && !/^(sk|rk)_live_/.test(env.STRIPE_LIVE_SECRET_KEY ?? "")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["STRIPE_LIVE_SECRET_KEY"],
+        message: "is required when BILLING_MODE=live and must be a live key (sk_live_/rk_live_)",
       });
     }
     if (env.STRIPE_TEST_SECRET_KEY && !/^(sk|rk)_test_/.test(env.STRIPE_TEST_SECRET_KEY)) {
@@ -156,7 +165,7 @@ export function planWorkerEnv(env: WorkerDeployEnv): Partial<Record<WorkerEnvNam
     LOG_LEVEL: env.LOG_LEVEL ?? "info",
     DATABASE_URL: env.DATABASE_URL,
     DATABASE_URL_DIRECT: env.DATABASE_URL_DIRECT,
-    BILLING_MODE: "test",
+    BILLING_MODE: env.BILLING_MODE === "live" ? "live" : "test",
     NAIVE_API_KEY: env.NAIVE_API_KEY,
     S3_ENDPOINT: env.S3_ENDPOINT,
     S3_REGION: env.S3_REGION,
@@ -166,7 +175,9 @@ export function planWorkerEnv(env: WorkerDeployEnv): Partial<Record<WorkerEnvNam
   };
   const publicApi = env.DEPLOY_WORKER_PUBLIC_API_URL ?? env.PUBLIC_API_URL;
   if (publicApi) out.PUBLIC_API_URL = publicApi;
-  if (env.STRIPE_TEST_SECRET_KEY) out.STRIPE_SECRET_KEY = env.STRIPE_TEST_SECRET_KEY;
+  const stripeKey =
+    env.BILLING_MODE === "live" ? env.STRIPE_LIVE_SECRET_KEY : env.STRIPE_TEST_SECRET_KEY;
+  if (stripeKey) out.STRIPE_SECRET_KEY = stripeKey;
   for (const k of [
     "NAIVE_BASE_URL",
     "RUNNER_TOKEN_SECRET",

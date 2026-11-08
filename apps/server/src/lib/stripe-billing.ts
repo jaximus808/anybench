@@ -2,7 +2,8 @@
 //
 // The Stripe side is packages/billing's StripeBillingPort; this file is the database side:
 //   - stripeBillingFromConfig  the port for this deployment, or null (BILLING_MODE=off, no key).
-//                              TEST MODE ONLY until the live cutover ticket (10.11): live -> null.
+//                              Test or live (10.11 cutover): the key, meter, price and webhook
+//                              secret come from the generic STRIPE_* names, else STRIPE_<MODE>_*.
 //   - ensureStripeCustomer     billing_accounts.stripe_customer_id, created once per user.
 //   - syncBillingAccount       re-read the account from Stripe (subscription status, card on file)
 //                              and store it. The webhook and the billing page both call it, so the
@@ -50,34 +51,38 @@ type StripeConfigFields = Pick<
 >;
 
 /**
- * The Stripe port for this config, or null when billing has no Stripe here: BILLING_MODE=off, no
- * key, or BILLING_MODE=live (refused until 10.11 so no real card is ever charged before then).
+ * The Stripe port for this config, or null when billing has no Stripe here: BILLING_MODE=off or no
+ * usable key. BILLING_MODE=test reads STRIPE_* else STRIPE_TEST_*; BILLING_MODE=live reads STRIPE_*
+ * else STRIPE_LIVE_* (the key must be sk_live_/rk_live_; resolveStripeConfig enforces it).
  */
 export function stripeBillingFromConfig(
   config: StripeConfigFields,
   logger?: Pick<Logger, "warn">,
 ): StripeBillingPort | null {
-  if (config.BILLING_MODE !== "test") {
-    if (config.BILLING_MODE === "live") {
-      logger?.warn("BILLING_MODE=live is not enabled before the 10.11 cutover; Stripe is off");
-    }
-    return null;
-  }
+  if (config.BILLING_MODE === "off") return null;
+  const live = config.BILLING_MODE === "live";
   try {
     const client = createBillingStripe(
       resolveStripeConfig({
         BILLING_MODE: config.BILLING_MODE,
         STRIPE_SECRET_KEY: config.STRIPE_SECRET_KEY,
         STRIPE_TEST_SECRET_KEY: config.STRIPE_TEST_SECRET_KEY,
+        STRIPE_LIVE_SECRET_KEY: config.STRIPE_LIVE_SECRET_KEY,
         STRIPE_METER_ID: config.STRIPE_METER_ID,
         STRIPE_TEST_METER_ID: config.STRIPE_TEST_METER_ID,
+        STRIPE_LIVE_METER_ID: config.STRIPE_LIVE_METER_ID,
         STRIPE_PRICE_USAGE: config.STRIPE_PRICE_USAGE,
         STRIPE_TEST_PRICE_USAGE: config.STRIPE_TEST_PRICE_USAGE,
+        STRIPE_LIVE_PRICE_USAGE: config.STRIPE_LIVE_PRICE_USAGE,
       }),
     );
-    return createStripeBillingPort(client, {
-      webhookSecret: config.STRIPE_WEBHOOK_SECRET ?? config.STRIPE_TEST_WEBHOOK_SECRET,
-    });
+    const webhookSecret =
+      config.STRIPE_WEBHOOK_SECRET ??
+      (live ? config.STRIPE_LIVE_WEBHOOK_SECRET : config.STRIPE_TEST_WEBHOOK_SECRET);
+    if (live && !webhookSecret) {
+      logger?.warn("BILLING_MODE=live without a webhook secret; Stripe webhooks will be refused");
+    }
+    return createStripeBillingPort(client, { webhookSecret });
   } catch (err) {
     if (err instanceof StripeModeError) {
       logger?.warn({ reason: err.message }, "Stripe is not configured; card linking is off");
@@ -333,4 +338,61 @@ export async function reportUsageToStripe(
     }
   }
   return out;
+}
+
+export interface TestModeStripeState {
+  /** Accounts holding a Stripe Customer (created in test mode before the live cutover). */
+  accounts: number;
+  /** Non-comped, positive usage entries never sent to the (test) meter. */
+  unreportedUsage: number;
+}
+
+/**
+ * The test -> live cutover (10.11), database side. Test-mode Customers, subscriptions and cards
+ * do not exist in live, and a test card must never pass the live run gate; usage from the test
+ * period must never reach the live meter. With `apply`, in one transaction: clear the Stripe
+ * columns (payment_status back to none, `blocked` kept), and mark unreported usage as settled
+ * with meter id `testmode:<id>`. Run it only while BILLING_MODE is still test: once live, these
+ * rows are real money. Returns the counts found before any change.
+ */
+export async function forgetTestModeStripeState(
+  db: Database,
+  options: { apply: boolean },
+): Promise<TestModeStripeState> {
+  const [acc] = await db
+    .select({ n: sql<string>`count(*)::text` })
+    .from(billingAccounts)
+    .where(isNotNull(billingAccounts.stripeCustomerId));
+  const unreported = and(
+    isNull(usageEntries.reportedAt),
+    isNull(usageEntries.compedBy),
+    sql`${usageEntries.amountMicroUsd} > 0`,
+  );
+  const [use] = await db
+    .select({ n: sql<string>`count(*)::text` })
+    .from(usageEntries)
+    .where(unreported);
+  const found = { accounts: Number(acc?.n ?? 0), unreportedUsage: Number(use?.n ?? 0) };
+  if (options.apply && (found.accounts > 0 || found.unreportedUsage > 0)) {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(billingAccounts)
+        .set({
+          stripeCustomerId: null,
+          subscriptionId: null,
+          hasPaymentMethod: false,
+          paymentStatus: sql`case when ${billingAccounts.paymentStatus} = 'blocked' then 'blocked' else 'none' end`,
+          updatedAt: sql`now()`,
+        })
+        .where(isNotNull(billingAccounts.stripeCustomerId));
+      await tx
+        .update(usageEntries)
+        .set({
+          reportedAt: sql`now()`,
+          stripeMeterEventId: sql`'testmode:' || ${usageEntries.id}::text`,
+        })
+        .where(unreported);
+    });
+  }
+  return found;
 }

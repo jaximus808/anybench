@@ -36,20 +36,66 @@ describe("parseDeployEnv (TDM-154)", () => {
     expect(env.DEPLOY_API_WEB_URL).toBe("https://anybench.vercel.app");
   });
 
-  it("refuses any billing mode but test, without echoing secrets", () => {
-    for (const mode of ["live", "off"]) {
-      let msg = "";
-      try {
-        parseDeployEnv({ ...raw, BILLING_MODE: mode });
-      } catch (e) {
-        msg = (e as Error).message;
-      }
-      expect(msg).toMatch(/BILLING_MODE: must be test/);
-      expect(msg).not.toContain("gh-secret-tdm154");
+  it("refuses BILLING_MODE=off, without echoing secrets", () => {
+    let msg = "";
+    try {
+      parseDeployEnv({ ...raw, BILLING_MODE: "off" });
+    } catch (e) {
+      msg = (e as Error).message;
     }
-    expect(() => parseDeployEnv({ ...raw, STRIPE_TEST_SECRET_KEY: "sk_live_x" })).toThrow(
-      /STRIPE_TEST_SECRET_KEY/,
+    expect(msg).toMatch(/BILLING_MODE: must be test or live/);
+    expect(msg).not.toContain("gh-secret-tdm154");
+  });
+
+  const live = {
+    ...raw,
+    BILLING_MODE: "live",
+    STRIPE_LIVE_SECRET_KEY: "sk_live_LIVESECRET154",
+    STRIPE_LIVE_WEBHOOK_SECRET: "whsec_LIVEHOOK154",
+    STRIPE_LIVE_METER_ID: "mtr_live154",
+    STRIPE_LIVE_PRICE_USAGE: "price_live154",
+  };
+
+  it("live: names every empty or malformed STRIPE_LIVE_* var at once, never a value", () => {
+    let msg = "";
+    try {
+      parseDeployEnv({
+        ...raw,
+        BILLING_MODE: "live",
+        STRIPE_LIVE_SECRET_KEY: "sk_test_NOTLIVE154",
+        STRIPE_LIVE_WEBHOOK_SECRET: "",
+      });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/STRIPE_LIVE_SECRET_KEY: must be a live key/);
+    expect(msg).toMatch(/STRIPE_LIVE_WEBHOOK_SECRET: is required when BILLING_MODE=live/);
+    expect(msg).toMatch(/STRIPE_LIVE_METER_ID: is required/);
+    expect(msg).toMatch(/STRIPE_LIVE_PRICE_USAGE: is required/);
+    expect(msg).not.toContain("NOTLIVE154");
+  });
+
+  it("live: maps STRIPE_LIVE_* onto the app's STRIPE_* names and BILLING_MODE=live", () => {
+    const plan = planSecrets(parseDeployEnv(live), "https://anybench.vercel.app/api");
+    expect(plan.secrets).toMatchObject({
+      BILLING_MODE: "live",
+      STRIPE_SECRET_KEY: "sk_live_LIVESECRET154",
+      STRIPE_WEBHOOK_SECRET: "whsec_LIVEHOOK154",
+      STRIPE_METER_ID: "mtr_live154",
+      STRIPE_PRICE_USAGE: "price_live154",
+    });
+  });
+
+  it("test: the STRIPE_LIVE_* set is ignored", () => {
+    const plan = planSecrets(
+      parseDeployEnv({ ...live, BILLING_MODE: "test", STRIPE_TEST_METER_ID: "mtr_test154" }),
+      "https://anybench.vercel.app/api",
     );
+    expect(plan.secrets.BILLING_MODE).toBe("test");
+    expect(plan.secrets.STRIPE_SECRET_KEY).toBe("sk_test_abc");
+    expect(plan.secrets.STRIPE_METER_ID).toBe("mtr_test154");
+    expect(plan.secrets.STRIPE_WEBHOOK_SECRET).toBeUndefined();
+    expect(Object.values(plan.secrets)).not.toContain("sk_live_LIVESECRET154");
   });
 
   it("refuses the prod Neon branch (pooled or direct spelling)", () => {

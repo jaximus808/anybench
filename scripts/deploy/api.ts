@@ -8,7 +8,7 @@
 // when the bundle changed, else redeploy when a secret changed (secrets reach the runtime only on
 // a new deployment) → wait for `ready` → check /health, the OAuth start redirect and CORS live.
 //
-// Safety: BILLING_MODE must be test (refused otherwise); the Neon URLs must not be the prod
+// Safety: BILLING_MODE must be test or live (live needs every STRIPE_LIVE_* set); the Neon URLs must not be the prod
 // branch's; secrets go to Naïve only through the write-only secrets API, never on argv or in a log.
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
