@@ -480,6 +480,9 @@ TDM-1 Naïve key + plan · TDM-2 Vultr (dropped: no free credit; see H14/H15) ·
 
 Hackathon tickets (TDM-162..167, plus human setup TDM-168; all depend only on done work plus keys): 15.1a Context.dev + AgentMail + GitHub spike · 15.2a sourcing + import · 15.3a scout claim brief · 15.5a writer + CLI review queue · 15.6a sending with limits and suppression (polling) · 15.8a reply polling, classification and `outreach stats`. The originals 15.1, 15.2, 15.4 are superseded; 15.3, 15.5, 15.6, 15.7, 15.8, 15.9, 15.10 stay for after the hackathon.
 
+### E16. Result quality (section 17; lands before 14.4 and before any public badge)
+16.1 sandboxed out-of-process gate · 16.2 subject/scoring bundle split · 16.3 scorer v2 (N/A gates, common workload set, cost per solved task) · 16.4 decision rule + power-based repeats · 16.5 metric plumbing · 16.6 provider-side metering + worker wall clock · 16.7 comparability rules in KitSpec · 16.8 warm-ups + noise · 16.9 preregistration + kit hash + reproducible attestation · 16.10 proof checks v2 · 16.11 report v2 (per-requirement table, verdicts, trust checklist, honest wording) · 16.12 egress allow-list + contamination controls · 16.13 Tandem kit v2 · 16.14 judge panel reliability · 16.15 SWE-smith task mining for generated kits · 16.16 skeptic agent on the test plan.
+
 ## 16. Conventions for the swarm
 
 - **Read this file first, then `CLAUDE.md`.** Claim work only from the Tandem board. One ticket per session.
@@ -490,3 +493,85 @@ Hackathon tickets (TDM-162..167, plus human setup TDM-168; all depend only on do
 - No secrets in git. Add every new env var to `.env.example`.
 - No speed or quality number without a correctness gate.
 - Write what you learn about external systems to `docs/findings/`.
+
+## 17. Result quality (E16): make every number defensible
+
+Two independent reviews (measurement and statistics; agent-eval design, 2026-11-07, main @ 27594e5) found that today's pipeline can't yet support a claim like "Tandem beats Claude Code". The products we sell are the verdict and the proof that it's fair, so these rules come before the Tandem benchmark (14.4) and before any public badge.
+
+### 17.1 What's wrong today
+- **Scoring.** `score.ts` takes medians over gate-passing trials only, then averages over each contender's own workloads (survivorship bias). One failed gate deletes the total, and "not applicable" gates count as failures. Ratio-to-best scoring reshuffles everyone when a contender is added. `parseTarget` ignores units. The kit designer picks the weights and targets with no calibration; the flagship oracle itself misses its 120 ms target.
+- **Statistics.** `stats.ts` has CIs and effect sizes, but only `median` reaches the scorer. At n=5 a distribution-free 95% CI on a median doesn't exist. 3 tasks × 5 repeats detects only differences of about 45–50 pts (repeats cluster by task, so effective n≈3). "11/15 vs 9/15" has Fisher p=0.70. About 30 uncorrected comparisons per report produce about 1.5 false wins.
+- **Plumbing.** The runner doesn't wrap `run` in `/usr/bin/time -v` (no `wall_s`). Gate metrics aren't in MetricSchema (no `api_p95_ms`). The template reads `peak_rss_kb` while the collector emits `peak_rss_bytes`. Warm-ups run in separate forks that warm nothing. Noise is sampled once and never used.
+- **Integrity.** Hidden tests run in-process with contender code (it can patch `node:assert`, stub `fetch`, or append `pass` lines to the writable results file). The gates may ship to the subject computer. Network limits aren't enforced. Cost is self-reported from a file the agent can write.
+- **Fairness.** Tandem gets an 8M token cap against 5M for the others. Models are unpinned and Claude Code installs `@latest`. The LLM reviewer's help goes only to the subject. Contender order never rotates. 429s aren't excluded.
+- **Task design.** Three small, fully specified tasks in genres models know well, so `tests-pass` saturates and noise decides the ranking. todo-api hands every contender a 5-way ticket split, which is the planner's job. bug-hunt is implement-to-spec with an invented commit history.
+
+### 17.2 Rules (enforced in code, not by convention)
+1. **Correctness first, always.** Speed, cost and quality are reported only alongside the pass rate. Cost is **all spend ÷ solved tasks**, and time-to-solve counts failures at the cap. A contender that fails a workload never ranks above an equally fast one that solves it.
+2. **Every comparison has a verdict:** `better | worse | indistinguishable`.
+   - Pass rates: Newcombe CI on the difference.
+   - Continuous metrics: Mann–Whitney exact p<0.05 and |Cliff's δ| ≥ 0.33, with a Hodges–Lehmann CI.
+   - Holm correction across the report's comparisons.
+   - Agent tasks bootstrap over tasks, not trials.
+   - Without significance the report says "no detectable difference at n=…, smallest detectable difference=…".
+3. **Sample sizes come from a power estimate shown on the test plan.** Defaults:
+   - Software: 5 repeats, each a hyperfine run of ≥10 iterations.
+   - Agents: ≥10 repeats per cell (floor 4).
+   - An agent "beats" claim needs ≥20 tasks stratified by shape and difficulty, or the claim is downgraded to "on these N tasks".
+4. **Comparable setups or no comparison.** `KitSpecSchema` refuses a kit unless:
+   - model ids and CLI/harness versions are pinned (`latest`/`main` are resolved to a version or SHA at env build);
+   - caps are equal, unless the cap is the `vary` axis or `unequal_caps_reason` is set;
+   - every assist (reviewer, tools) goes to every contender or to none.
+   The order of contenders rotates per round from a seed.
+5. **The agent under test can't touch the measurement.**
+   - Separate subject and scoring bundles: `gates/`, `reference/`, `proof/oracle/` and the rubric never reach the subject computer, and answers never live under `workloads/`.
+   - Hidden tests run out of process, as a separate uid with read-only tests, against a sandboxed contender.
+   - Cost comes from the provider side, and wall time from the worker.
+   - Egress is allowed only to the model API, and logged.
+6. **Preregistered.** The whole-kit hash, weights, primary metric and repeats are frozen before the first contender trial. Every later edit is logged with a reason, and attest refuses a mismatched hash otherwise. The kit designer's repair loop never sees contender scores.
+7. **Headline = per-requirement table, not a composite.** Each row shows median, CI, effect, n, pass-rate CI and pass^k, plus the verdict.
+   - A composite 0–100 is shown only with its breakdown, a ±50% weight-sensitivity band, rank stability and the verdict with reviewed quality weighted at 0.
+   - Badges show "better" only when rule 2 says so.
+8. **LLM-judged quality is optional and audited.**
+   - ≥3 judges from ≥2 model families, none from the subject's family.
+   - Identity scrubbed (`CLAUDE.md`, `.claude/`, `.tandem/`, trailers, formatter).
+   - Binary per-criterion checks; pairs judged in both orders; quoted `path:line` checked mechanically.
+   - A calibration set of 30 human-labelled diffs and Krippendorff α ≥ 0.667.
+   - It's kept out of the headline when α fails, >5% of quotes fail, or the gap is within judge noise.
+9. **The proof suite proves the gate discriminates, not just that it runs:**
+   - the oracle passes;
+   - partial oracles (one feature removed) fail;
+   - a mutation kill rate ≥90%, with survivors listed;
+   - deterministic planted regressions;
+   - an A-vs-A null run (the noise floor);
+   - a cheater contender scores 0;
+   - the gate gives the same result 3 times;
+   - every hidden assertion traces to `instruction.md`;
+   - a known ordering holds (a weaker model in the same harness ranks lower).
+10. **Honest wording.** Never claim "beats", "faster" or "cheaper" without rule 2. Never use human minutes from a simulated approver ("simulated approvals: N, latency"), call synthetic tasks "from your history", report speed or cost from failed trials, or show a composite without its breakdown.
+
+### 17.3 Trust checklist (rendered on every report and published page)
+- Preregistered kit hash and every post-result edit.
+- Exact models, versions, configs and caps; who chose the contenders; which were dropped and why.
+- Task count, provenance, held-out share and difficulty bands.
+- Per-task pass counts with Wilson CIs, plus pass^k.
+- Cost per solved task and time-to-solve with failures, and where the metering came from.
+- Weights and who set them; CIs on differences; rank stability; the verdict at reviewed weight 0.
+- Judges, α, calibration and identity scrubbing.
+- Proof results: mutation kill rate, cheater suite, null run.
+- Gates never on the subject computer; egress logged; exploit flags; discarded trials with reasons.
+- Real or simulated approver.
+- Signed.
+
+### 17.4 Metrics by subject class (required core is gated; vanity metrics are never a headline)
+| Class | Required core | Optional | Never a headline |
+|---|---|---|---|
+| Agent / harness | pass@1, pass^k; cost per solved task; time-to-solve (failures at cap); interventions | audited quality, regressions (PASS_TO_PASS), merge conflicts, speedup vs 1 worker | raw tokens, turns, claims, lines of code |
+| Chat / http agent | success on labelled answers; cost per conversation; p95 latency | policy violations | tone |
+| CLI | warm and cold wall time; peak RSS | startup | user CPU alone |
+| Service | p50/p95/p99 at fixed open-loop rates; max RPS within SLO; error rate | cold start | peak RPS with errors |
+| Library | ops/s at realistic sizes; allocations | p99 | microbenchmarks on trivial input |
+| Terminal | throughput with a reference-grid match; memory per scrollback | input latency | bytes/s without a match |
+| Web app | LCP/INP/CLS on a throttled profile; TTFB p95 | bundle size | Lighthouse score alone |
+
+Sources: Miller 2024 (arXiv 2411.00640), Hesterberg (arXiv 1411.5279), SWE-bench/SWE-smith, METR HCAST (arXiv 2503.17354) and its reward-hacking report, Terminal-Bench 2.0, the ABC checklist (arXiv 2507.02825), Zheng 2023 (arXiv 2306.05685), Panickssery 2024 (arXiv 2404.13076).
