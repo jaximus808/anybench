@@ -10,10 +10,16 @@ out="${1:?out}" workload="${2:?workload}" verdict="${3:?gate.json}"
 : "${AB_RUN:?no AB_RUN: contender code would run as the check uid}" "${AB_RUN_DIR:?}"
 tests="$(cd "$(dirname "$0")" && pwd)/tests/$workload"
 [ -d "$tests" ] || { echo "no hidden tests for $workload" >&2; exit 2; }
-# From here on the outputs are involved: whatever they make go wrong is a FAIL verdict, never a
-# verdict-less exit (which would read as a broken check).
+# From here on the outputs are involved: whatever they make go wrong is a FAIL verdict. Only a
+# step the outputs can't influence (phase=kit, e.g. copying the kit's own tests) exits without a
+# verdict, which the runner records as a kit_suspect FAIL (still counted, flagged for a refund).
+phase=outputs
 fail_closed() {
   local rc=$?
+  if [ "$phase" = kit ] && [ ! -s "$verdict" ]; then
+    echo "hidden-tests: kit step failed (exit $rc)" >&2
+    exit 3
+  fi
   if [ ! -s "$verdict" ]; then
     printf '{"pass":false,"reason":"hidden tests could not run on these outputs (exit %d)","evidence":[]}\n' "$rc" > "$verdict"
   fi
@@ -27,9 +33,12 @@ if [ -L "$ws" ] || [ ! -d "$ws" ]; then
 fi
 # The contender may have shipped its own .hidden-tests (a file, a symlink, fake tests): replace it.
 rm -rf "$ws/.hidden-tests"
+# The workspace dirs belong to this uid and contender code hasn't run yet: only the kit can break this.
+phase=kit
 cp -R "$tests" "$ws/.hidden-tests"
 # The kit is readable by the check uid only (0640); the contender uid must read its copy.
 chmod -R a+rX "$ws/.hidden-tests"
+phase=outputs
 if (cd "$ws" && "$AB_RUN" node --test ".hidden-tests/**/*.test.js" < /dev/null > "$out/hidden-tests.txt" 2>&1); then
   printf '{"pass":true,"reason":"all hidden tests pass","evidence":["hidden-tests.txt"]}\n' > "$verdict"
 else

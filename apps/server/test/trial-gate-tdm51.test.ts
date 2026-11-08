@@ -147,6 +147,7 @@ function fakeScoringTdm51(verdicts: Record<string, string | null>) {
   fake.onExec(/\.anybench\/score\/(fetch|setup)\.sh'$/, (ctx: FakeExecContext) =>
     ctx.command.includes("setup.sh") ? `AB_SETUP frozen=ok sha256=${SHA}\n` : "",
   );
+  fake.onExec(/^printf '%s %s/, () => `9 ${SHA}\n`);
   fake.onExec(/bin\/gate-([a-z0-9._-]+)\.sh'/, (ctx: FakeExecContext) => {
     const id = ctx.match![1]!;
     const v = verdicts[id] ?? null;

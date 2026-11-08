@@ -115,10 +115,22 @@ describe("ArtifactStore.createUpload (offline)", () => {
     expect(url.host).toBe("ewr1.vultrobjects.com");
     expect(url.pathname).toBe("/anybench-artifacts/runs/r1/trials/t1/out/log.txt");
     const signed = url.searchParams.get("X-Amz-SignedHeaders")?.split(";") ?? [];
-    expect(signed).toEqual(expect.arrayContaining(["content-length", "host", "x-amz-meta-sha256"]));
+    expect(signed).toEqual(
+      expect.arrayContaining([
+        "content-length",
+        "host",
+        "x-amz-meta-sha256",
+        // TDM-51: the store verifies the body against the declared sha256.
+        "x-amz-checksum-sha256",
+      ]),
+    );
     expect(url.searchParams.get("X-Amz-Expires")).toBe("600");
     expect(url.search).not.toContain(tdm32Config.secretAccessKey);
-    expect(plan.headers).toEqual({ "content-length": "1234", "x-amz-meta-sha256": tdm32Sha });
+    expect(plan.headers).toEqual({
+      "content-length": "1234",
+      "x-amz-meta-sha256": tdm32Sha,
+      "x-amz-checksum-sha256": Buffer.from(tdm32Sha, "hex").toString("base64"),
+    });
     expect(plan.expiresAt).toBe("2026-11-07T00:10:00.000Z");
   });
 });

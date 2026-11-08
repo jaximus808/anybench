@@ -99,6 +99,17 @@ describe("harness hidden-tests check.sh (TDM-51)", () => {
     expect(file.gate).toMatchObject({ pass: false });
   }, 60_000);
 
+  it("a kit-side step that fails (copying the kit's tests) exits without a verdict: a kit_suspect, not a plain FAIL", async () => {
+    const r = await run("kit-step", async (d) => {
+      await mkdir(join(d, "workspace"));
+      // On the scoring computer the workspace dirs belong to the check's uid; a read-only one here
+      // stands in for any failure the outputs can't cause.
+      await chmod(join(d, "workspace"), 0o555);
+    });
+    expect(r.status).toBe(3);
+    expect(r.gate).toBeNull();
+  });
+
   it("without $AB_RUN the check refuses to run contender code at all (a kit error, no verdict)", async () => {
     const r = await run(
       "no-ab-run",

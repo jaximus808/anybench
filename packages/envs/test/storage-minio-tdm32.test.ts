@@ -248,7 +248,8 @@ describe.skipIf(!tdm32Image)("S3 artifact transfer against MinIO (TDM-32)", () =
       body: new Uint8Array(1000),
     });
     expect(res.ok).toBe(false);
-    expect(res.status).toBe(403);
+    // 403 (signature) or 400 (the signed x-amz-checksum-sha256 is missing), never stored.
+    expect([400, 403]).toContain(res.status);
     await expect(store.head(plan.key)).resolves.toBeNull();
   });
 
@@ -269,22 +270,26 @@ describe.skipIf(!tdm32Image)("S3 artifact transfer against MinIO (TDM-32)", () =
     await expect(uploadFileWithPlan(plan, src)).rejects.toMatchObject({
       code: "checksum_mismatch",
     });
-    // ...and if a dishonest uploader sends anyway, the scoring side refuses the bytes.
+    // ...and if a dishonest uploader sends anyway (TDM-51), the store itself refuses the bytes:
+    // the signed x-amz-checksum-sha256 makes it verify the body, so nothing is stored.
     if (plan.kind !== "single") throw new Error("expected single");
     const res = await fetch(plan.url, {
       method: "PUT",
-      headers: { "x-amz-meta-sha256": lie },
+      headers: plan.headers,
       body: "real bytes\n",
     });
-    expect(res.ok).toBe(true);
-    const ticket = await store.createDownload({
-      runId: "run-tdm32",
-      trialId: "trial-4",
-      name: "lie.txt",
+    expect(res.ok).toBe(false);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    await expect(store.head(plan.key)).resolves.toBeNull();
+    // Leaving the checksum header out breaks the signature, so it can't be skipped either.
+    const { ["x-amz-checksum-sha256"]: _omit, ...noChecksum } = plan.headers;
+    const res2 = await fetch(plan.url, {
+      method: "PUT",
+      headers: noChecksum,
+      body: "real bytes\n",
     });
-    const dest = join(dir, "lie.fetched");
-    await expect(downloadToFile(ticket, dest)).rejects.toMatchObject({ code: "checksum_mismatch" });
-    await expect(open(dest, "r")).rejects.toThrow();
+    expect(res2.ok).toBe(false);
+    await expect(store.head(plan.key)).resolves.toBeNull();
   });
 
   it("refuses to complete a multipart upload with a missing part, and can abort it", async () => {

@@ -150,6 +150,48 @@ Two bash traps found on the way:
   "'"`), so that message must not contain one.
 - `bash -n` every check.
 
+## Bundle integrity and size (review round 4)
+
+Two more ways a contender could have bought an unbilled `failed_infra`, both now closed.
+
+**A bundle whose bytes don't match its sha256.** The expected sha256 is the one the uploader
+declared (`x-amz-meta-sha256`), and with `requestChecksumCalculation: "WHEN_REQUIRED"` nothing made
+the store check it. So a contender holding the runner token could upload other bytes of the same
+size, and each attempt was a GateInfraError, which is free until the retry cap. Now:
+
+- The presigned single PUT also signs `x-amz-checksum-sha256` (the base64 of the declared sha256)
+  and doesn't hoist it into the query string, and `plan.headers` carries it. The store verifies
+  the body and stores nothing on a mismatch. Leaving the header out breaks the signature.
+  - MinIO, verified (`packages/envs/test/storage-minio-tdm32.test.ts`): the "dishonest uploader"
+    PUT with the plan's headers and other bytes is refused (`res.ok === false`), and
+    `store.head(key)` stays `null`.
+  - A PUT that sends only `x-amz-meta-sha256` is refused with 400 (it used to get 403).
+  - R2 documents support for `x-amz-checksum-sha256` on PutObject, but I did not verify it live:
+    no live calls are allowed.
+  - Multipart (>100 MiB) parts are not covered yet; the gate-side check below still is.
+- On the scoring computer, after a presigned GET:
+  - size differs from the declared size: a transfer problem, so GateInfraError (ours);
+  - same size, other sha256: fetch once more; if it still differs, every gate FAILs with "the
+    frozen outputs do not match their recorded sha256 (fail closed)" (`no_outputs`, not
+    `kit_suspect`).
+
+**A small .tar.gz with a huge number of entries.** `find`, a `realpath` per symlink and
+`chown/chmod -R` scale with the entry count, so they could push setup past the 600 s exec cap: an
+exec timeout, a GateInfraError, unbilled. Now:
+
+- The entries are counted before unpacking, with
+  `tar -tzf | head -n MAX+1 | wc -l` under `timeout` (head stops tar early). More than
+  `DEFAULT_MAX_FROZEN_ENTRIES` (200 000) gives `frozen=too_many`.
+- Listing, unpacking and sanitizing each run under `timeout DEFAULT_FROZEN_STEP_TIMEOUT_S` (150 s),
+  well inside the exec cap. Running out gives `frozen=timeout`.
+- Both are contender FAILs ("more than N entries", "could not be unpacked within Ns").
+- e2e cheaters, with caps lowered to 5000 entries and 3 s: `entry-bomb` (5500 empty files) and
+  `symlink-swarm` (4900 symlinks) both FAIL that way.
+
+The harness example check now also tells kit-side failures apart: while it copies the kit's own
+tests (`phase=kit`), a failure exits 3 with no verdict, which is a counted `kit_suspect` FAIL. A
+failure anywhere else becomes a plain FAIL verdict.
+
 ## Rules for check authors
 
 - **Write only under `$1` (your private copy) and `$3` (the verdict).** Never write into

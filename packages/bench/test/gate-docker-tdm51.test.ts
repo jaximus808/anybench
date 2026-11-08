@@ -42,6 +42,9 @@ const GATES: Gate[] = [
   { id: "copy-tests-fragile", kind: "hidden-tests", timeout_s: 10 },
 ];
 
+/** Small caps so the entry-count cheaters stay fast (production: 200 000 entries, 150 s). */
+const ENTRY_CAP = 5000;
+const STEP_TIMEOUT_S = 3;
 const HONEST = "echo $(( $1 + $2 ))\n";
 const WRONG = "echo $(( $1 + $2 + 1 ))\n";
 
@@ -134,6 +137,24 @@ const CONTENDERS: Record<string, (dir: string) => Promise<void>> = {
     await put(d, "workspace/sum.sh", WRONG);
     await put(d, "workspace/.hidden-tests", "not a directory\n");
   },
+  // A small bundle with more entries than the cap: never unpacked.
+  "entry-bomb": async (d) => {
+    await put(d, "workspace/sum.sh", HONEST);
+    await mkdir(join(d, "junk"), { recursive: true });
+    await Promise.all(
+      Array.from({ length: ENTRY_CAP + 500 }, (_, i) => writeFile(join(d, "junk", `f${i}`), "")),
+    );
+  },
+  // Under the entry cap, but sanitizing (realpath per symlink) outlasts the step time limit.
+  "symlink-swarm": async (d) => {
+    await put(d, "workspace/sum.sh", HONEST);
+    await mkdir(join(d, "links"), { recursive: true });
+    await Promise.all(
+      Array.from({ length: ENTRY_CAP - 100 }, (_, i) =>
+        symlink("../workspace/sum.sh", join(d, "links", `l${i}`)),
+      ),
+    );
+  },
   // Points its answer at a file outside the outputs (dropped on unpack).
   "symlink-escape": async (d) => {
     await mkdir(join(d, "workspace"), { recursive: true });
@@ -190,7 +211,14 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
         frozen,
         scoring,
       },
-      { registry, pollIntervalMs: 250, graceMs: 30_000, readyTimeoutMs: 600_000 },
+      {
+        registry,
+        pollIntervalMs: 250,
+        graceMs: 30_000,
+        readyTimeoutMs: 600_000,
+        maxFrozenEntries: ENTRY_CAP,
+        frozenStepTimeoutS: STEP_TIMEOUT_S,
+      },
     );
     results.set(name, rec);
     return rec;
@@ -280,6 +308,8 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     ["symlink-escape", "verdict", /workspace\/sum\.sh is missing/],
     ["hang", "timeout", /timed out after 8s/],
     ["corrupt", "no_outputs", /could not be unpacked/],
+    ["entry-bomb", "no_outputs", /more than 5000 entries/],
+    ["symlink-swarm", "no_outputs", /could not be unpacked within 3s/],
   ])("cheater %s fails sum-tests with a reason", (name, status, reason) => {
     const r = results.get(name)!;
     const g = r.gates["sum-tests"]!;

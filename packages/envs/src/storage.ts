@@ -55,6 +55,16 @@ export const DEFAULT_PRESIGN_SECONDS = 60 * 60;
 /** Metadata key the sha256 is recorded under (sent as `x-amz-meta-sha256`). */
 export const SHA256_METADATA_KEY = "sha256";
 const SHA256_HEADER = `x-amz-meta-${SHA256_METADATA_KEY}`;
+/**
+ * S3 flexible checksum: the store itself verifies the body against it and rejects a mismatch
+ * (BadDigest), so an uploader can't declare one sha256 and send other bytes of the same size
+ * (TDM-51). Signed and unhoisted, so it must be sent as this header with this value.
+ */
+const CHECKSUM_SHA256_HEADER = "x-amz-checksum-sha256";
+
+function hexToBase64(hex: string): string {
+  return Buffer.from(hex, "hex").toString("base64");
+}
 
 // ---------------------------------------------------------------------------------------------
 // Errors
@@ -319,11 +329,12 @@ export class ArtifactStore {
           Key: key,
           ContentLength: req.sizeBytes,
           Metadata: { [SHA256_METADATA_KEY]: req.sha256 },
+          ChecksumSHA256: hexToBase64(req.sha256),
         }),
         {
           expiresIn: req.expiresInSec,
-          signableHeaders: new Set(["content-length"]),
-          unhoistableHeaders: new Set([SHA256_HEADER]),
+          signableHeaders: new Set(["content-length", CHECKSUM_SHA256_HEADER]),
+          unhoistableHeaders: new Set([SHA256_HEADER, CHECKSUM_SHA256_HEADER]),
         },
       );
       return uploadPlanSchema.parse({
@@ -331,7 +342,11 @@ export class ArtifactStore {
         ...base,
         method: "PUT",
         url,
-        headers: { "content-length": String(req.sizeBytes), [SHA256_HEADER]: req.sha256 },
+        headers: {
+          "content-length": String(req.sizeBytes),
+          [SHA256_HEADER]: req.sha256,
+          [CHECKSUM_SHA256_HEADER]: hexToBase64(req.sha256),
+        },
       });
     }
 

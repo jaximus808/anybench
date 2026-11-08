@@ -71,6 +71,14 @@ export const GATE_SANDBOX_USER = "abgate";
 export const GATE_RUN_USER = "abrun";
 /** gate.json larger than this is refused (fail closed). */
 export const GATE_VERDICT_MAX_BYTES = 64 * 1024;
+/** More entries than this in the frozen bundle → a contender FAIL before anything is unpacked. */
+export const DEFAULT_MAX_FROZEN_ENTRIES = 200_000;
+/**
+ * Time budget (s) for listing, unpacking and sanitizing the frozen bundle, each step. Kept well
+ * inside the 600 s exec cap: running out is the outputs' doing (a contender FAIL), never an
+ * exec timeout (which would read as our infra fault and buy an unbilled re-run).
+ */
+export const DEFAULT_FROZEN_STEP_TIMEOUT_S = 150;
 /** Used when a gate sets no `timeout_s`. */
 export const DEFAULT_GATE_TIMEOUT_S = 600;
 /**
@@ -457,6 +465,8 @@ const CHECK_PATH_ENV = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:
 interface ScriptCtx {
   home: string;
   sandbox: GateSandbox;
+  maxEntries: number;
+  stepTimeoutS: number;
 }
 
 function inbox(ctx: ScriptCtx): string {
@@ -523,14 +533,27 @@ function setupScript(ctx: ScriptCtx, expectSha: string | null): string {
       : "  :",
     '  cp "$IN/outputs.tar.gz" "$S/outputs.tar.gz" && chmod 644 "$S/outputs.tar.gz" || die "copy outputs"',
     '  mkdir "$S/frozen.x" && chown "$U" "$S/frozen.x" && chmod 700 "$S/frozen.x" || die "mkdir frozen"',
-    `  if (cd "$S/frozen.x" && ${ctx.sandbox.runAs()} timeout -k 5 600 tar -xzf "$S/outputs.tar.gz" --no-same-owner --no-same-permissions) >"$S/logs/extract.log" 2>&1; then frozen=ok; else frozen=invalid; fi`,
+    `  MAXN=${ctx.maxEntries}; TS=${ctx.stepTimeoutS}`,
+    // Count entries first (bounded: head stops tar at MAXN+1). A bomb of entries never unpacks.
+    `  n="$(set -o pipefail; ${ctx.sandbox.runAs()} timeout -k 5 "$TS" tar -tzf "$S/outputs.tar.gz" 2>/dev/null | head -n "$((MAXN + 1))" | wc -l)"; lrc=$?`,
+    '  if [ "$n" -gt "$MAXN" ]; then frozen=too_many',
+    '  elif [ "$lrc" -eq 124 ] || [ "$lrc" -eq 137 ]; then frozen=timeout',
+    '  elif [ "$lrc" -ne 0 ]; then frozen=invalid',
+    `  elif (cd "$S/frozen.x" && ${ctx.sandbox.runAs()} timeout -k 5 "$TS" tar -xzf "$S/outputs.tar.gz" --no-same-owner --no-same-permissions) >"$S/logs/extract.log" 2>&1; then frozen=ok`,
+    '  else rc=$?; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then frozen=timeout; else frozen=invalid; fi; fi',
     ctx.sandbox.killAll(),
-    '  find "$S/frozen.x" -mindepth 1 ! -type f ! -type d ! -type l -delete 2>/dev/null',
+    // Sanitize under one time limit (per-symlink realpath and chown -R scale with the entry count).
+    '  if [ "$frozen" = ok ]; then',
+    "    export S",
+    `    timeout -k 5 "$TS" bash -c '`,
+    '      find "$S/frozen.x" -mindepth 1 ! -type f ! -type d ! -type l -delete 2>/dev/null',
     // A symlink that resolves outside the outputs (to the kit's reference, /etc, ...) is dropped.
-    '  find "$S/frozen.x" -type l -print0 | while IFS= read -r -d "" l; do',
-    '    r="$(realpath -m -- "$l")"; case "$r" in "$S/frozen.x"/*) ;; *) rm -f -- "$l" ;; esac',
-    "  done",
-    '  chown -R -h 0:0 "$S/frozen.x"; chmod -R u=rwX,go=rX "$S/frozen.x"; chmod -R a-w "$S/frozen.x"; chmod 755 "$S/frozen.x"; chmod a-w "$S/frozen.x"',
+    '      find "$S/frozen.x" -type l -print0 | while IFS= read -r -d "" l; do',
+    '        r="$(realpath -m -- "$l")"; case "$r" in "$S/frozen.x"/*) ;; *) rm -f -- "$l" ;; esac',
+    "      done",
+    '      chown -R -h 0:0 "$S/frozen.x" && chmod -R u=rwX,go=rX "$S/frozen.x" && chmod -R a-w "$S/frozen.x" && chmod 755 "$S/frozen.x" && chmod a-w "$S/frozen.x"',
+    "    ' || frozen=timeout",
+    "  fi",
     '  if [ "$frozen" = ok ]; then mv "$S/frozen.x" "$S/frozen"; else rm -rf "$S/frozen.x"; fi',
     "fi",
     'rm -rf "$IN"',
@@ -794,6 +817,10 @@ export interface GateRunDeps {
   readyTimeoutMs?: number;
   /** Extra wait past a gate's timeout (which has a 10 s KILL grace) before it is declared lost. Default 100 000 ms. */
   graceMs?: number;
+  /** Default DEFAULT_MAX_FROZEN_ENTRIES. */
+  maxFrozenEntries?: number;
+  /** Default DEFAULT_FROZEN_STEP_TIMEOUT_S. */
+  frozenStepTimeoutS?: number;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   logger?: GateRunLogger;
@@ -906,7 +933,12 @@ export async function runGates(
       });
     }
     const id = info.id;
-    const ctx: ScriptCtx = { home: info.home, sandbox };
+    const ctx: ScriptCtx = {
+      home: info.home,
+      sandbox,
+      maxEntries: deps.maxFrozenEntries ?? DEFAULT_MAX_FROZEN_ENTRIES,
+      stepTimeoutS: deps.frozenStepTimeoutS ?? DEFAULT_FROZEN_STEP_TIMEOUT_S,
+    };
     const IN = SCORE_INBOX;
     const execCap = provider.capabilities.maxExecTimeoutMs;
     const exec = async (command: string, timeoutMs: number) => {
@@ -933,14 +965,55 @@ export async function runGates(
     let expectSha: string | null = null;
     if (input.frozen.kind === "url") {
       expectSha = input.frozen.sha256;
-      await provider.putFile(id, posix.join(IN, "fetch.url"), `${input.frozen.url}\n`, {
-        mode: 0o600,
-      });
       await provider.putFile(id, posix.join(IN, "fetch.sh"), fetchScript(ctx), { mode: 0o700 });
-      const r = await exec(`bash ${sq(posix.join(info.home, IN, "fetch.sh"))}`, 900_000);
-      if (r.exitCode !== 0) {
+      const frozenUrl = input.frozen;
+      const fetchOnce = async (): Promise<{ size: number; sha: string }> => {
+        await provider.putFile(id, posix.join(IN, "fetch.url"), `${frozenUrl.url}\n`, {
+          mode: 0o600,
+        });
+        const r = await exec(`bash ${sq(posix.join(info.home, IN, "fetch.sh"))}`, 900_000);
+        if (r.exitCode !== 0) {
+          throw new GateInfraError(
+            `download of the frozen outputs failed (exit ${r.exitCode}): ${clip(r.stderr.trim(), 500)}`,
+          );
+        }
+        const f = sq(posix.join(info.home, IN, "outputs.tar.gz"));
+        const v = await exec(
+          `printf '%s %s\\n' "$(stat -c %s ${f})" "$(sha256sum ${f} | cut -d' ' -f1)"`,
+          300_000,
+        );
+        const mm = /^(\d+) ([0-9a-f]{64})$/.exec(v.stdout.trim());
+        if (v.exitCode !== 0 || !mm)
+          throw new GateInfraError("could not hash the downloaded outputs");
+        return { size: Number(mm[1]), sha: mm[2]! };
+      };
+      let got = await fetchOnce();
+      // A short or long body is a transfer problem (ours). Same size, other bytes: fetch once more,
+      // then it is what the uploader stored: the store recorded the uploader's declared sha256, so
+      // a mismatch is the contender's doing (a FAIL), never a free infra re-run.
+      if (got.size !== frozenUrl.sizeBytes) {
         throw new GateInfraError(
-          `download of the frozen outputs failed (exit ${r.exitCode}): ${clip(r.stderr.trim(), 500)}`,
+          `downloaded ${got.size} bytes of frozen outputs, expected ${frozenUrl.sizeBytes}`,
+        );
+      }
+      if (got.sha !== frozenUrl.sha256) got = await fetchOnce();
+      if (got.size === frozenUrl.sizeBytes && got.sha !== frozenUrl.sha256) {
+        destroyed = await destroyQuietly(registry, computerId, deps.logger);
+        return record(
+          allFail("the frozen outputs do not match their recorded sha256 (fail closed)"),
+          {
+            provider: provider.name,
+            computer_id: computerId,
+            provider_id: id,
+            snapshot_id: info.snapshotId,
+            destroyed,
+          },
+          got.sha,
+        );
+      }
+      if (got.size !== frozenUrl.sizeBytes) {
+        throw new GateInfraError(
+          `downloaded ${got.size} bytes of frozen outputs, expected ${frozenUrl.sizeBytes}`,
         );
       }
     } else {
@@ -959,7 +1032,7 @@ export async function runGates(
       .reverse()
       .find((l) => l.startsWith("AB_SETUP"));
     const m = line
-      ? /^AB_SETUP frozen=(ok|missing|invalid) sha256=([0-9a-f]{64}|-)$/.exec(line)
+      ? /^AB_SETUP frozen=(ok|missing|invalid|too_many|timeout) sha256=([0-9a-f]{64}|-)$/.exec(line)
       : null;
     if (setup.exitCode !== 0 || !m) {
       throw new GateInfraError(
@@ -977,12 +1050,14 @@ export async function runGates(
     });
 
     if (frozenState !== "ok") {
-      const why =
-        frozenState === "invalid"
-          ? "the frozen outputs could not be unpacked (fail closed)"
-          : "no frozen outputs reached the scoring computer (fail closed)";
+      const why: Record<string, string> = {
+        invalid: "the frozen outputs could not be unpacked (fail closed)",
+        too_many: `the frozen outputs have more than ${ctx.maxEntries} entries (fail closed)`,
+        timeout: `the frozen outputs could not be unpacked within ${ctx.stepTimeoutS}s (fail closed)`,
+        missing: "no frozen outputs reached the scoring computer (fail closed)",
+      };
       destroyed = await destroyQuietly(registry, computerId, deps.logger);
-      return record(allFail(why), scoredOn(), sha);
+      return record(allFail(why[frozenState] ?? why.invalid!), scoredOn(), sha);
     }
 
     // ---- gates, one at a time (they share the sandbox uid; killAll runs between them)

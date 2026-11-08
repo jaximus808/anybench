@@ -46,6 +46,8 @@ function setupTdm51(
     gates?: Record<string, GateScript>;
     setup?: { stdout?: string; exitCode?: number };
     fetchExit?: number;
+    /** What each download hashes to, in order (the last repeats). Default: [7 bytes, SHA]. */
+    downloads?: { size: number; sha: string }[];
   } = {},
 ) {
   const fake = new FakeProvider({ name: `fake-tdm51-${Math.random().toString(36).slice(2)}` });
@@ -56,10 +58,16 @@ function setupTdm51(
     pricing: { pricePerBlockMicroUsd: 1000n },
   });
   const runs: string[] = [];
-  fake.onExec(/\.anybench\/score\/fetch\.sh'$/, () => ({
-    exitCode: opts.fetchExit ?? 0,
-    stderr: opts.fetchExit ? "curl: (22) 403" : "",
-  }));
+  const downloads = opts.downloads ?? [{ size: 7, sha: SHA }];
+  let fetches = 0;
+  fake.onExec(/\.anybench\/score\/fetch\.sh'$/, () => {
+    fetches++;
+    return { exitCode: opts.fetchExit ?? 0, stderr: opts.fetchExit ? "curl: (22) 403" : "" };
+  });
+  fake.onExec(/^printf '%s %s/, () => {
+    const d = downloads[Math.min(fetches, downloads.length) - 1] ?? downloads[0]!;
+    return `${d.size} ${d.sha}\n`;
+  });
   fake.onExec(/\.anybench\/score\/setup\.sh'$/, () => ({
     stdout: opts.setup?.stdout ?? `AB_SETUP frozen=ok sha256=${SHA}\n`,
     exitCode: opts.setup?.exitCode ?? 0,
@@ -95,7 +103,7 @@ function setupTdm51(
     ...over,
   });
   const deps = { registry, pollIntervalMs: 5, graceMs: 0, sleep: async () => undefined };
-  return { fake, store, registry, runs, input, deps };
+  return { fake, store, registry, runs, input, deps, fetches: () => fetches };
 }
 
 async function liveComputers(fake: FakeProvider) {
@@ -219,6 +227,52 @@ describe("runGates on a fresh scoring computer (FakeProvider)", () => {
     const lines = t.fake.commands().map((c) => c.command);
     expect(lines.length).toBeGreaterThan(3);
     for (const l of lines) expect(l).not.toContain("X-Amz-Signature");
+  });
+
+  it("a download whose bytes don't match the recorded sha256 is fetched once more, then a contender FAIL", async () => {
+    const url = { kind: "url" as const, url: URL_SECRET, sha256: SHA, sizeBytes: 7 };
+    const bad = "d".repeat(64);
+    // Mismatch twice: the uploader stored other bytes under the declared sha256.
+    const t = setupTdm51({ downloads: [{ size: 7, sha: bad }] });
+    const rec = await runGates(t.input({ frozen: url }), t.deps);
+    expect(t.fetches()).toBe(2);
+    for (const g of Object.values(rec.gates)) {
+      expect(g).toMatchObject({
+        status: "no_outputs",
+        kit_suspect: false,
+        result: { pass: false },
+      });
+      expect(g.result.reason).toMatch(/do not match their recorded sha256/);
+    }
+    expect(rec.outputs_sha256).toBe(bad);
+    expect(rec.scoring_computer?.destroyed).toBe(true);
+    expect(t.runs).toEqual([]);
+    // A transient mismatch heals on the second fetch.
+    const u = setupTdm51({
+      downloads: [
+        { size: 7, sha: bad },
+        { size: 7, sha: SHA },
+      ],
+    });
+    const ok = await runGates(u.input({ frozen: url }), u.deps);
+    expect(u.fetches()).toBe(2);
+    expect(ok.gates.tests!.result.pass).toBe(true);
+    // A body of the wrong size is a transfer problem: ours.
+    const v = setupTdm51({ downloads: [{ size: 6, sha: SHA }] });
+    await expect(runGates(v.input({ frozen: url }), v.deps)).rejects.toThrow(/downloaded 6 bytes/);
+    expect(await liveComputers(v.fake)).toEqual([]);
+  });
+
+  it("too many entries or a slow unpack is a contender FAIL, not an exec timeout", async () => {
+    for (const [state, reason] of [
+      ["too_many", /more than 200000 entries/],
+      ["timeout", /could not be unpacked within 150s/],
+    ] as const) {
+      const t = setupTdm51({ setup: { stdout: `AB_SETUP frozen=${state} sha256=${SHA}\n` } });
+      const rec = await runGates(t.input(), t.deps);
+      expect(rec.gates.tests).toMatchObject({ status: "no_outputs", kit_suspect: false });
+      expect(rec.gates.tests!.result.reason).toMatch(reason);
+    }
   });
 
   it("a failed download or setup is our fault: GateInfraError, computer destroyed", async () => {
