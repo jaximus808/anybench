@@ -411,3 +411,46 @@ package go from fail to pass. Focused tasks are listed in `design/tasks.json`
 - the orchestrator: POST /runs for a fixture harness repo → understand (FakeNaive) → kit_draft
   (docker-local mining, FakeNaive issues) → env_build → proof (FakePipeline) → **awaiting_go**,
   with kit v1 at `<generated>/<run>/v1` (claude-code-solo vs tandem, ≥ 3 workloads).
+
+## Live attempt 4, 2026-11-08 17:55Z (kit builder ship day)
+
+Shipped first: 3dad616 (the agent kit designer drops a mined task whose instruction trips the
+no-leak lint and re-materializes the kit, up to 3 rounds) and b14c8e9 (the live e2e test turns
+`run.notify` off). API deployed (`pnpm tsx scripts/deploy/api.ts --skip-migrate`, deployment
+apd_2xpvaev237k8tqgxp0p8cadkvf, health 200). The first deploy try failed with "the service is
+at capacity" after three `GET /v1/credits/balance -> 429` retries. The retry a minute later went
+through. The worker was not restarted, because the founder's run 01a1bc4b had 4 trials running.
+Its dist was rebuilt, so it picks up 3dad616 on its next restart. The generic CLI path was
+already in the 09:49 build it runs.
+
+```
+cd apps/server && LOCAL_DATABASE_URL=postgres://anybench:anybench@localhost:55432/anybench \
+  NAIVE_LIVE=1 TDM60_E2E=1 TDM60_E2E_REPO=BurntSushi/ripgrep TDM60_E2E_PROOF_CONCURRENCY=3 \
+  TDM60_E2E_OUT=<scratch>/e2e-attempt4.json ANYBENCH_RUNNER_BIN_DIR=<repo>/packages/runner/dist/bin \
+  node --env-file=<repo>/.env ../../node_modules/vitest/vitest.mjs run test/kit-designer-e2e-live-tdm60.test.ts
+run 01a1bc4c-a9fa-75e2-9428-b11202e6958f (local test DB)
+  understand: software / cli / ready, 3 verified claims
+  kit designer: kit v1, rg (ripgrep 15.2.0) vs gnu-grep (GNU grep 3.11), 4 workloads,
+    gate same-output (reference captured from rg), 5 repeats, weights {wall:80, rss:20}  190,093 µ$
+  skeptic (openai/gpt-5-mini): pass, 0 block / 1 warn
+  kit_draft → env_build
+```
+
+Harness bug found: env build held three times within the first 75 s. Each time, enqueueing the
+needs_human `run.notify` email failed (`graphile_worker.add_job` does not exist in the fresh test
+DB). That threw inside the transition's transaction and rolled the hold back, so the hold reason
+was lost and the test loop rebuilt the env, two new computers each round. 4 env-build pairs were
+created in total. Each failed pair was destroyed (`computers.list()` showed only the current pair).
+The likely cause of the quick holds is Naïve capacity: the deploy saw 429/"at capacity" in the same
+minute. Fix: b14c8e9 passes `onStateChange: () => null` in the test. Production has the
+graphile schema, so this is test-only.
+
+Outcome: NOT at awaiting_go. Round 4 of env build got further: it booted both images, installed
+the scoring recipes (node22, python312-uv, git-time, hyperfine, hey, k6), and installed the base
+toolchain and the runner on the trial image. It then held again about 3 min later, at
+18:02:58Z, after the runner install, so the failing step is most likely the subject's
+installs or files. Because of the rollback the reason was not recorded. A 5th round had started
+when the founder asked for no new Naïve computers during the live Tandem demo (Naïve was
+returning 500s). I killed the test at 18:06Z. One computer from it was still up afterwards,
+`ab-infra-envbuild-53efd4eb753c`. I did not destroy it. Next: re-run with b14c8e9
+(the hold reason then shows up), after the demo.
