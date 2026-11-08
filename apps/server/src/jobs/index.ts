@@ -13,6 +13,7 @@ import { heartbeatJob } from "./heartbeat.js";
 import { providerProbeJob } from "./provider-probe.js";
 import { runAdvanceJob, runSweepJob } from "./run-advance.js";
 import { runSettleJob } from "./run-settle.js";
+import { runNotifyJob } from "./run-notify.js";
 import { trialExecuteJob, trialReattachJob } from "./trial-execute.js";
 import { trialGateJob } from "./trial-gate.js";
 import type { JobDef } from "./types.js";
@@ -28,6 +29,7 @@ export const JOBS: readonly JobDef[] = [
   billingReportJob,
   providerProbeJob,
   runSettleJob,
+  runNotifyJob,
 ];
 
 export { defineJob, type JobContext, type JobDef } from "./types.js";

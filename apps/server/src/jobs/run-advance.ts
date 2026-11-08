@@ -61,6 +61,7 @@ import {
 } from "../orchestrator/ports.js";
 import { sweepCandidates } from "../orchestrator/store.js";
 import { writeHeartbeat } from "./heartbeat.js";
+import { notifySettings, runNotifyEnqueuer } from "./run-notify.js";
 import { configuredSecretValues, proofStage } from "./proof.js";
 import { defineJob, type JobContext } from "./types.js";
 
@@ -89,6 +90,8 @@ export interface RunAdvanceJobOptions {
   timing?: Partial<OrchestratorTiming>;
   workerMaxTickAgeMs?: number;
   beforeStage?: OrchestratorDeps["beforeStage"];
+  /** run-email: enqueue run.notify with each state change. Default: on when notifySettings is. */
+  onStateChange?: (ctx: JobContext) => OrchestratorDeps["onStateChange"] | null;
 }
 
 /** Production pipeline: real GitHub ingest and estimate, the rest held until its ticket lands. */
@@ -162,7 +165,20 @@ export function orchestratorDeps(
       ? { workerMaxTickAgeMs: options.workerMaxTickAgeMs }
       : {}),
     ...(options.beforeStage ? { beforeStage: options.beforeStage } : {}),
+    ...notifyHook(options, ctx),
   };
+}
+
+function notifyHook(
+  options: RunAdvanceJobOptions,
+  ctx: JobContext,
+): Pick<OrchestratorDeps, "onStateChange"> {
+  const hook = options.onStateChange
+    ? options.onStateChange(ctx)
+    : notifySettings(ctx.config).enabled
+      ? runNotifyEnqueuer()
+      : null;
+  return hook ? { onStateChange: hook } : {};
 }
 
 /** graphile's job row: the last attempt is when attempts reached max_attempts. */

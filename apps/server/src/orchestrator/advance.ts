@@ -103,6 +103,7 @@ import {
   type CommitOptions,
   type KitRow,
   type OrchestratorStore,
+  type OrchestratorStoreOptions,
   type RunRow,
   type TrialRow,
 } from "./store.js";
@@ -183,6 +184,8 @@ export interface OrchestratorDeps {
   workerMaxTickAgeMs?: number;
   /** Test hook: runs before each non-terminal step, with an abort signal (crash simulation). */
   beforeStage?: (state: RunState, signal: AbortSignal) => Promise<void>;
+  /** In each state change's transaction (run-email: enqueue run.notify). */
+  onStateChange?: OrchestratorStoreOptions["onStateChange"];
 }
 
 export interface AdvanceOptions {
@@ -298,6 +301,7 @@ class RunAdvance {
     this.t = { ...DEFAULT_ORCHESTRATOR_TIMING, ...deps.timing };
     this.store = orchestratorStore(deps.db, {
       maxTickAgeMs: deps.workerMaxTickAgeMs ?? WORKER_MAX_TICK_AGE_MS,
+      ...(deps.onStateChange ? { onStateChange: deps.onStateChange } : {}),
     });
     this.owner = `${deps.owner}~${randomBytes(6).toString("hex")}`;
     this.actor = actorOf(this.owner);

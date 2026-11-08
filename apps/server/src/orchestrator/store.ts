@@ -123,7 +123,19 @@ export interface OrchestratorStore {
   trials(runId: string): Promise<TrialRow[]>;
 }
 
-export function orchestratorStore(db: Database, opts: { maxTickAgeMs: number }): OrchestratorStore {
+export interface OrchestratorStoreOptions {
+  maxTickAgeMs: number;
+  /**
+   * Runs inside commit's transaction after the state change (run-email: enqueue run.notify), so
+   * the follow-up commits or rolls back with the transition.
+   */
+  onStateChange?: (
+    tx: DbTx,
+    change: { runId: string; from: RunState; to: RunState },
+  ) => Promise<void>;
+}
+
+export function orchestratorStore(db: Database, opts: OrchestratorStoreOptions): OrchestratorStore {
   const free = () => runLeaseFree(opts.maxTickAgeMs);
 
   async function guarded(
@@ -196,6 +208,7 @@ export function orchestratorStore(db: Database, opts: { maxTickAgeMs: number }):
         await appendEvents(tx, runId as RunId, [
           stateChangedEvent(runId, actorOf(owner), t.from, t.to, command.type, options.reason),
         ]);
+        if (t.to !== t.from) await opts.onStateChange?.(tx, { runId, from: t.from, to: t.to });
       });
     },
 

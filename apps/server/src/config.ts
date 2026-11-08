@@ -223,6 +223,20 @@ export const EnvSchema = z.object({
       .default("2000000")
       .transform((v) => BigInt(v)),
   ),
+  // ── Run emails (run.notify, jobs/run-notify.ts): "your benchmark is done" to the run owner. ──
+  /**
+   * `1`/`0` turns the run-owner emails on/off. Unset = on when MONID_API_KEY and a sending inbox
+   * (NOTIFY_FROM_INBOX, else OUTREACH_FROM_ADDRESS) are set. Transactional, never outreach.
+   */
+  NOTIFY_EMAIL_ENABLED: z.preprocess(emptyToUndefined, z.enum(["0", "1"]).optional()),
+  /** Monid key: run emails go through AgentMail via Monid (docs/findings/monid-agentmail.md). */
+  MONID_API_KEY: optionalString,
+  MONID_BASE_URL: optionalUrl,
+  /** The AgentMail inbox run emails are sent from. Default: OUTREACH_FROM_ADDRESS. */
+  NOTIFY_FROM_INBOX: optionalString,
+  OUTREACH_FROM_ADDRESS: optionalString,
+  /** Company postal address, shown in the run email footer. */
+  COMPANY_POSTAL_ADDRESS: optionalString,
   /** Markup on eval computer cost in basis points (5000 = +50%), rounded down per computer. */
   COMPUTE_MARKUP_BPS: z.preprocess(
     emptyToUndefined,
@@ -420,5 +434,6 @@ export function configSecrets(config: Config): Record<string, string | undefined
     GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
     SESSION_SECRET: config.SESSION_SECRET,
     RUNNER_TOKEN_SECRET: config.RUNNER_TOKEN_SECRET,
+    MONID_API_KEY: config.MONID_API_KEY,
   };
 }
