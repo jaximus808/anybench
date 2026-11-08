@@ -2,8 +2,11 @@
 //
 //   anybench-http-agent run  --in <EVAL_IN> --out <EVAL_OUT> [--config http-agent.json]
 //                            [--endpoint URL] [--max-turns N] [--model ID] [--simulated-user naive]
-//   anybench-http-agent gate --conversations <dir> --out <frozen EVAL_OUT> --verdict <gate.json>
-//                            [--oracle <frozen oracle EVAL_OUT>]
+//   anybench-http-agent gate --conversations <dir> --labels <dir> --out <frozen EVAL_OUT>
+//                            --verdict <gate.json> [--oracle <frozen oracle EVAL_OUT>]
+//
+// `run` reads only the conversation inputs (`--in` is the workload dir or EVAL_IN); labels are
+// read by `gate` alone, from `gates/<gate>/reference/<workload>/` on the scoring computer.
 //
 // `run` exits 0 when every conversation completed, 1 when the agent failed a turn (transcripts
 // are still written), 2 on a usage or configuration error. `gate` exits 0 once gate.json is
@@ -29,7 +32,7 @@ export interface CliIo {
 
 const USAGE = `usage:
   anybench-http-agent run  --in DIR --out DIR [--config FILE] [--endpoint URL] [--max-turns N] [--model ID] [--simulated-user naive]
-  anybench-http-agent gate --conversations DIR --out DIR --verdict FILE [--oracle DIR]`;
+  anybench-http-agent gate --conversations DIR --labels DIR --out DIR --verdict FILE [--oracle DIR]`;
 
 /** Monthly cap for the simulated-user agent we create on Naïve: $5. */
 const SIM_USER_CAP_MICRO_USD = 5_000_000n;
@@ -108,16 +111,18 @@ export async function main(argv: string[], io: CliIo, deps: CliDeps = {}): Promi
         args: rest,
         options: {
           conversations: { type: "string" },
+          labels: { type: "string" },
           out: { type: "string" },
           verdict: { type: "string" },
           oracle: { type: "string" },
         },
         strict: true,
       });
-      if (!values.conversations || !values.out || !values.verdict)
-        throw new UsageError("gate needs --conversations, --out and --verdict");
+      if (!values.conversations || !values.labels || !values.out || !values.verdict)
+        throw new UsageError("gate needs --conversations, --labels, --out and --verdict");
       const { gate } = await runHttpAgentGate({
         conversationsDir: values.conversations,
+        labelsDir: values.labels,
         outDir: values.out,
         verdictPath: values.verdict,
         ...(values.oracle ? { oracleOutDir: values.oracle } : {}),

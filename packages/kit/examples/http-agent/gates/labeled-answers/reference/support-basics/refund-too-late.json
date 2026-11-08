@@ -1,0 +1,15 @@
+{
+  "id": "refund-too-late",
+  "expected": {
+    "answer": {
+      "contains": ["not eligible"]
+    },
+    "outcome": "escalated"
+  },
+  "tools": [
+    {
+      "name": "issue_refund",
+      "forbidden": true
+    }
+  ]
+}

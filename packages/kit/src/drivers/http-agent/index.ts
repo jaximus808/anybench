@@ -2,6 +2,7 @@
 // Conversation sets, the runner-side driver, collectors, the labeled-answers gate and the
 // simulated user. `bin.ts` (the `anybench-http-agent` command) is not re-exported.
 export * from "./conversation.js";
+export * from "./labels.js";
 export * from "./mapping.js";
 export * from "./config.js";
 export * from "./transcript.js";

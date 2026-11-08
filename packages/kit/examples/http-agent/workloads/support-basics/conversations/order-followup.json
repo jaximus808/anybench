@@ -2,8 +2,11 @@
   "id": "order-followup",
   "title": "Follow-up question that needs the earlier turn",
   "turns": [
-    { "user": "Hi, I need help with order 2001." },
-    { "user": "Where is it right now?", "expect": { "contains": ["Denver hub"] } }
-  ],
-  "tools": [{ "name": "lookup_order", "args": { "order_id": "2001" } }]
+    {
+      "user": "Hi, I need help with order 2001."
+    },
+    {
+      "user": "Where is it right now?"
+    }
+  ]
 }

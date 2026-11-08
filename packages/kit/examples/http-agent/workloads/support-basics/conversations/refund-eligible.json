@@ -1,13 +1,9 @@
 {
   "id": "refund-eligible",
   "title": "Refund inside the 30-day window",
-  "turns": [{ "user": "Can I get a refund for order 1077? It arrived broken." }],
-  "expected": {
-    "answer": { "contains": ["eligible", "RF-1077"], "not_contains": ["not eligible"] },
-    "outcome": "resolved"
-  },
-  "tools": [
-    { "name": "check_refund_policy", "args": { "order_id": "1077" } },
-    { "name": "issue_refund", "args": { "order_id": "1077" } }
+  "turns": [
+    {
+      "user": "Can I get a refund for order 1077? It arrived broken."
+    }
   ]
 }

@@ -1,109 +1,45 @@
-// Conversation sets for driver.type `http-agent` (TDM-40 [4.8], plan.md P2 driver table).
+// Conversation inputs for driver.type `http-agent` (TDM-40 [4.8], plan.md P2 driver table).
 //
-//   workloads/<workload>/conversations/<conversation>.json
+//   workloads/<workload>/conversations/<conversation>.json     inputs: ship to the agent's computer
+//   gates/<gate>/reference/<workload>/<conversation>.json      labels: scoring computer only (labels.ts)
 //
-// One file is one conversation: the user turns the runner posts, the labels the gate scores
-// (per-turn `expect`, a final `expected.answer`, an `expected.outcome`), and optional tool
-// expectations. A conversation with `simulated_user` keeps going after its scripted turns: a
-// reviewer-model session (Naïve) plays the user until it says it is done or `max_turns` is hit.
+// An input file holds only what the agent may see: the scripted user turns, an optional
+// simulated-user plan, and template context. The schema is strict, and a label key (`expect`,
+// `expected`, `tools`, `oracle`) in a workload file is a validation error with its own message:
+// the workload is copied to the computer that runs the agent, so a label there is an answer key
+// the agent could read.
 //
-// The runner sends the agent only `turns[].user` (and the simulated user's messages). Labels are
-// read by the gate, on the scoring computer, from the frozen transcripts plus these files.
+// `simulated_user.goal` and `persona` are agent-visible too: the simulated user's messages are
+// built from them and posted to the agent. They must never contain the expected answer.
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { formatSchemaIssues, KitSlugSchema } from "@anybench/core";
 import { z } from "zod";
 
-/** Where a workload's conversations live, relative to the workload dir. */
+/** Where a workload's conversation inputs live, relative to the workload dir. */
 export const CONVERSATIONS_DIR = "conversations";
 
-/**
- * How a reply is checked against a label. Every field given must hold. Text checks are
- * case-insensitive and whitespace-collapsed unless `case_sensitive` is set.
- */
-export const AnswerMatcherSchema = z
-  .strictObject({
-    /** The whole reply equals this (after normalizing). */
-    equals: z.string().min(1).optional(),
-    /** Every string appears in the reply. */
-    contains: z.array(z.string().min(1)).min(1).optional(),
-    /** At least one string appears in the reply. */
-    any_of: z.array(z.string().min(1)).min(1).optional(),
-    /** None of these appear in the reply (e.g. a wrong order number). */
-    not_contains: z.array(z.string().min(1)).min(1).optional(),
-    /** A JavaScript regular expression the reply matches (flags: `i` unless case_sensitive). */
-    regex: z
-      .string()
-      .min(1)
-      .refine(
-        (r) => {
-          try {
-            new RegExp(r);
-            return true;
-          } catch {
-            return false;
-          }
-        },
-        { error: "must be a valid regular expression" },
-      )
-      .optional(),
-    /** A number in the reply within `tolerance` of `value` (e.g. a computed total). */
-    number: z
-      .strictObject({ value: z.number(), tolerance: z.number().nonnegative().default(0) })
-      .optional(),
-    case_sensitive: z.boolean().default(false),
-  })
-  .refine(
-    (m) =>
-      m.equals !== undefined ||
-      m.contains !== undefined ||
-      m.any_of !== undefined ||
-      m.not_contains !== undefined ||
-      m.regex !== undefined ||
-      m.number !== undefined,
-    {
-      error:
-        "a matcher needs at least one of equals, contains, any_of, not_contains, regex, number",
-    },
-  );
-export type AnswerMatcher = z.infer<typeof AnswerMatcherSchema>;
+/** Keys that only belong in a label file. Finding one in a workload input is an error. */
+export const LABEL_KEYS = ["expect", "expected", "tools", "oracle"] as const;
 
 export const ConversationTurnSchema = z.strictObject({
   /** What the user says on this turn. */
   user: z.string().min(1),
-  /** Label for the agent's reply to this turn. Omit for turns the gate does not score. */
-  expect: AnswerMatcherSchema.optional(),
 });
 export type ConversationTurn = z.infer<typeof ConversationTurnSchema>;
 
-/** A tool call the agent is expected (or forbidden) to make, as reported in its responses. */
-export const ToolExpectationSchema = z.strictObject({
-  name: z.string().min(1),
-  /** Every key here must appear in the call's args with an equal value (subset match). */
-  args: z.record(z.string(), z.unknown()).optional(),
-  /** At least this many matching calls across the conversation. */
-  min_calls: z.int().min(1).default(1),
-  /** The agent must make no matching call. */
-  forbidden: z.boolean().default(false),
-});
-export type ToolExpectation = z.infer<typeof ToolExpectationSchema>;
-
 export const SimulatedUserPlanSchema = z.strictObject({
-  /** What the simulated user is trying to get done; the reviewer session plays toward it. */
+  /**
+   * What the simulated user is trying to get done. Agent-visible (it shapes the messages the
+   * agent receives): never put the expected answer here.
+   */
   goal: z.string().min(1),
+  /** Agent-visible, like `goal`. */
   persona: z.string().min(1).optional(),
   /** Total user turns (scripted plus simulated) before the runner stops the conversation. */
   max_turns: z.int().min(1).max(50).default(6),
 });
 export type SimulatedUserPlan = z.infer<typeof SimulatedUserPlanSchema>;
-
-export const ConversationExpectedSchema = z.strictObject({
-  /** Label for the agent's final reply. */
-  answer: AnswerMatcherSchema.optional(),
-  /** The agent's reported outcome (response mapping `outcome`), e.g. `resolved`, `escalated`. */
-  outcome: z.string().min(1).optional(),
-});
-export type ConversationExpected = z.infer<typeof ConversationExpectedSchema>;
 
 export const ConversationSchema = z
   .strictObject({
@@ -113,14 +49,11 @@ export const ConversationSchema = z
     turns: z
       .array(ConversationTurnSchema)
       .min(1, { error: "a conversation needs at least one turn" }),
-    expected: ConversationExpectedSchema.optional(),
-    tools: z.array(ToolExpectationSchema).optional(),
     simulated_user: SimulatedUserPlanSchema.optional(),
-    /** Plain values the request template can reference as `{{context.<key>}}`. */
+    /** Plain values the request template can reference as `{{context.<key>}}`. Agent-visible. */
     context: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((c, ctx) => {
-    // An unlabeled conversation is allowed: the gate then needs an oracle transcript for it.
     if (c.simulated_user && c.simulated_user.max_turns < c.turns.length) {
       ctx.addIssue({
         code: "custom",
@@ -132,14 +65,21 @@ export const ConversationSchema = z
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type ConversationInput = z.input<typeof ConversationSchema>;
 
-/** True when the conversation carries at least one label the gate can score without an oracle. */
-export function isLabeledConversation(c: Conversation): boolean {
-  return (
-    c.turns.some((t) => t.expect !== undefined) ||
-    c.expected?.answer !== undefined ||
-    c.expected?.outcome !== undefined ||
-    (c.tools?.length ?? 0) > 0
-  );
+/** `path: message` for every label key found in a raw input document. */
+export function labelKeysIn(raw: unknown): string[] {
+  const found: string[] = [];
+  const msg = (where: string, key: string) =>
+    `${where}: '${key}' is a label: labels go in gates/<gate>/reference/<workload>/, never in the workload (it ships to the agent's computer)`;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return found;
+  const doc = raw as Record<string, unknown>;
+  for (const k of LABEL_KEYS) if (k in doc) found.push(msg(k, k));
+  if (Array.isArray(doc.turns)) {
+    doc.turns.forEach((t, i) => {
+      if (t !== null && typeof t === "object" && !Array.isArray(t))
+        for (const k of LABEL_KEYS) if (k in t) found.push(msg(`turns[${i}].${k}`, k));
+    });
+  }
+  return found;
 }
 
 export class ConversationSetError extends Error {
@@ -153,8 +93,8 @@ export class ConversationSetError extends Error {
 }
 
 /**
- * Resolve the conversations dir: `dir` itself when it holds `*.json`, else `dir/conversations`
- * (so a driver can be handed either EVAL_IN or the workload folder).
+ * Resolve the conversations dir: `dir/conversations` when it exists (a workload dir or EVAL_IN),
+ * else `dir` itself.
  */
 export async function resolveConversationsDir(dir: string): Promise<string> {
   const nested = path.join(dir, CONVERSATIONS_DIR);
@@ -167,20 +107,24 @@ export async function resolveConversationsDir(dir: string): Promise<string> {
 }
 
 /**
- * Load every `*.json` in a conversations dir, sorted by file name. Throws ConversationSetError
- * listing every bad file (`file: path: message`); ids must be unique and match the file name.
+ * Read every `*.json` in a dir, sorted by file name, through `parse`. Shared by the input and
+ * label loaders. Ids must be unique and match the file name. Throws ConversationSetError listing
+ * every bad file (`file: path: message`).
  */
-export async function loadConversationSet(dir: string): Promise<Conversation[]> {
-  const root = await resolveConversationsDir(dir);
+export async function loadJsonSet<T extends { id: string }>(
+  root: string,
+  parse: (raw: unknown, file: string) => { data?: T; problems: string[] },
+  what: string,
+): Promise<T[]> {
   let names: string[];
   try {
     names = (await readdir(root)).filter((n) => n.endsWith(".json")).sort();
   } catch {
     throw new ConversationSetError(root, ["directory does not exist"]);
   }
-  if (names.length === 0) throw new ConversationSetError(root, ["no *.json conversation files"]);
+  if (names.length === 0) throw new ConversationSetError(root, [`no *.json ${what} files`]);
   const problems: string[] = [];
-  const out: Conversation[] = [];
+  const out: T[] = [];
   const seen = new Set<string>();
   for (const name of names) {
     let raw: unknown;
@@ -190,17 +134,32 @@ export async function loadConversationSet(dir: string): Promise<Conversation[]> 
       problems.push(`${name}: invalid JSON (${(e as Error).message})`);
       continue;
     }
-    const r = ConversationSchema.safeParse(raw);
-    if (!r.success) {
-      for (const line of formatSchemaIssues(r.error)) problems.push(`${name}: ${line}`);
-      continue;
-    }
+    const r = parse(raw, name);
+    for (const p of r.problems) problems.push(`${name}: ${p}`);
+    if (r.data === undefined) continue;
     const c = r.data;
     if (`${c.id}.json` !== name) problems.push(`${name}: id '${c.id}' must match the file name`);
-    if (seen.has(c.id)) problems.push(`${name}: duplicate conversation id '${c.id}'`);
+    if (seen.has(c.id)) problems.push(`${name}: duplicate ${what} id '${c.id}'`);
     seen.add(c.id);
     out.push(c);
   }
   if (problems.length > 0) throw new ConversationSetError(root, problems);
   return out;
+}
+
+/** Parse one input document: label keys first (clear message), then the strict schema. */
+export function parseConversation(raw: unknown): { data?: Conversation; problems: string[] } {
+  const labels = labelKeysIn(raw);
+  const r = ConversationSchema.safeParse(raw);
+  if (labels.length > 0) return { problems: labels };
+  if (!r.success) return { problems: formatSchemaIssues(r.error) };
+  return { data: r.data, problems: [] };
+}
+
+/**
+ * Load the conversation inputs of a workload (`dir` or `dir/conversations`). This is all the
+ * runner reads; it never sees a label.
+ */
+export async function loadConversationSet(dir: string): Promise<Conversation[]> {
+  return loadJsonSet(await resolveConversationsDir(dir), parseConversation, "conversation");
 }

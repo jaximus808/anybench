@@ -1,0 +1,22 @@
+{
+  "id": "order-status",
+  "turns": [
+    {
+      "index": 0,
+      "expect": {
+        "contains": ["shipped", "2026-11-12"]
+      }
+    }
+  ],
+  "expected": {
+    "outcome": "resolved"
+  },
+  "tools": [
+    {
+      "name": "lookup_order",
+      "args": {
+        "order_id": "1042"
+      }
+    }
+  ]
+}

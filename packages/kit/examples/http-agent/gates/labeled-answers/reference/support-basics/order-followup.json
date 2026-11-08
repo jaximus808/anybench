@@ -1,0 +1,19 @@
+{
+  "id": "order-followup",
+  "turns": [
+    {
+      "index": 1,
+      "expect": {
+        "contains": ["Denver hub"]
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "lookup_order",
+      "args": {
+        "order_id": "2001"
+      }
+    }
+  ]
+}

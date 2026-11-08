@@ -1,7 +1,7 @@
 // TDM-40 [4.8]: driver.type http-agent: conversation sets, runner-side driver, collectors,
 // labeled-answers gate, simulated user (FakeNaive) and the example kit against a stub agent.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { FakeNaive } from "@anybench/naive/fake";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   collectHttpAgent,
+  ConversationLabelSchema,
   ConversationSetError,
   ConversationSchema,
   extractHttpAgentTurn,
@@ -22,6 +23,7 @@ import {
   HttpAgentRunError,
   loadConversationSet,
   loadHttpAgentConfig,
+  loadLabelSet,
   matchAnswer,
   naiveSimulatedUser,
   nearestRankPercentile,
@@ -34,6 +36,7 @@ import {
   simulatedUserAgentSpec,
   validateKitDir,
   type ConversationInput,
+  type ConversationLabelInput,
   type HttpAgentMetricRow,
   type Transcript,
 } from "../src/index.js";
@@ -46,6 +49,7 @@ const ADAPTER = path.join(EXAMPLE, "adapters", "support-bot");
 const STUB_SERVER = path.join(ADAPTER, "server.ts");
 const WORKLOAD = path.join(EXAMPLE, "workloads", "support-basics");
 const CONVERSATIONS = path.join(WORKLOAD, "conversations");
+const LABELS = path.join(EXAMPLE, "gates", "labeled-answers", "reference", "support-basics");
 const BIN = path.join(KIT_PKG, "src", "drivers", "http-agent", "bin.ts");
 
 const tmpDirs: string[] = [];
@@ -93,6 +97,7 @@ async function startStub(env: Record<string, string> = {}): Promise<string> {
 /** Run the gate in its own process, the way check.sh does on the scoring computer. */
 async function gateInChildProcess(
   conversationsDir: string,
+  labelsDir: string,
   outDir: string,
 ): Promise<{ gate: unknown; stdout: string; pid: number | undefined }> {
   const verdict = path.join(outDir, "..", "gate.json");
@@ -105,6 +110,8 @@ async function gateInChildProcess(
       "gate",
       "--conversations",
       conversationsDir,
+      "--labels",
+      labelsDir,
       "--out",
       outDir,
       "--verdict",
@@ -146,6 +153,24 @@ async function writeConversations(dir: string, convs: ConversationInput[]): Prom
   return cdir;
 }
 
+async function writeLabels(dir: string, labels: ConversationLabelInput[]): Promise<string> {
+  const ldir = path.join(dir, "labels");
+  await mkdir(ldir, { recursive: true });
+  for (const l of labels) await writeFile(path.join(ldir, `${l.id}.json`), JSON.stringify(l));
+  return ldir;
+}
+
+/** Every object key anywhere in a JSON document. */
+function keysDeep(v: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(v)) for (const x of v) keysDeep(x, out);
+  else if (v !== null && typeof v === "object")
+    for (const [k, x] of Object.entries(v)) {
+      out.add(k);
+      keysDeep(x, out);
+    }
+  return out;
+}
+
 const rowsNamed = (rows: HttpAgentMetricRow[], name: string) =>
   rows.filter((r) => r.name === name && r.labels === undefined);
 
@@ -161,11 +186,48 @@ describe("conversation set format", () => {
       "refund-eligible",
       "refund-too-late",
     ]);
-    expect(set.find((c) => c.id === "refund-too-late")?.tools?.[0]).toEqual({
+    const labels = await loadLabelSet(LABELS);
+    expect(labels.map((l) => l.id)).toEqual(set.map((c) => c.id));
+    expect(labels.find((l) => l.id === "refund-too-late")?.tools?.[0]).toEqual({
       name: "issue_refund",
       forbidden: true,
       min_calls: 1,
     });
+  });
+
+  it("no file under examples/http-agent/workloads/ carries a label key", async () => {
+    const files = (await readdir(path.join(EXAMPLE, "workloads"), { recursive: true }))
+      .map(String)
+      .filter((f) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThanOrEqual(5);
+    for (const f of files) {
+      const keys = keysDeep(JSON.parse(await readFile(path.join(EXAMPLE, "workloads", f), "utf8")));
+      for (const k of ["expect", "expected", "tools", "oracle"])
+        expect(keys.has(k), `${f}: ${k}`).toBe(false);
+    }
+  });
+
+  it("a workload input with a label key is rejected, with a message saying why", async () => {
+    const d = await tmp();
+    await writeFile(
+      path.join(d, "a.json"),
+      JSON.stringify({ id: "a", turns: [{ user: "hi", expect: { contains: ["x"] } }] }),
+    );
+    await writeFile(
+      path.join(d, "b.json"),
+      JSON.stringify({ id: "b", turns: [{ user: "hi" }], expected: { outcome: "resolved" } }),
+    );
+    const err = await loadConversationSet(d).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConversationSetError);
+    const problems = (err as ConversationSetError).problems;
+    expect(problems).toEqual([
+      "a.json: turns[0].expect: 'expect' is a label: labels go in gates/<gate>/reference/<workload>/, never in the workload (it ships to the agent's computer)",
+      "b.json: expected: 'expected' is a label: labels go in gates/<gate>/reference/<workload>/, never in the workload (it ships to the agent's computer)",
+    ]);
+    // The strict schema alone refuses unknown keys too.
+    expect(
+      ConversationSchema.safeParse({ id: "a", turns: [{ user: "hi", expect: {} }] }).success,
+    ).toBe(false);
   });
 
   it("reports every bad file with its path", async () => {
@@ -174,7 +236,7 @@ describe("conversation set format", () => {
     await writeFile(path.join(d, "c.json"), "{nope");
     await writeFile(
       path.join(d, "d.json"),
-      JSON.stringify({ id: "d", turns: [{ user: "hi", expect: { case_sensitive: true } }] }),
+      JSON.stringify({ id: "d", turns: [{ user: "hi", says: "x" }] }),
     );
     await writeFile(path.join(d, "e.json"), JSON.stringify({ id: "e", turns: [] }));
     const err = await loadConversationSet(d).catch((e: unknown) => e);
@@ -182,8 +244,29 @@ describe("conversation set format", () => {
     const problems = (err as ConversationSetError).problems.join("\n");
     expect(problems).toContain("a.json: id 'b' must match the file name");
     expect(problems).toContain("c.json: invalid JSON");
-    expect(problems).toContain("d.json: turns[0].expect: a matcher needs at least one of");
+    expect(problems).toContain('d.json: turns[0]: Unrecognized key: "says"');
     expect(problems).toContain("e.json: turns: a conversation needs at least one turn");
+  });
+
+  it("validates labels: matcher, duplicate turn, no checks", () => {
+    const bad = (l: unknown) => {
+      const r = ConversationLabelSchema.safeParse(l);
+      return r.success ? [] : r.error.issues.map((i) => i.message);
+    };
+    expect(bad({ id: "a", turns: [{ index: 0, expect: { case_sensitive: true } }] })[0]).toMatch(
+      /a matcher needs at least one of/,
+    );
+    expect(
+      bad({
+        id: "a",
+        turns: [
+          { index: 0, expect: { contains: ["x"] } },
+          { index: 0, expect: { contains: ["y"] } },
+        ],
+      }),
+    ).toEqual(["turn 0 is labeled twice"]);
+    expect(bad({ id: "a" })[0]).toMatch(/a label needs at least one check/);
+    expect(bad({ id: "a", oracle: true })).toEqual([]);
   });
 
   it("rejects a simulated-user cap below the scripted turns", () => {
@@ -448,45 +531,136 @@ describe("labeled-answers gate", () => {
     ...extra,
   });
 
-  it("an unlabeled conversation needs the oracle's transcript and must match it", () => {
-    const c = ConversationSchema.parse({ id: "free", turns: [{ user: "hi" }] });
-    expect(scoreConversation(c, transcript("free", ["Hello  there"])).failures[0]).toMatch(
-      /no labels and no oracle/,
+  it("an oracle: true label must match the oracle's final answer, and needs an oracle run", () => {
+    const l = ConversationLabelSchema.parse({ id: "free", oracle: true });
+    expect(scoreConversation(l, transcript("free", ["Hello  there"])).failures[0]).toMatch(
+      /oracle: true but no oracle run was given/,
+    );
+    expect(scoreConversation(l, transcript("free", ["x"]), null).failures[0]).toMatch(
+      /oracle run has no transcript/,
     );
     expect(
-      scoreConversation(c, transcript("free", ["hello there"]), transcript("free", ["Hello there"]))
+      scoreConversation(l, transcript("free", ["hello there"]), transcript("free", ["Hello there"]))
         .pass,
     ).toBe(true);
     expect(
-      scoreConversation(c, transcript("free", ["bye"]), transcript("free", ["Hello there"]))
+      scoreConversation(l, transcript("free", ["bye"]), transcript("free", ["Hello there"]))
         .failures[0],
     ).toMatch(/differs from the oracle's/);
   });
 
-  it("a missing transcript or a bad label set fails with the reason in gate.json", async () => {
+  /** One input `a` (two turns), label `a`, and a passing transcript for it. */
+  async function fixture() {
     const d = await tmp();
-    const cdir = await writeConversations(d, [
-      { id: "a", turns: [{ user: "x", expect: { contains: ["y"] } }] },
-    ]);
+    const cdir = await writeConversations(d, [{ id: "a", turns: [{ user: "x" }, { user: "y" }] }]);
     const out = path.join(d, "out");
     await mkdir(out);
-    const verdict = path.join(d, "gate.json");
-    const r = await runHttpAgentGate({ conversationsDir: cdir, outDir: out, verdictPath: verdict });
+    return { d, cdir, out, verdict: path.join(d, "gate.json") };
+  }
+  const gateReason = async (
+    f: Awaited<ReturnType<typeof fixture>>,
+    ldir: string,
+    oracle?: string,
+  ) => {
+    const r = await runHttpAgentGate({
+      conversationsDir: f.cdir,
+      labelsDir: ldir,
+      outDir: f.out,
+      verdictPath: f.verdict,
+      ...(oracle ? { oracleOutDir: oracle } : {}),
+    });
+    expect(GateResultSchema.parse(JSON.parse(await readFile(f.verdict, "utf8")))).toEqual(r.gate);
     expect(r.gate.pass).toBe(false);
-    expect(r.gate.reason).toBe(
+    return r.gate.reason;
+  };
+
+  it("fails closed: missing transcript, no labels, missing label, orphan label, bad index, oracle", async () => {
+    const f = await fixture();
+    const ok = await writeLabels(f.d, [
+      { id: "a", turns: [{ index: 1, expect: { contains: ["y"] } }] },
+    ]);
+    expect(await gateReason(f, ok)).toBe(
       "1 of 1 conversations failed: a: transcript missing: transcripts/a.json does not exist",
     );
-    const r2 = await runHttpAgentGate({
-      conversationsDir: path.join(d, "nope"),
+    expect(await gateReason(f, path.join(f.d, "nope"))).toMatch(
+      /^labels are missing or invalid: .*nope: directory does not exist$/,
+    );
+    const empty = path.join(f.d, "empty");
+    await mkdir(empty);
+    expect(await gateReason(f, empty)).toMatch(
+      /^labels are missing or invalid: .*no \*\.json label files$/,
+    );
+
+    const other = path.join(f.d, "other");
+    await mkdir(other);
+    await writeFile(
+      path.join(other, "b.json"),
+      JSON.stringify({ id: "b", expected: { outcome: "ok" } }),
+    );
+    expect(await gateReason(f, other)).toBe(
+      "labels do not match the conversations: conversation 'a' has no label; label 'b' has no conversation input",
+    );
+
+    const far = path.join(f.d, "far");
+    await mkdir(far);
+    await writeFile(
+      path.join(far, "a.json"),
+      JSON.stringify({ id: "a", turns: [{ index: 2, expect: { contains: ["z"] } }] }),
+    );
+    expect(await gateReason(f, far)).toBe(
+      "labels do not match the conversations: label 'a' labels turn 2, but the input has 2 scripted turn(s)",
+    );
+
+    const orc = path.join(f.d, "orc");
+    await mkdir(orc);
+    await writeFile(path.join(orc, "a.json"), JSON.stringify({ id: "a", oracle: true }));
+    expect(await gateReason(f, orc)).toBe(
+      "labels do not match the conversations: label 'a' says oracle: true, but no oracle run was given (--oracle)",
+    );
+    // With --oracle but an oracle run that has no transcript for it: still a failure.
+    await mkdir(path.join(f.out, "transcripts"));
+    await writeFile(
+      path.join(f.out, "transcripts", "a.json"),
+      JSON.stringify(transcript("a", ["1", "2"])),
+    );
+    expect(await gateReason(f, orc, path.join(f.d, "oracle-out"))).toBe(
+      "1 of 1 conversations failed: a: the oracle run has no transcript for this conversation",
+    );
+
+    expect(await gateReason({ ...f, cdir: path.join(f.d, "nope") }, ok)).toMatch(
+      /^conversation inputs are unusable: .*directory does not exist$/,
+    );
+  });
+
+  it("the gate child process writes pass:false for a missing labels dir and a missing label", async () => {
+    const base = await startStub();
+    const d = await tmp();
+    const out = path.join(d, "out");
+    await runConversationSet({
+      conversations: await loadConversationSet(WORKLOAD),
+      config: await loadHttpAgentConfig(path.join(ADAPTER, "http-agent.json")),
+      endpoint: `${base}/chat`,
       outDir: out,
-      verdictPath: verdict,
     });
-    expect(r2.gate).toEqual({
+    const missing = await gateInChildProcess(CONVERSATIONS, path.join(d, "no-labels"), out);
+    expect(missing.gate).toMatchObject({
       pass: false,
-      reason: expect.stringMatching(/^gate error: invalid conversation set/),
+      reason: expect.stringMatching(/^labels are missing or invalid: .*directory does not exist/),
+    });
+    expect(missing.stdout).toContain("FAIL");
+
+    // Every example label except one: the unlabeled conversation fails the whole gate.
+    const partial = path.join(d, "partial");
+    await mkdir(partial);
+    for (const f of await readdir(LABELS))
+      if (f !== "bulk-quote.json")
+        await writeFile(path.join(partial, f), await readFile(path.join(LABELS, f)));
+    const one = await gateInChildProcess(CONVERSATIONS, partial, out);
+    expect(one.gate).toEqual({
+      pass: false,
+      reason: "labels do not match the conversations: conversation 'bulk-quote' has no label",
       evidence: [],
     });
-    expect(GateResultSchema.parse(JSON.parse(await readFile(verdict, "utf8")))).toEqual(r2.gate);
   });
 });
 
@@ -526,6 +700,11 @@ describe("simulated user (FakeNaive)", () => {
         id: "lost-order-number",
         turns: [{ user: "Hi, I need help with an order." }],
         simulated_user: { goal: "Find out where order 2001 is.", max_turns: 4 },
+      },
+    ]);
+    const ldir = await writeLabels(d, [
+      {
+        id: "lost-order-number",
         expected: { answer: { contains: ["Denver hub"] }, outcome: "resolved" },
       },
     ]);
@@ -561,6 +740,7 @@ describe("simulated user (FakeNaive)", () => {
     expect(rowsNamed(r.metrics, "simulated_user_micro_usd")[0]?.value).toBe(4_000n);
     const gate = await runHttpAgentGate({
       conversationsDir: cdir,
+      labelsDir: ldir,
       outDir: out,
       verdictPath: path.join(d, "gate.json"),
     });
@@ -643,7 +823,7 @@ describe("example kit: examples/http-agent against the stub agent", () => {
       outDir: out,
     });
     expect(r.ok).toBe(true);
-    const gate = await gateInChildProcess(CONVERSATIONS, out);
+    const gate = await gateInChildProcess(CONVERSATIONS, LABELS, out);
     // The gate ran in a process of its own, not the test's and not the agent's.
     expect(gate.pid).not.toBe(process.pid);
     return { ...gate, metrics: r.metrics, out };

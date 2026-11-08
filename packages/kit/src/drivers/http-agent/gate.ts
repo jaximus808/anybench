@@ -1,24 +1,29 @@
 // The http-agent correctness gate (TDM-40 [4.8], gate kind `labeled-answers`).
 //
 // Runs on the scoring computer, in its own process, reading only frozen files: the conversation
-// set (labels) and the transcripts the driver wrote. It never talks to the agent. Every
-// conversation must pass:
+// inputs, the labels (`gates/<gate>/reference/<workload>/`, which never ship to the agent's
+// computer) and the transcripts the driver wrote. It never talks to the agent.
+//
+// It fails closed. Before scoring, inputs and labels are joined by conversation id, and the gate
+// fails (pass: false, with the reason) when the labels dir is missing or empty, an input has no
+// label, a label has no input, a label names a turn past the scripted turns, or a label says
+// `oracle: true` and no oracle run was given. Then every conversation must pass:
 //   - every labeled turn's reply matches its `expect`,
 //   - the final reply matches `expected.answer`, the last reported outcome equals
 //     `expected.outcome`, and the tool expectations hold;
-//   - an unlabeled conversation must match the oracle's transcript (final reply, normalized).
+//   - an `oracle: true` label: the final reply matches the oracle transcript's (normalized).
 // It writes gate.json ({pass, reason, evidence[]}) and labeled-answers.json (per-check detail).
 // No latency or cost number counts unless this passes.
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GateResultSchema, type GateResult } from "@anybench/core";
+import { ConversationSetError, loadConversationSet, type Conversation } from "./conversation.js";
 import {
-  isLabeledConversation,
-  loadConversationSet,
+  loadLabelSet,
   type AnswerMatcher,
-  type Conversation,
+  type ConversationLabel,
   type ToolExpectation,
-} from "./conversation.js";
+} from "./labels.js";
 import type { ToolCall } from "./mapping.js";
 import {
   finalReply,
@@ -114,9 +119,12 @@ export interface ConversationVerdict {
   failures: string[];
 }
 
-/** Score one conversation against its labels (or the oracle's transcript when it has none). */
+/**
+ * Score one conversation's transcript against its label. `oracle` is the oracle run's transcript
+ * (null when that run has none; undefined when no oracle run was given).
+ */
 export function scoreConversation(
-  c: Conversation,
+  label: ConversationLabel,
   t: Transcript | null,
   oracle?: Transcript | null,
 ): ConversationVerdict {
@@ -130,15 +138,14 @@ export function scoreConversation(
     if (t.status === "error")
       add("completed", false, `the agent failed: ${t.error ?? "a turn errored"}`);
 
-    c.turns.forEach((turn, i) => {
-      if (turn.expect === undefined) return;
+    for (const { index: i, expect } of label.turns ?? []) {
       const got = t.turns[i];
       const name = `turn ${i}`;
       if (got === undefined || got.status !== "ok" || got.reply === null) {
         add(name, false, `turn ${i} has no reply${got?.error ? ` (${got.error})` : ""}`);
-        return;
+        continue;
       }
-      const misses = matchAnswer(got.reply, turn.expect);
+      const misses = matchAnswer(got.reply, expect);
       add(
         name,
         misses.length === 0,
@@ -146,10 +153,10 @@ export function scoreConversation(
           ? `turn ${i} reply ${misses.join(", ")} (got ${quote(got.reply)})`
           : undefined,
       );
-    });
+    }
 
     const final = finalReply(t);
-    const exp = c.expected;
+    const exp = label.expected;
     if (exp?.answer !== undefined) {
       const misses = final === null ? ["is missing"] : matchAnswer(final, exp.answer);
       add(
@@ -170,7 +177,7 @@ export function scoreConversation(
       );
     }
     const calls = t.turns.flatMap((x) => x.tool_calls);
-    for (const exp of c.tools ?? []) {
+    for (const exp of label.tools ?? []) {
       const n = calls.filter((call) => callMatches(call, exp)).length;
       const name = `tool ${exp.name}`;
       if (exp.forbidden) {
@@ -192,13 +199,15 @@ export function scoreConversation(
       }
     }
 
-    if (!isLabeledConversation(c)) {
-      if (oracle === undefined || oracle === null) {
+    if (label.oracle) {
+      if (oracle === undefined) {
         add(
           "oracle match",
           false,
-          "has no labels and no oracle transcript to match (add expected/expect, or pass --oracle)",
+          "label says oracle: true but no oracle run was given (--oracle)",
         );
+      } else if (oracle === null) {
+        add("oracle match", false, "the oracle run has no transcript for this conversation");
       } else {
         const want = finalReply(oracle);
         const ok = want !== null && final !== null && norm(final, false) === norm(want, false);
@@ -212,7 +221,43 @@ export function scoreConversation(
   }
 
   const failures = checks.filter((x) => !x.pass).map((x) => x.detail ?? `${x.check} failed`);
-  return { conversation_id: c.id, pass: failures.length === 0, checks, failures };
+  return { conversation_id: label.id, pass: failures.length === 0, checks, failures };
+}
+
+/**
+ * Join inputs and labels by conversation id. Every problem found makes the gate fail closed:
+ * an unscored conversation must never read as a pass.
+ */
+export function joinLabels(
+  inputs: readonly Conversation[],
+  labels: readonly ConversationLabel[],
+  opts: { oracleGiven: boolean },
+): { pairs: { input: Conversation; label: ConversationLabel }[]; problems: string[] } {
+  const problems: string[] = [];
+  const byId = new Map(labels.map((l) => [l.id, l]));
+  const inputIds = new Set(inputs.map((c) => c.id));
+  const pairs: { input: Conversation; label: ConversationLabel }[] = [];
+  for (const input of inputs) {
+    const label = byId.get(input.id);
+    if (label === undefined) {
+      problems.push(`conversation '${input.id}' has no label`);
+      continue;
+    }
+    for (const t of label.turns ?? []) {
+      if (t.index >= input.turns.length)
+        problems.push(
+          `label '${label.id}' labels turn ${t.index}, but the input has ${input.turns.length} scripted turn(s)`,
+        );
+    }
+    if (label.oracle && !opts.oracleGiven)
+      problems.push(
+        `label '${label.id}' says oracle: true, but no oracle run was given (--oracle)`,
+      );
+    pairs.push({ input, label });
+  }
+  for (const l of labels)
+    if (!inputIds.has(l.id)) problems.push(`label '${l.id}' has no conversation input`);
+  return { pairs, problems };
 }
 
 export interface HttpAgentGateReport {
@@ -244,48 +289,82 @@ export function summarizeVerdicts(verdicts: readonly ConversationVerdict[]): Gat
 }
 
 export interface RunHttpAgentGateOptions {
-  /** The conversation set (labels): `workloads/<id>/conversations/` in the kit. */
+  /** The conversation inputs: `workloads/<id>/conversations/` in the kit. */
   conversationsDir: string;
+  /** The labels: `gates/<gate>/reference/<workload-id>/` in the kit. */
+  labelsDir: string;
   /** The frozen EVAL_OUT of the trial being scored. labeled-answers.json is written here. */
   outDir: string;
   /** Where gate.json goes. */
   verdictPath: string;
-  /** A frozen EVAL_OUT of the oracle run, for unlabeled conversations (oracle match). */
+  /** A frozen EVAL_OUT of the oracle run, for labels that say `oracle: true`. */
   oracleOutDir?: string;
 }
 
+const flat = (e: unknown) =>
+  e instanceof ConversationSetError
+    ? `${e.dir}: ${e.problems.join("; ")}`
+    : (e as Error).message.replace(/\s*\n\s*/g, "; ");
+
 /**
- * Score a frozen trial and write gate.json. Never throws for a bad trial: anything that goes
- * wrong (bad labels, missing transcripts) is a failing gate.json with the reason.
+ * Score a frozen trial and write gate.json. Never throws for a bad trial and never passes by
+ * default: anything that goes wrong (no labels, a label/input mismatch, missing transcripts) is
+ * a failing gate.json with the reason.
  */
 export async function runHttpAgentGate(
   opts: RunHttpAgentGateOptions,
 ): Promise<HttpAgentGateReport> {
-  let gate: GateResult;
+  let gate: GateResult | undefined;
   let verdicts: ConversationVerdict[] = [];
+  const fail = (reason: string): GateResult => ({ pass: false, reason, evidence: [] });
+  const unusable: string[] = [];
   try {
-    const conversations = await loadConversationSet(opts.conversationsDir);
-    for (const c of conversations) {
-      const r = await readTranscript(opts.outDir, c.id);
-      let oracle: Transcript | null | undefined;
-      if (!isLabeledConversation(c) && opts.oracleOutDir !== undefined) {
-        const o = await readTranscript(opts.oracleOutDir, c.id);
-        oracle = o.ok ? o.transcript : null;
-      }
-      if (r.ok) verdicts.push(scoreConversation(c, r.transcript, oracle));
-      else {
-        const v = scoreConversation(c, null);
-        v.failures = [`transcript ${r.reason}: ${r.detail}`];
-        v.checks = [{ check: "transcript", pass: false, detail: v.failures[0] as string }];
-        verdicts.push(v);
+    let inputs: Conversation[] | undefined;
+    let labels: ConversationLabel[] | undefined;
+    try {
+      inputs = await loadConversationSet(opts.conversationsDir);
+    } catch (e) {
+      unusable.push(`conversation inputs are unusable: ${flat(e)}`);
+    }
+    try {
+      labels = await loadLabelSet(opts.labelsDir);
+    } catch (e) {
+      unusable.push(`labels are missing or invalid: ${flat(e)}`);
+    }
+    if (unusable.length > 0) gate = fail(unusable.join("; "));
+    if (inputs !== undefined && labels !== undefined) {
+      const { pairs, problems } = joinLabels(inputs, labels, {
+        oracleGiven: opts.oracleOutDir !== undefined,
+      });
+      if (problems.length > 0) {
+        gate = fail(`labels do not match the conversations: ${problems.join("; ")}`);
+      } else {
+        for (const { label } of pairs) {
+          const r = await readTranscript(opts.outDir, label.id);
+          let oracle: Transcript | null | undefined;
+          if (label.oracle && opts.oracleOutDir !== undefined) {
+            const o = await readTranscript(opts.oracleOutDir, label.id);
+            oracle = o.ok ? o.transcript : null;
+          }
+          if (r.ok) verdicts.push(scoreConversation(label, r.transcript, oracle));
+          else {
+            const detail = `transcript ${r.reason}: ${r.detail}`;
+            verdicts.push({
+              conversation_id: label.id,
+              pass: false,
+              checks: [{ check: "transcript", pass: false, detail }],
+              failures: [detail],
+            });
+          }
+        }
+        gate = summarizeVerdicts(verdicts);
       }
     }
-    gate = summarizeVerdicts(verdicts);
   } catch (e) {
     verdicts = [];
-    gate = { pass: false, reason: `gate error: ${(e as Error).message}`, evidence: [] };
+    gate = fail(`gate error: ${flat(e)}`);
   }
-  gate = GateResultSchema.parse(gate);
+  gate = GateResultSchema.parse(gate ?? fail("gate error: nothing was scored"));
   if (gate.evidence.includes(LABELED_ANSWERS_JSON)) {
     await writeFile(
       path.join(opts.outDir, LABELED_ANSWERS_JSON),

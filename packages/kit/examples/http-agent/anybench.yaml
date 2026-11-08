@@ -36,6 +36,9 @@ collectors: [machine, time, proxy-calls]
 gates:
   - id: labeled-answers
     kind: labeled-answers
+    # Labels live in gates/labeled-answers/reference/<workload>/ (scoring computer only); the
+    # workload holds the agent-visible inputs and nothing else.
+    reference: gates/labeled-answers/reference/
     description: Every conversation's labeled turns, final answer, outcome and tool calls match.
     timeout_s: 120
 
@@ -75,7 +78,9 @@ proof:
     env: { STUB_AGENT_DELAY_MS: "250" }
     description: Same answers 250 ms later; must score lower on p95 latency.
 
-collect: ["transcripts/", "*.jsonl", "labeled-answers.json"]
+# labeled-answers.json is not collected: the gate writes it on the scoring computer, and taking
+# one from EVAL_OUT would let the agent plant its own verdict detail.
+collect: ["transcripts/", "*.jsonl"]
 
 scoring:
   weights: { latency: 60, cost: 40 }

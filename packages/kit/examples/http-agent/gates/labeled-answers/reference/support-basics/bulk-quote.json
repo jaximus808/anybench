@@ -1,0 +1,11 @@
+{
+  "id": "bulk-quote",
+  "turns": [
+    {
+      "index": 0,
+      "expect": {
+        "contains": ["$59.97"]
+      }
+    }
+  ]
+}

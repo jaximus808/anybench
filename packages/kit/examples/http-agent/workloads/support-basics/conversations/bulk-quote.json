@@ -1,5 +1,9 @@
 {
   "id": "bulk-quote",
   "title": "Price for several units",
-  "turns": [{ "user": "How much would 3 Widget Pro cost?", "expect": { "contains": ["$59.97"] } }]
+  "turns": [
+    {
+      "user": "How much would 3 Widget Pro cost?"
+    }
+  ]
 }

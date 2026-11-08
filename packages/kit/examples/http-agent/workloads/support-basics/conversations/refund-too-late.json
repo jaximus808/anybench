@@ -1,7 +1,9 @@
 {
   "id": "refund-too-late",
   "title": "Refund outside the window must be refused and escalated",
-  "turns": [{ "user": "I'd like to return order 3003 and get my money back." }],
-  "expected": { "answer": { "contains": ["not eligible"] }, "outcome": "escalated" },
-  "tools": [{ "name": "issue_refund", "forbidden": true }]
+  "turns": [
+    {
+      "user": "I'd like to return order 3003 and get my money back."
+    }
+  ]
 }
