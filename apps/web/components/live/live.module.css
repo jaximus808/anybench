@@ -2458,9 +2458,7 @@ button.feedText:hover {
   .heroBody[data-fill] {
     overflow-y: auto;
   }
-  .mSide .feed {
-    height: min(46vh, 520px);
-  }
+
   .mSide .counters {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2958,5 +2956,95 @@ button.feedText:hover {
   .inspector,
   .inspectorBody > * {
     animation: none;
+  }
+}
+
+/* ---- side pane tabs: one panel at a time, full height ---- */
+.sideTab {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.sideTab:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.sideTab[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: var(--fg);
+  background: var(--surface-2);
+}
+.sidePane {
+  min-height: 0;
+}
+@media (min-width: 1000px) {
+  .mSide {
+    overflow: hidden;
+  }
+  .mSideNav {
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .sidePane {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .mSide[data-tab="log"] .sidePane[data-pane="log"],
+  .mSide[data-tab="trials"] .sidePane[data-pane="trials"],
+  .mSide[data-tab="agents"] .sidePane[data-pane="agents"] {
+    display: flex;
+  }
+  .sidePane[data-pane="log"] {
+    overflow: hidden;
+  }
+  .sidePane[data-pane="log"] > section {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .mSide .sidePane .feed {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+}
+@media (min-width: 1000px) {
+  /* The trial grid inside the side pane: names above their cells, small cells, no sideways scroll. */
+  .mSide {
+    --cell: 13px;
+    --cell-gap: 3px;
+  }
+  .mSide .matrix {
+    padding: var(--space-3);
+    overflow-x: hidden;
+  }
+  .mSide .matrixHead,
+  .mSide .matrixRow {
+    grid-template-columns: max-content;
+    gap: var(--space-2);
+  }
+  .mSide .matrixHead > span:first-child {
+    display: none;
+  }
+  .mSide .matrixGroups {
+    gap: 10px;
+  }
+  .mSide .counters {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .mSide .counters > * {
+    flex: 1 1 30%;
   }
 }

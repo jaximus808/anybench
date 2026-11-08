@@ -146,6 +146,7 @@ export function LiveRunView({
   const [wall, setWall] = useState(() => Date.now());
   const [railOpen, setRailOpen] = usePaneOpen("anybench.live.rail");
   const [sideOpen, setSideOpen] = usePaneOpen("anybench.live.side");
+  const [sideTab, setSideTab] = useState<"log" | "trials" | "agents">("log");
 
   // Deep links: open the drawer named in the URL once.
   useEffect(() => setDrawerState(readDrawerFromUrl()), []);
@@ -200,6 +201,7 @@ export function LiveRunView({
     else {
       setFeed({ query: "", sources: [], minSeverity: "debug" });
       setFocusSeq(Number(hit.id));
+      setSideTab("log");
     }
   };
 
@@ -332,7 +334,7 @@ export function LiveRunView({
           ) : null}
         </main>
 
-        <aside className={styles.mSide} aria-label="Run details">
+        <aside className={styles.mSide} aria-label="Run details" data-tab={sideTab}>
           <button
             type="button"
             className={styles.sideHandle}
@@ -353,58 +355,79 @@ export function LiveRunView({
               <span className={styles.paneToggleWord}>hide</span>
               <span aria-hidden="true">›</span>
             </button>
-            <a href="#feed-h">Log</a>
-            <a href="#matrix-h">Trials</a>
-            <a href="#agents-h">Agents</a>
+            {(["log", "trials", "agents"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={styles.sideTab}
+                aria-pressed={sideTab === t}
+                onClick={() => {
+                  setSideTab(t);
+                  if (t === "log") setFocusSeq(null);
+                }}
+              >
+                {t === "log"
+                  ? "Log"
+                  : t === "trials"
+                    ? `Trials ${counts.done}/${counts.total}`
+                    : "Agents"}
+              </button>
+            ))}
           </nav>
-          <ActivityFeed
-            live={live}
-            state={feed}
-            onState={(s) => {
-              setFocusSeq(null);
-              setFeed(s);
-            }}
-            focusSeq={focusSeq}
-            onOpenSource={openSource}
-            onClearFocus={() => setFocusSeq(null)}
-          />
-          <section className={styles.panel} aria-labelledby="matrix-h">
-            <header className={styles.panelHead}>
-              <h2 id="matrix-h" className={styles.panelTitle}>
-                Trials
-              </h2>
-              <span className={styles.panelMeta}>
-                {live.contenders.length} setups × {live.workloads.length} tasks × {live.repeats}{" "}
-                runs
-              </span>
-            </header>
-            <div className={styles.counters}>
-              {chip("all", "trials done", counts.done, `/${counts.total}`)}
-              {chip("active", "running now", counts.running)}
-              {chip("passed", "passed gate", counts.passed)}
-              {chip("failed", "failed", counts.failed)}
-              {chip("infra", "our failures, not billed", counts.infra)}
-            </div>
-            <TrialMatrix
+          <div className={styles.sidePane} data-pane="log">
+            <ActivityFeed
               live={live}
-              filter={filter}
-              selectedId={drawer?.kind === "trial" ? drawer.id : null}
-              onOpen={openTrial}
+              state={feed}
+              onState={(s) => {
+                setFocusSeq(null);
+                setFeed(s);
+              }}
+              focusSeq={focusSeq}
+              onOpenSource={openSource}
+              onClearFocus={() => setFocusSeq(null)}
             />
-            <ul className={styles.legend} aria-label="Legend">
-              <li data-tone="queued">queued</li>
-              <li data-tone="active">running</li>
-              <li data-tone="passed">passed gate</li>
-              <li data-tone="failed">failed</li>
-              <li data-tone="infra">our failure, not billed</li>
-            </ul>
-          </section>
-          <AgentsPanel
-            live={live}
-            nowMs={nowMs}
-            selectedId={drawer?.kind === "agent" ? drawer.id : null}
-            onOpen={openAgent}
-          />
+          </div>
+          <div className={styles.sidePane} data-pane="trials">
+            <section className={styles.panel} aria-labelledby="matrix-h">
+              <header className={styles.panelHead}>
+                <h2 id="matrix-h" className={styles.panelTitle}>
+                  Trials
+                </h2>
+                <span className={styles.panelMeta}>
+                  {live.contenders.length} setups × {live.workloads.length} tasks × {live.repeats}{" "}
+                  runs
+                </span>
+              </header>
+              <div className={styles.counters}>
+                {chip("all", "trials done", counts.done, `/${counts.total}`)}
+                {chip("active", "running now", counts.running)}
+                {chip("passed", "passed gate", counts.passed)}
+                {chip("failed", "failed", counts.failed)}
+                {chip("infra", "our failures, not billed", counts.infra)}
+              </div>
+              <TrialMatrix
+                live={live}
+                filter={filter}
+                selectedId={drawer?.kind === "trial" ? drawer.id : null}
+                onOpen={openTrial}
+              />
+              <ul className={styles.legend} aria-label="Legend">
+                <li data-tone="queued">queued</li>
+                <li data-tone="active">running</li>
+                <li data-tone="passed">passed gate</li>
+                <li data-tone="failed">failed</li>
+                <li data-tone="infra">our failure, not billed</li>
+              </ul>
+            </section>
+          </div>
+          <div className={styles.sidePane} data-pane="agents">
+            <AgentsPanel
+              live={live}
+              nowMs={nowMs}
+              selectedId={drawer?.kind === "agent" ? drawer.id : null}
+              onOpen={openAgent}
+            />
+          </div>
         </aside>
       </div>
 
