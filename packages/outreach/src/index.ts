@@ -17,3 +17,6 @@ export * from "./import.js";
 export * from "./scout.js";
 // Plan 17.2 rule 10 wording filter, shared by the scout and the writer (TDM-165).
 export * from "./rule10.js";
+// 15.8a reply polling + funnel stats (TDM-167).
+export * from "./replies.js";
+export * from "./stats.js";

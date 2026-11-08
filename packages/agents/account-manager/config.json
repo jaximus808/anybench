@@ -1,0 +1,13 @@
+{
+  "role": "account_manager",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench outreach account manager (E15 15.8a): classifies inbound replies. Never writes or sends answers.",
+  "budget": {
+    "cap_micro_usd": 1000000,
+    "max_task_micro_usd": 50000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

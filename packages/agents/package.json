@@ -14,7 +14,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "scout"
+    "scout",
+    "account-manager"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

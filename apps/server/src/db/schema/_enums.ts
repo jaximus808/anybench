@@ -99,3 +99,13 @@ export const OUTREACH_MESSAGE_STATUSES = [
   "bounced",
   "replied",
 ] as const;
+/** TDM-167 [15.8a]: how an inbound reply was classified (`unclear` goes to the founder). */
+export const OUTREACH_REPLY_CATEGORIES = [
+  "interested",
+  "question",
+  "not_now",
+  "unsubscribe",
+  "bounce_or_auto",
+  "unclear",
+] as const;
+export const OUTREACH_REPLY_CLASSIFIERS = ["rules", "model"] as const;

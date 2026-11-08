@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["interested", "question", "not_now", "unsubscribe", "bounce_or_auto", "unclear"]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 400
+    }
+  },
+  "required": ["category", "reason"],
+  "additionalProperties": false
+}

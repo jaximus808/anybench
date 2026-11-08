@@ -38,6 +38,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@anybench/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@anybench/core':
         specifier: workspace:*
         version: link:../../packages/core

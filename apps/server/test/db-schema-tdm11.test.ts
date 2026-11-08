@@ -50,6 +50,7 @@ const PLAN_TABLES = [
   // outreach
   "leads",
   "outreach_messages",
+  "outreach_replies", // TDM-167: polled inbound replies, classified
   "invites",
   "suppressions",
 ];

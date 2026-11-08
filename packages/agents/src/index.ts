@@ -13,3 +13,5 @@ export * from "./skeptic.js";
 export * from "./issue-writer.js";
 // TDM-164 [15.3a]: the outreach scout.
 export * from "./scout.js";
+// TDM-167 [15.8a]: the outreach account manager (reply classifier).
+export * from "./account-manager.js";

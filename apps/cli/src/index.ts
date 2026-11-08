@@ -18,7 +18,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (group === "outreach" && command === "scout") return runOutreachScout(rest);
   if (group === "outreach") return runOutreach(argv.slice(1));
   process.stderr.write(
-    "Usage: anybench kit validate [dir] [--json] [--quiet]\n       anybench outreach <queries|source|import|scout> --help\n",
+    "Usage: anybench kit validate [dir] [--json] [--quiet]\n       anybench outreach <queries|source|import|scout|poll|stats> --help\n",
   );
   return 2;
 }

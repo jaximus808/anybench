@@ -24,6 +24,7 @@
     "anybench": "./dist/index.js"
   },
   "dependencies": {
+    "@anybench/agents": "workspace:*",
     "@anybench/core": "workspace:*",
     "@anybench/kit": "workspace:*",
     "@anybench/naive": "workspace:*",
