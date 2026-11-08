@@ -27,15 +27,18 @@ pnpm --filter web test       # vitest + jsdom + Testing Library
   - layout: `--wrap` 1080px, `--column` 860px, `--measure` 66ch, `--gutter`, `--header-h`, `--radius-sm/md/lg`, `--ease-out`
   - utilities: `.wrap` (centred, padded container; pages own their width, the layout does not wrap `main`), `.column`, `.lede`, `.muted`, `.btn`, `.btn-quiet`, `.visually-hidden`
   Style new components with CSS modules that use these variables.
-- `components/site/Header.tsx` (client: sticky translucent bar, mobile menu with Escape-to-close), `Footer.tsx`, `Mark.tsx`, and `nav.ts` (`NAV_LINKS`, `SIGN_IN_LINK`, `LEGAL_LINKS`). Signed-out state only so far.
+- `components/site/Header.tsx` (client: sticky translucent bar, mobile menu with Escape-to-close), `Footer.tsx`, `Mark.tsx`, and `nav.ts` (`NAV_LINKS`, `SIGN_IN_LINK`, `SIGN_UP_LINK`, `NEW_RUN_LINK`, `LEGAL_LINKS`). Account items come from `components/auth/AccountNav.tsx` (TDM-100).
 - `app/(marketing)/page.tsx` + `components/marketing/*`: the landing page. The hero shows a static, labelled example of the run page (`ExampleRun`, from `run-example.ts`) over a canvas trial field (`TrialField`).
 - `app/runs/[id]` + `components/live/*` + `lib/live/*`: the live run page. `lib/live/model.ts` folds `AnybenchEvent`s from `GET /runs/:id/stream` into a run view; `lib/live/useLiveRun.ts` loads the snapshot and follows the stream. Non-UUID ids 404. `test/fixtures/simulator.ts` is a test-only, schema-valid simulated run for the live-model and live-page tests; the site never shows it.
 - `app/(legal)/{terms,privacy,refunds,aup}` and `app/docs/**` + `components/docs/*` ([11.9]): static legal drafts (each page opens with "Draft — pending founder/legal review"; unknown facts are `<Placeholder>`s) and the docs with a left nav (`DOCS_NAV` in `components/docs/links.ts`). The kit example on /docs/kits is validated by `safeParseKitSpec` in `test/tdm106-kit-example.test.ts`, and the driver table reads `DRIVER_DEFAULT_PROFILE` / `DRIVER_DEFAULT_COLLECTORS` from core.
-- `lib/api.ts`: `api()` / `createWebApiClient()` wrap `createApiClient` from `@anybench/core` with the cookie session (`credentials: "include"`). Base URL from `NEXT_PUBLIC_ANYBENCH_API_URL` (default `http://localhost:8787`).
+- `lib/api.ts`: `api()` / `createWebApiClient()` wrap `createApiClient` from `@anybench/core` with the cookie session (`credentials: "include"`). In the browser the base is the same-origin `/api` proxy (`next.config.ts` rewrites `/api/:path*` to `ANYBENCH_API_URL`), so the session cookie is first-party.
+- `lib/session.ts`: `useSession()` (one `GET /auth/me` per page load, shared), `signOut()`.
+- `app/signin`, `app/signup` ([11.3], `components/auth/AuthPanel.tsx`): Continue with GitHub (`/api/auth/github?redirect_to=/runs/new`); sign-up is open, the first GitHub sign-in creates the account. The `[data-slot="email-form"]` div is where [17.2] adds email and password.
+- `app/settings` ([11.3]): account + sign out, API keys (secret shown once, copy button, revoke), BYOK model keys (write-only, last4).
 
 ## Env
 
-- `NEXT_PUBLIC_ANYBENCH_API_URL`: API origin, inlined at build time (prod: `https://api.anybench.jaxonp.com`).
+- `ANYBENCH_API_URL`: upstream of the `/api/*` proxy, server-side, read at build (default `https://anybench-api-sj1arspaf10q.vercel.app`).
 - `NEXT_PUBLIC_ANYBENCH_WEB_URL`: this site's origin, used for `metadataBase` (default `https://anybench.jaxonp.com`).
 
 ## Vercel (monorepo)
@@ -48,7 +51,7 @@ Create the Vercel project from this repo with:
 - Build Command: `pnpm --filter @anybench/core build && next build` (core must be built because web imports its `dist/`)
 - Output: default (`.next`)
 - Env `ENABLE_EXPERIMENTAL_COREPACK=1` so Vercel uses the root `packageManager` pnpm (11.x) instead of its bundled pnpm
-- Env: `NEXT_PUBLIC_ANYBENCH_API_URL=https://api.anybench.jaxonp.com`
+- Env: `ANYBENCH_API_URL=<the API's URL>`
 - Domain: `anybench.jaxonp.com`
 
 No `vercel.json` is needed.

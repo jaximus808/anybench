@@ -162,3 +162,24 @@
     display: none;
   }
 }
+
+/* Sign out is a button styled like the links (TDM-100). */
+.links button,
+.sheet button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+}
+.links button:hover {
+  color: var(--fg);
+}
+.sheet button {
+  min-height: 48px;
+  padding: 0;
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: var(--text-md);
+  color: var(--fg);
+  text-align: left;
+}

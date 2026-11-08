@@ -1,11 +1,12 @@
 "use client";
-// Sticky, translucent site header with a mobile menu (TDM-98). Signed-out state only;
-// the signed-in variant arrives with the auth UI.
+// Sticky, translucent site header with a mobile menu (TDM-98). Account items (signed in or
+// out) come from AccountNav (TDM-100).
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useId, useState } from "react";
+import { AccountNav } from "../auth/AccountNav";
 import { Mark } from "./Mark";
-import { NAV_LINKS, SIGN_IN_LINK } from "./nav";
+import { NAV_LINKS } from "./nav";
 import styles from "./Header.module.css";
 
 export { NAV_LINKS } from "./nav";
@@ -52,11 +53,7 @@ export function Header() {
               </Link>
             </li>
           ))}
-          <li>
-            <Link href={SIGN_IN_LINK.href} className={styles.signin}>
-              {SIGN_IN_LINK.label}
-            </Link>
-          </li>
+          <AccountNav linkClassName={styles.link} primaryClassName={styles.signin} />
         </ul>
         <button
           type="button"
@@ -79,11 +76,7 @@ export function Header() {
                 </Link>
               </li>
             ))}
-            <li>
-              <Link href={SIGN_IN_LINK.href} onClick={close} className={styles.sheetSignin}>
-                {SIGN_IN_LINK.label}
-              </Link>
-            </li>
+            <AccountNav primaryClassName={styles.sheetSignin} onNavigate={close} />
           </ul>
         ) : null}
       </div>

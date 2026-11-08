@@ -1,0 +1,150 @@
+.page {
+  padding-block: var(--space-7) var(--space-9);
+  max-width: var(--column);
+}
+.card {
+  margin-top: var(--space-5);
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.card h2 {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-2);
+}
+.account {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.avatar {
+  border-radius: 50%;
+}
+.accountActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-3);
+}
+.error {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--text-sm);
+}
+.secret {
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--ok-soft);
+}
+.secret p {
+  margin: 0 0 var(--space-3);
+}
+.secretRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+.secretRow code {
+  flex: 1 1 16rem;
+  overflow-wrap: anywhere;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+}
+.secretRow input,
+.field input {
+  flex: 1 1 16rem;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.form {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-4) 0;
+}
+.field {
+  display: grid;
+  gap: var(--space-2);
+  font-family: var(--display);
+  font-size: var(--text-sm);
+}
+.scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.scopes legend {
+  font-family: var(--display);
+  margin-bottom: var(--space-2);
+}
+.form button {
+  justify-self: start;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.table tr[data-revoked] td {
+  color: var(--muted);
+}
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.provider {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+.providerHead {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+@media (max-width: 640px) {
+  .table thead {
+    display: none;
+  }
+  .table tr {
+    display: grid;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .table td {
+    border: 0;
+    padding: var(--space-1) 0;
+  }
+  .accountActions {
+    margin-left: 0;
+  }
+}

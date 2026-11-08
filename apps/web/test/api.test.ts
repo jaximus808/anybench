@@ -1,15 +1,35 @@
 import { apiRoutes } from "@anybench/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiBaseUrl, createWebApiClient, DEFAULT_API_URL } from "../lib/api";
+import {
+  apiBaseUrl,
+  createWebApiClient,
+  DEFAULT_UPSTREAM_API_URL,
+  upstreamApiUrl,
+  WEB_API_BASE,
+} from "../lib/api";
 
 afterEach(() => vi.unstubAllEnvs());
 
-describe("web api client (TDM-98)", () => {
-  it("reads NEXT_PUBLIC_ANYBENCH_API_URL and falls back to the local API", () => {
-    vi.stubEnv("NEXT_PUBLIC_ANYBENCH_API_URL", "");
-    expect(apiBaseUrl()).toBe(DEFAULT_API_URL);
-    vi.stubEnv("NEXT_PUBLIC_ANYBENCH_API_URL", "https://api.anybench.jaxonp.com");
-    expect(apiBaseUrl()).toBe("https://api.anybench.jaxonp.com");
+describe("web api client (TDM-98, same-origin proxy TDM-100)", () => {
+  it("calls the same-origin /api proxy in the browser", () => {
+    expect(WEB_API_BASE).toBe("/api");
+    expect(apiBaseUrl()).toBe("/api");
+    expect(createWebApiClient().url(apiRoutes.auth.me)).toBe("/api/auth/me");
+  });
+
+  it("the proxy upstream reads ANYBENCH_API_URL and defaults to the deployed API", () => {
+    expect(upstreamApiUrl({})).toBe(DEFAULT_UPSTREAM_API_URL);
+    expect(upstreamApiUrl({ ANYBENCH_API_URL: "http://localhost:8787/" })).toBe(
+      "http://localhost:8787",
+    );
+  });
+
+  it("next.config rewrites /api/* to the upstream API", async () => {
+    vi.stubEnv("ANYBENCH_API_URL", "https://api.example.test");
+    const { default: config } = await import("../next.config");
+    expect(await config.rewrites?.()).toEqual([
+      { source: "/api/:path*", destination: "https://api.example.test/:path*" },
+    ]);
   });
 
   it("builds route URLs against the base", () => {
