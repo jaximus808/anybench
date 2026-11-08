@@ -53,7 +53,12 @@ export function Header() {
               </Link>
             </li>
           ))}
-          <AccountNav linkClassName={styles.link} primaryClassName={styles.signin} />
+          <AccountNav
+            linkClassName={styles.link}
+            primaryClassName={styles.signin}
+            buttonClassName={styles.ghost}
+            userClassName={styles.user}
+          />
         </ul>
         <button
           type="button"

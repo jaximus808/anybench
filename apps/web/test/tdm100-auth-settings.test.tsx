@@ -226,19 +226,16 @@ describe("header account state", () => {
     expect(screen.getByRole("link", { name: "Sign up" }).getAttribute("href")).toBe("/signup");
   });
 
-  it("signed in: the user, New run and Sign out (which calls the API)", async () => {
+  it("signed in: My runs, New run and the account (to /settings); Sign out lives on /settings", async () => {
     mockApi();
     render(<Header />);
     expect((await screen.findByRole("link", { name: "octocat" })).getAttribute("href")).toBe(
       "/settings",
     );
+    expect(screen.getByRole("link", { name: "My runs" }).getAttribute("href")).toBe("/runs");
     expect(screen.getByRole("link", { name: "New run" }).getAttribute("href")).toBe("/runs/new");
     expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(screen.getByRole("link", { name: "Sign in" })).toBeTruthy());
-    const logout = calls.find((c) => c.path === "/auth/logout");
-    expect(logout?.method).toBe("POST");
-    expect(logout?.credentials).toBe("include");
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
   });
 });
 

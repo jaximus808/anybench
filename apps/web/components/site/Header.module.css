@@ -69,6 +69,52 @@
   border-color: var(--accent);
   color: var(--accent-ink);
 }
+/* My runs: a quieter bordered button next to New run. */
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  margin-left: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  text-decoration: none;
+  transition: border-color 120ms var(--ease-out);
+}
+.ghost:hover {
+  border-color: var(--line-strong);
+}
+/* The account, far right: avatar initial + login, links to /settings. */
+.user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 36px;
+  margin-left: var(--space-3);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-left: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  text-decoration: none;
+}
+.user:hover {
+  color: var(--fg);
+}
+.user [data-slot="avatar"] {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--fg);
+  font-size: 11px;
+}
 
 /* Mobile menu */
 .toggle {
