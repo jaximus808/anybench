@@ -406,6 +406,141 @@ describe.skipIf(!available)("runner ingest routes (TDM-47, local Postgres)", () 
     expect((await postBatch(justEnded.id, 1, 0, [heartbeat(justEnded.id, 0, 1)])).status).toBe(200);
   });
 
+  /** A schema-valid event of any type, as a hostile runner could forge it. */
+  function forged(trialId: string, type: string, source: string, payload: object, extra = {}) {
+    return { ...heartbeat(trialId, 0, 1), type, source, payload, ...extra };
+  }
+
+  async function rejected(trialId: string, evs: unknown[], pattern: RegExp) {
+    const res = await postBatch(trialId, 1, 0, evs);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; issues?: string[] } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.issues?.join("\n")).toMatch(pattern);
+    expect(await eventCount(trialId)).toBe(0);
+    // Nothing was recorded either, so the same batch_seq stays free.
+    const inbox = await h.db
+      .select()
+      .from(webhookInbox)
+      .where(eq(webhookInbox.eventId, `${trialId}:1:0`));
+    expect(inbox).toHaveLength(0);
+  }
+
+  it("a runner cannot forge non-runner event types (computer.*, run.*)", async () => {
+    const t = await seedTrial();
+    await rejected(
+      t.id,
+      [heartbeat(t.id, 0, 1), forged(t.id, "computer.created", "computer", { provider: "x" })],
+      /body\.events\.1: type computer\.created cannot come from a runner/,
+    );
+    await rejected(
+      t.id,
+      [forged(t.id, "run.state_changed", "run", { from: "running", to: "scoring" })],
+      /body\.events\.0: type run\.state_changed/,
+    );
+  });
+
+  it("a runner cannot forge a gate result", async () => {
+    const t = await seedTrial();
+    await rejected(
+      t.id,
+      [forged(t.id, "trial.gate", "trial", { gate: "hidden-tests", passed: true })],
+      /body\.events\.0: type trial\.gate cannot come from a runner/,
+    );
+  });
+
+  it("a runner cannot write events about a sibling trial (source_id)", async () => {
+    const t = await seedTrial();
+    const sibling = await seedTrial();
+    await rejected(
+      t.id,
+      [heartbeat(sibling.id, 0, 1)],
+      /body\.events\.0: source_id must be this trial's id/,
+    );
+    expect(await eventCount(sibling.id)).toBe(0);
+  });
+
+  it("a runner cannot claim another actor", async () => {
+    const t = await seedTrial();
+    await rejected(
+      t.id,
+      [{ ...heartbeat(t.id, 0, 1), actor: { kind: "worker", id: "worker-tdm47" } }],
+      /body\.events\.0: actor\.kind must be runner/,
+    );
+    await rejected(
+      t.id,
+      [{ ...heartbeat(t.id, 0, 1), actor: { kind: "system" } }],
+      /actor\.kind must be runner, got system/,
+    );
+  });
+
+  it("a runner cannot move money (nonzero or negative cost_delta_micro_usd)", async () => {
+    const t = await seedTrial();
+    for (const cost of ["5000000", "-1"]) {
+      await rejected(
+        t.id,
+        [{ ...heartbeat(t.id, 0, 1), cost_delta_micro_usd: cost }],
+        /body\.events\.0: cost_delta_micro_usd must be 0/,
+      );
+    }
+  });
+
+  it("a runner cannot report the worker's phase edges (gating, reviewing, done)", async () => {
+    const t = await seedTrial();
+    for (const [from, to] of [
+      ["collecting", "gating"],
+      ["gating", "reviewing"],
+      ["reviewing", "done"],
+    ] as const) {
+      await rejected(
+        t.id,
+        [forged(t.id, "trial.phase", "trial", { from, to, attempt: 1 })],
+        new RegExp(`trial\\.phase to ${to} is not a runner edge`),
+      );
+    }
+    // The runner's own edges are fine.
+    const ok = await postBatch(t.id, 1, 0, [
+      forged(t.id, "trial.phase", "trial", { from: "running", to: "collecting", attempt: 1 }),
+      forged(t.id, "trial.phase", "trial", {
+        from: "collecting",
+        to: "failed_subject",
+        attempt: 1,
+      }),
+    ]);
+    expect(ok.status).toBe(200);
+  });
+
+  it("400 for more than 1000 events in one batch, 413 over the body limits", async () => {
+    const t = await seedTrial();
+    const many = Array.from({ length: 1001 }, (_, i) => heartbeat(t.id, i, i));
+    await rejected(t.id, many, /at most 1000 events/);
+
+    const token = mintRunnerToken(SECRET, t.id, 1);
+    const huge = {
+      trial_id: t.id,
+      attempt: 1,
+      batch_seq: 0,
+      events: [],
+      status: null,
+      pad: "x".repeat(2 * 1024 * 1024 + 1),
+    };
+    const big = await post(`/v1/trials/${t.id}/events`, huge, { token, key: `${t.id}:1:0` });
+    expect(big.status).toBe(413);
+    expect(await big.json()).toMatchObject({ error: { code: "bad_request" } });
+    for (const path of ["uploads", "uploads/complete"]) {
+      const res = await post(
+        `/v1/trials/${t.id}/${path}`,
+        { attempt: 1, name: "a.bin", size_bytes: 1, sha256: SHA, pad: "x".repeat(64 * 1024) },
+        { token },
+      );
+      expect(res.status).toBe(413);
+    }
+    // A full real-size batch (1000 heartbeats + status) is well under the limit.
+    const full = Array.from({ length: 1000 }, (_, i) => heartbeat(t.id, i, i));
+    expect(JSON.stringify(full).length).toBeLessThan(1024 * 1024);
+    expect((await postBatch(t.id, 1, 0, full)).status).toBe(200);
+  });
+
   it("heartbeat extends lease_until only for a leased trial and never moves it back", async () => {
     const far = new Date(Date.now() + 10 * 60 * 1000);
     const longLease = await seedTrial({ leaseUntil: far });

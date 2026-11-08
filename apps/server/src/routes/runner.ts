@@ -31,6 +31,8 @@ import {
   TrialIdSchema,
   type AnybenchEvent,
   type AnybenchEventOf,
+  type AnybenchEventType,
+  type TrialState,
   type ApiErrorCode,
   type RunId,
   type RouteResult,
@@ -47,6 +49,7 @@ import {
 } from "@anybench/envs";
 import { eq, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { configSecrets } from "../config.js";
@@ -95,6 +98,71 @@ const DEFAULT_TRANSFER_MAX_MB = 512;
 const COMPLETION_PLACEHOLDER_URL = "https://upload-complete.invalid/";
 
 const SYSTEM = { kind: "system", reason: "runner ingest (TDM-47)" } as const;
+
+// ---------------------------------------------------------------------------------------------
+// Untrusted input. The runner token sits on the eval computer, where the agent under test can
+// read it, so every runner request is treated as hostile: a runner may only report what
+// packages/runner/src/events.ts emits, about its own trial, as itself, at no cost. Gate results,
+// run state, usage/billing, alerts, publish, computer and agent events never come from here
+// (gates come from the scoring computer through the worker).
+
+/** The only event types the runner emits. */
+export const RUNNER_EVENT_TYPES = [
+  "trial.phase",
+  "trial.heartbeat",
+  "trial.log_chunk",
+  "trial.network",
+] as const satisfies readonly AnybenchEventType[];
+
+/**
+ * The trial states a runner may move its trial INTO (runner.ts): installing → warming → running →
+ * collecting, plus the final failure edge. gating / reviewing / done belong to the worker.
+ */
+export const RUNNER_PHASE_TARGETS = [
+  "warming",
+  "running",
+  "collecting",
+  "failed_subject",
+  "failed_infra",
+  "cancelled",
+] as const satisfies readonly TrialState[];
+
+/**
+ * Size limits. A 413 or 400 is fatal to the runner (it stops pushing and goes file-only, and the
+ * worker falls back to polling events.jsonl), so these sit far above any real request:
+ * - /events: the runner's `batch_max` is at most 1000 events of well under 1 KiB each, plus
+ *   status.json (phases, log_chunks counters), so a real batch stays under ~1 MiB.
+ * - /uploads, /uploads/complete: a name, a sha256 and at most a few hundred part ETags.
+ */
+export const RUNNER_EVENTS_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+export const RUNNER_UPLOAD_BODY_LIMIT_BYTES = 64 * 1024;
+/** The runner's `batch_max` ceiling (packages/runner job.ts). */
+export const RUNNER_MAX_EVENTS_PER_BATCH = 1000;
+
+/** Why a runner may not send this event, or null when it may. */
+function runnerEventProblem(e: AnybenchEvent, trial: { id: string; runId: string }): string | null {
+  if (!(RUNNER_EVENT_TYPES as readonly string[]).includes(e.type)) {
+    return `type ${e.type} cannot come from a runner`;
+  }
+  if (e.run_id?.toLowerCase() !== trial.runId) return "run_id is not this trial's run";
+  if (e.source_id?.toLowerCase() !== trial.id) return "source_id must be this trial's id";
+  if (e.actor.kind !== "runner") return `actor.kind must be runner, got ${e.actor.kind}`;
+  if (e.cost_delta_micro_usd !== 0n) return "cost_delta_micro_usd must be 0 for a runner";
+  if (
+    e.type === "trial.phase" &&
+    !(RUNNER_PHASE_TARGETS as readonly string[]).includes(e.payload.to)
+  ) {
+    return `trial.phase to ${e.payload.to} is not a runner edge`;
+  }
+  return null;
+}
+
+function tooLarge(c: C, limit: number): Response {
+  const body = apiError("bad_request", `request body is over the ${limit} byte limit`, {
+    request_id: c.get("requestId"),
+  });
+  return c.json(body, 413);
+}
 
 type C = Context<AppEnv>;
 
@@ -205,7 +273,16 @@ export function runnerRoutes(deps: AppDeps): Hono<AppEnv> {
   // -------------------------------------------------------------------------------------------
   // POST /v1/trials/:id/events
 
-  r.post("/:id/events", async (c) => {
+  const eventsLimit = bodyLimit({
+    maxSize: RUNNER_EVENTS_BODY_LIMIT_BYTES,
+    onError: (c) => tooLarge(c, RUNNER_EVENTS_BODY_LIMIT_BYTES),
+  });
+  const uploadLimit = bodyLimit({
+    maxSize: RUNNER_UPLOAD_BODY_LIMIT_BYTES,
+    onError: (c) => tooLarge(c, RUNNER_UPLOAD_BODY_LIMIT_BYTES),
+  });
+
+  r.post("/:id/events", eventsLimit, async (c) => {
     const route = apiRoutes.runner.ingest;
     const auth = await authenticate(c);
     if (auth instanceof Response) return auth;
@@ -229,9 +306,17 @@ export function runnerRoutes(deps: AppDeps): Hono<AppEnv> {
     ) {
       return fail(c, "bad_request", "status.json is for a different trial or attempt");
     }
-    const foreign = batch.events.findIndex((e) => e.run_id?.toLowerCase() !== auth.runId);
-    if (foreign !== -1) {
-      return fail(c, "bad_request", `events[${foreign}].run_id is not this trial's run`);
+    if (batch.events.length > RUNNER_MAX_EVENTS_PER_BATCH) {
+      const msg = `body.events: a batch holds at most ${RUNNER_MAX_EVENTS_PER_BATCH} events, got ${batch.events.length}`;
+      return fail(c, "validation_failed", msg, [msg]);
+    }
+    const issues: string[] = [];
+    batch.events.forEach((e, i) => {
+      const problem = runnerEventProblem(e, auth);
+      if (problem) issues.push(`body.events.${i}: ${problem}`);
+    });
+    if (issues.length > 0) {
+      return fail(c, "validation_failed", issues[0]!, issues);
     }
     // appendEvents redacts payload, actor and source_id with this (key patterns + exact secrets).
     const redactor = createRedactor({ ...configSecrets(deps.config), RUNNER_TOKEN: auth.token });
@@ -319,7 +404,7 @@ export function runnerRoutes(deps: AppDeps): Hono<AppEnv> {
   // -------------------------------------------------------------------------------------------
   // POST /v1/trials/:id/uploads
 
-  r.post("/:id/uploads", async (c) => {
+  r.post("/:id/uploads", uploadLimit, async (c) => {
     const route = apiRoutes.runner.uploads;
     const auth = await authenticate(c);
     if (auth instanceof Response) return auth;
@@ -354,7 +439,7 @@ export function runnerRoutes(deps: AppDeps): Hono<AppEnv> {
   // -------------------------------------------------------------------------------------------
   // POST /v1/trials/:id/uploads/complete
 
-  r.post("/:id/uploads/complete", async (c) => {
+  r.post("/:id/uploads/complete", uploadLimit, async (c) => {
     const route = apiRoutes.runner.uploadComplete;
     const auth = await authenticate(c);
     if (auth instanceof Response) return auth;
