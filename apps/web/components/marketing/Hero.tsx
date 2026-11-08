@@ -1,7 +1,6 @@
-import Link from "next/link";
 import { EarlyAccessForm } from "./EarlyAccessForm";
+import { ExampleRun } from "./ExampleRun";
 import styles from "./landing.module.css";
-import { LiveInstrument } from "./LiveInstrument";
 import { TrialField } from "./TrialField";
 
 const QUESTIONS = [
@@ -35,11 +34,6 @@ export function Hero() {
             tell you whether it&apos;s better and why.
           </p>
           <EarlyAccessForm />
-          <Link href="/runs/demo" className={styles.watch}>
-            <span className={styles.liveDot} aria-hidden="true" />
-            Watch a run live
-            <span aria-hidden="true">→</span>
-          </Link>
           <p className={styles.powered}>
             Powered by{" "}
             <a href="https://usenaive.ai" rel="noopener">
@@ -47,7 +41,7 @@ export function Hero() {
             </a>
           </p>
         </div>
-        <LiveInstrument />
+        <ExampleRun />
       </div>
 
       <div className={styles.asks}>

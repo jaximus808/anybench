@@ -318,7 +318,7 @@ function RunPane() {
           <small>of about 2 h</small>
         </div>
       </div>
-      <RunGrid compact />
+      <RunGrid />
       <TileLegend extra="columns: todo-api ×5 · auth-refactor ×5 · bug-hunt ×5" />
       <div className={styles.feed}>
         <CodeLines lines={FEED} label="Example live feed of trial events" />

@@ -63,11 +63,6 @@
   height: 7px;
   background: var(--accent);
 }
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
-}
 .h1 {
   font-size: clamp(2.8rem, 0.9rem + 5.2vw, 5.6rem);
   font-weight: 400;
@@ -105,40 +100,7 @@
 .powered a:hover {
   color: var(--fg);
 }
-.watch {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  align-self: flex-start;
-  font-family: var(--mono);
-  font-size: var(--text-sm);
-  color: var(--fg);
-  text-decoration: none;
-  border-bottom: 1px solid var(--line-strong);
-  padding-bottom: 4px;
-  transition:
-    border-color 140ms var(--ease-out),
-    color 140ms var(--ease-out);
-}
-.watch:hover {
-  color: var(--accent-ink);
-  border-color: var(--accent);
-}
-.liveDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
-  flex: none;
-}
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-/* ---------- live instrument ---------- */
+/* ---------- example run (hero figure) ---------- */
 .inst {
   margin: 0;
   min-width: 0;
@@ -162,14 +124,14 @@
   color: var(--fg);
   font-weight: 600;
 }
-.liveTag {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--accent-ink);
+.exTag {
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: var(--text-2xs);
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
 }
 .instStages {
   display: flex;
@@ -189,9 +151,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition:
-    color 300ms,
-    border-color 300ms;
 }
 .instStages li[data-state="done"] {
   border-color: var(--fg);
@@ -276,73 +235,18 @@
   aspect-ratio: 1;
   border-radius: 2px;
   background: var(--queued);
-  transition:
-    background-color 260ms var(--ease-out),
-    box-shadow 260ms;
 }
 .cQ {
   background: var(--queued);
 }
 .cR {
   background: var(--accent);
-  animation: cellPulse 1.2s ease-in-out infinite;
-}
-@keyframes cellPulse {
-  50% {
-    opacity: 0.55;
-  }
 }
 .cP {
   background: var(--pass);
 }
 .cF {
   background: var(--fail);
-}
-.cI {
-  background: repeating-linear-gradient(135deg, var(--infra) 0 2px, transparent 2px 4px);
-  outline: 1px solid var(--infra);
-  outline-offset: -1px;
-}
-
-.ticker {
-  list-style: none;
-  margin: 0;
-  padding: 10px 16px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  height: calc(5 * 1.55em + 4 * 4px + 20px);
-  overflow: hidden;
-}
-.ticker li {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 8px;
-  line-height: 1.55;
-  color: var(--muted);
-  animation: tickIn 360ms var(--ease-out);
-}
-.ticker li:first-child {
-  color: var(--fg);
-}
-.ticker li[data-type="trial.gate"] .tkText {
-  color: var(--fg);
-}
-@keyframes tickIn {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
-.tkTime {
-  color: var(--dim);
-  font-variant-numeric: tabular-nums;
-}
-.tkText {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .instFoot {
   display: flex;
@@ -355,14 +259,6 @@
   color: var(--dim);
   font-size: var(--text-2xs);
 }
-.instLink {
-  color: var(--accent-ink);
-  text-decoration: none;
-}
-.instLink:hover {
-  text-decoration: underline;
-}
-
 /* ---------- people ask (marquee) ---------- */
 .asks {
   display: flex;
@@ -622,32 +518,7 @@
     margin-right: 0;
   }
 }
-.watchCta {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 0 24px;
-  background: var(--fg);
-  color: var(--bg);
-  border-radius: 999px;
-  font-family: var(--body);
-  font-weight: 500;
-  font-size: var(--text-sm);
-  text-decoration: none;
-  transition:
-    box-shadow 160ms var(--ease-out),
-    transform 160ms var(--ease-out);
-}
-.watchCta:hover {
-  background: color-mix(in srgb, var(--fg) 85%, var(--bg));
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .kickerBox,
-  .liveDot,
-  .cR,
   .rail::before {
     animation: none;
   }

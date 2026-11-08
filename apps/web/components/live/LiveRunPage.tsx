@@ -16,7 +16,7 @@ import {
   type LiveRun,
   type SearchHit,
 } from "../../lib/live/model";
-import { useLiveRun, type LiveHandle } from "../../lib/live/useLiveRun";
+import { useLiveRun, type LiveStatus } from "../../lib/live/useLiveRun";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
@@ -54,9 +54,7 @@ const RUN_STATE_WORD: Record<string, string> = {
 };
 
 export function LiveRunPage({ runId }: { runId: string }) {
-  const isDemo = runId === "demo";
-  const handle = useLiveRun(runId, isDemo ? { startAt: 0.42 } : {});
-  const { live, status, error } = handle;
+  const { live, status, error } = useLiveRun(runId);
 
   if (!live) {
     return (
@@ -72,19 +70,11 @@ export function LiveRunPage({ runId }: { runId: string }) {
       </div>
     );
   }
-  return <LiveRunView live={live} handle={handle} isDemo={isDemo} />;
+  return <LiveRunView live={live} status={status} />;
 }
 
-function LiveRunView({
-  live,
-  handle,
-  isDemo,
-}: {
-  live: LiveRun;
-  handle: LiveHandle;
-  isDemo: boolean;
-}) {
-  const { status, demo } = handle;
+/** The page for a loaded run. Exported so tests can render it from a fixture. */
+export function LiveRunView({ live, status }: { live: LiveRun; status: LiveStatus }) {
   const [filter, setFilter] = useState<GridFilter>("all");
   const [drawer, setDrawerState] = useState<DrawerRef>(null);
   const [palette, setPalette] = useState(false);
@@ -100,13 +90,12 @@ function LiveRunView({
     writeDrawerToUrl(d);
   }, []);
 
-  // Real runs keep a wall clock for elapsed time; the demo runs on its own event clock.
+  // A wall clock for elapsed time while the run is live.
   useEffect(() => {
-    if (isDemo) return;
     const id = window.setInterval(() => setWall(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [isDemo]);
-  const nowMs = isDemo || status === "ended" ? ms(live.lastAt ?? live.createdAt) : wall;
+  }, []);
+  const nowMs = status === "ended" ? ms(live.lastAt ?? live.createdAt) : wall;
 
   // Keyboard: "/" or ⌘K search, Esc closes the top layer.
   useEffect(() => {
@@ -154,9 +143,9 @@ function LiveRunView({
   const openAlerts = live.alerts.filter((a) => a.status === "open" && !acked.includes(a.ruleKey));
   const ack = (ruleKey: string, id: string | null) => {
     setAcked((a) => [...a, ruleKey]);
-    // Real runs: POST /alerts/:id/ack (idempotent). Alerts first seen on the stream have no id
+    // POST /alerts/:id/ack (idempotent). Alerts first seen on the stream have no id
     // until the next snapshot; acking them is local until then.
-    if (!isDemo && id) {
+    if (id) {
       void api()
         .call(apiRoutes.alerts.ack, { params: { id: id as AlertId } })
         .catch(() => setAcked((a) => a.filter((k) => k !== ruleKey)));
@@ -190,42 +179,6 @@ function LiveRunView({
   return (
     <div className={styles.page} data-drawer={drawer ? "open" : undefined}>
       <div className={styles.shell}>
-        {isDemo ? (
-          <div className={styles.demoBar}>
-            <span className={styles.simTag}>Simulated run · demo</span>
-            <span className={styles.demoNote}>
-              Made-up trials replayed through the real live page. A 2 h run plays in about 2
-              minutes.
-            </span>
-            {demo ? (
-              <span className={styles.demoControls}>
-                <button type="button" onClick={() => demo.setPaused(!demo.paused)}>
-                  {demo.paused ? "▶ play" : "❚❚ pause"}
-                </button>
-                {[1, 4, 16].map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    aria-pressed={demo.speed === s}
-                    onClick={() => demo.setSpeed(s)}
-                  >
-                    {s}×
-                  </button>
-                ))}
-                <button type="button" onClick={demo.restart}>
-                  ↺ restart
-                </button>
-                <span
-                  className={styles.progress}
-                  aria-label={`${Math.round(demo.progress * 100)}% played`}
-                >
-                  <i style={{ width: `${demo.progress * 100}%` }} />
-                </span>
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-
         <header className={styles.top}>
           <div className={styles.topMain}>
             <p className={styles.topMeta}>
@@ -355,7 +308,6 @@ function LiveRunView({
           key={drawerTrial.id}
           live={live}
           trial={drawerTrial}
-          isDemo={isDemo}
           nowMs={nowMs}
           onClose={() => setDrawer(null)}
         />

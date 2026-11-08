@@ -2,6 +2,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { EARLY_ACCESS_EMAIL } from "../../components/marketing/EarlyAccessForm";
+import styles from "./signin.module.css";
 
 export const dynamic = "force-static";
 
@@ -13,19 +14,30 @@ export const metadata: Metadata = {
 
 export default function SignInPage() {
   return (
-    <main id="main" style={{ maxWidth: "36rem", margin: "0 auto", padding: "6rem 1rem" }}>
-      <h1>Sign-in opens soon</h1>
-      <p>
-        Accounts aren&rsquo;t open yet. We&rsquo;re running early benchmarks by hand while sign-in
-        with GitHub is finished.
-      </p>
-      <p>
-        Email <a href={`mailto:${EARLY_ACCESS_EMAIL}`}>{EARLY_ACCESS_EMAIL}</a> with the repo you
-        want benchmarked and we&rsquo;ll run your first one.
-      </p>
-      <p>
-        <Link href="/">Back to the home page</Link> · <Link href="/docs">Read the docs</Link>
-      </p>
-    </main>
+    <div className={`wrap ${styles.page}`}>
+      <div className={styles.card}>
+        <p className="eyebrow">Sign in</p>
+        <h1>Sign-in opens soon</h1>
+        <p className="lede">
+          Accounts aren&rsquo;t open yet. We&rsquo;re running early benchmarks by hand while sign-in
+          with GitHub is finished.
+        </p>
+        <p className="muted">
+          Email <a href={`mailto:${EARLY_ACCESS_EMAIL}`}>{EARLY_ACCESS_EMAIL}</a> with the repo you
+          want benchmarked and we&rsquo;ll run your first one.
+        </p>
+        <div className={styles.actions}>
+          <a className="btn" href={`mailto:${EARLY_ACCESS_EMAIL}`}>
+            Email for early access
+          </a>
+          <Link className="btn btn-quiet" href="/docs">
+            Read the docs
+          </Link>
+        </div>
+        <p className={styles.links}>
+          <Link href="/">Back to the home page</Link>
+        </p>
+      </div>
+    </div>
   );
 }

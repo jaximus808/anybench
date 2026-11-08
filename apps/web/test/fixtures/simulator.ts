@@ -1,7 +1,6 @@
-// A deterministic, simulated run for /runs/demo and the landing hero. It emits the same
-// AnybenchEvent shapes the API streams (every event parses with AnybenchEventSchema; the test
-// checks it), so the page under demo is the page under a real run. Clearly labelled as a
-// simulation wherever it shows.
+// TEST-ONLY. A deterministic, simulated run for the live-model and live-page tests. It emits
+// the same AnybenchEvent shapes the API streams (every event parses with AnybenchEventSchema;
+// live-model.test.ts checks it). Never imported by app code: the site shows no simulated runs.
 //
 // Time is compressed: a ~2 h run plays in about two minutes at speed 1.
 import {
@@ -17,7 +16,7 @@ import {
   type Trial,
   type TrialState,
 } from "@anybench/core";
-import type { LiveSnapshot } from "./model";
+import type { LiveSnapshot } from "../../lib/live/model";
 
 /** Seeded PRNG (mulberry32), so a demo run is the same every time. */
 function rng(seed: number) {

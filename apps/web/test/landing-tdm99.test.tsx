@@ -75,14 +75,15 @@ describe("landing page (TDM-99)", () => {
     const pricing = screen.getByRole("region", { name: "Pay for what runs" });
     const text = pricing.textContent ?? "";
     expect(text).toContain("$2per benchmark run");
-    expect(text).toContain("Plus computer time and model tokens on your own key.");
+    expect(text).toContain("Plus computer time at cost + 50%, and model tokens on your own key.");
+    expect(text).toContain("At cost + 50%, only while your trials run.");
     expect(text).toContain("If our infrastructure or pipeline fails the run, nothing is billed.");
     expect(text).toContain("If you cancel mid-run, you pay for the compute used, but no run fee.");
     expect(text).toContain("$5 free credit when you sign up");
     expect(text).toContain("Billed monthly by usage, to the card on file.");
     expect(text).toContain("about $17, plus your tokens");
-    // No provider cost or per-unit rates on the page.
-    expect(text).not.toMatch(/Naïve's cost|per vCPU-hour|per GiB-hour|\+ 50%/);
+    // No per-unit rates on the page.
+    expect(text).not.toMatch(/per vCPU-hour|per GiB-hour/);
   });
 
   it("uses one cost and duration model everywhere ($17 for 60 trials, about 2 h)", () => {
@@ -110,6 +111,17 @@ describe("landing page (TDM-99)", () => {
     expect(text).toContain("example report · made-up numbers");
     expect(text).toContain("hypothetical, not a real run");
     expect(text).toContain("example scan");
+    // The hero figure is a still, labelled as an example.
+    const hero = container.querySelector("figure[aria-label^='Example run page']");
+    expect(hero?.textContent).toContain("Made-up numbers");
+  });
+
+  it("has no simulated live demo: no /runs/demo link and no live claim in the hero", () => {
+    const { container } = render(<HomePage />);
+    const hrefs = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => h.includes("/runs/"))).toEqual([]);
+    const text = container.textContent ?? "";
+    expect(text).not.toMatch(/live demo|simulated run|watch a run live/i);
   });
 
   it("example report follows plan.md 17.2: verdicts with n, no composite, no human minutes", () => {

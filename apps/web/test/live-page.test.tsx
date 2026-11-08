@@ -1,29 +1,40 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LiveRunPage } from "../components/live/LiveRunPage";
+import RunPage from "../app/runs/[id]/page";
+import { LiveRunView } from "../components/live/LiveRunPage";
+import { applyEvents, initLive } from "../lib/live/model";
+import { createDemoRun } from "./fixtures/simulator";
 
-// The demo run starts part-way through (startAt), so the first render already has trials,
-// agents and events; nothing here waits on the playback clock.
+// The page for a loaded run, fed a test-only simulated run (test/fixtures/simulator.ts) folded
+// to 42% of the way through, so the first render already has trials, agents and events.
+// The site itself never shows a simulated run.
+const sim = createDemoRun();
+const live = applyEvents(
+  initLive(sim.snapshot),
+  sim.timeline.filter((e) => e.atMs <= sim.durationMs * 0.42).map((e) => e.event),
+);
+
 beforeEach(() => {
   vi.stubGlobal("requestAnimationFrame", () => 0);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  window.history.replaceState(null, "", "/runs/demo");
+  // Drawers fetch trial detail and logs; no network in tests.
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  window.history.replaceState(null, "", `/runs/${live.runId}`);
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
 
-async function renderDemo() {
+async function renderRun() {
   await act(async () => {
-    render(<LiveRunPage runId="demo" />);
+    render(<LiveRunView live={live} status="live" />);
   });
 }
 
-describe("live run page (demo)", () => {
-  it("labels the demo as simulated and shows the stage rail", async () => {
-    await renderDemo();
-    expect(screen.getByText("Simulated run · demo")).toBeTruthy();
+describe("live run page", () => {
+  it("shows the stage rail", async () => {
+    await renderRun();
     const stages = screen.getByRole("list", { name: "Run stages" });
     expect(within(stages).getAllByRole("listitem")).toHaveLength(11);
     expect(within(stages).getByText("Running").closest("li")?.getAttribute("aria-current")).toBe(
@@ -32,7 +43,7 @@ describe("live run page (demo)", () => {
   });
 
   it("renders one button per trial in the matrix (4 setups × 3 tasks × 5 runs)", async () => {
-    await renderDemo();
+    await renderRun();
     const trials = screen.getByRole("region", { name: "Trials" });
     const cells = trials.querySelectorAll("button[data-key]");
     expect(cells).toHaveLength(60);
@@ -40,14 +51,14 @@ describe("live run page (demo)", () => {
   });
 
   it("lists every agent session by role", async () => {
-    await renderDemo();
+    await renderRun();
     const agents = screen.getByRole("region", { name: "Agents" });
     for (const role of ["understander", "researcher", "kit designer", "reviewer"])
       expect(within(agents).getByText(role)).toBeTruthy();
   });
 
   it("filters the activity feed by text", async () => {
-    await renderDemo();
+    await renderRun();
     const feed = screen.getByRole("region", { name: "Activity" });
     const rows = () => feed.querySelectorAll("li[data-seq]");
     const before = rows().length;
@@ -62,7 +73,7 @@ describe("live run page (demo)", () => {
   });
 
   it("opens a finished trial in a drawer with its gate result, deep-linked in the URL", async () => {
-    await renderDemo();
+    await renderRun();
     const trials = screen.getByRole("region", { name: "Trials" });
     const done = [...trials.querySelectorAll<HTMLButtonElement>("button[data-key]")].find((b) =>
       /: (passed gate|failed)$/.test(b.getAttribute("aria-label") ?? ""),
@@ -81,7 +92,7 @@ describe("live run page (demo)", () => {
   });
 
   it("searches trials, agents and events from the palette", async () => {
-    await renderDemo();
+    await renderRun();
     fireEvent.keyDown(window, { key: "/" });
     const palette = screen.getByRole("dialog", { name: "Search this run" });
     fireEvent.change(within(palette).getByRole("combobox"), { target: { value: "researcher" } });
@@ -92,8 +103,12 @@ describe("live run page (demo)", () => {
   });
 
   it("shows counts only: no speed or quality number before the report", async () => {
-    await renderDemo();
+    await renderRun();
     const text = document.body.textContent ?? "";
     expect(text).not.toMatch(/% faster|faster than|points above|score:/i);
+  });
+
+  it("404s an id that isn't a run id, including the old /runs/demo", async () => {
+    await expect(RunPage({ params: Promise.resolve({ id: "demo" }) })).rejects.toThrow();
   });
 });

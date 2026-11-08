@@ -1,6 +1,6 @@
 // The live run page's state: a snapshot (runs.get + trials.list + runs.contenders) folded with
 // every AnybenchEvent from GET /runs/:id/stream (plan.md section 6). Pure: no React, no network,
-// so the reducer is tested on its own and the landing-page demo reuses it with simulated events.
+// so the reducer is tested on its own (test/fixtures/simulator.ts feeds it schema-valid events).
 //
 // Money stays integer micro-USD (bigint). Spend comes from each event's cost_delta_micro_usd,
 // which is "the spend this event adds to the run" per the core event contract.

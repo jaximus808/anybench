@@ -1,14 +1,11 @@
 "use client";
-// One hook for the live run page and the landing hero.
-//   runId "demo": the simulated run (lib/live/simulator.ts), replayed on a clock.
-//   any other id: runs.get + trials.list + runs.contenders, then GET /runs/:id/stream (SSE),
-//   resuming after the snapshot's last_seq. Events are buffered and folded every frame, so a
-//   burst of hundreds of events renders once.
+// The live run page's data hook: runs.get + trials.list + runs.contenders, then
+// GET /runs/:id/stream (SSE), resuming after the snapshot's last_seq. Events are buffered and
+// folded every frame, so a burst of hundreds of events renders once.
 import { apiRoutes, type AnybenchEvent, type RunId, type Trial } from "@anybench/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { applyEvents, initLive, mergeTrials, type LiveRun, type LiveSnapshot } from "./model";
-import { createDemoRun, type DemoOptions } from "./simulator";
 
 export type LiveStatus = "loading" | "live" | "ended" | "error";
 
@@ -16,24 +13,6 @@ export interface LiveHandle {
   live: LiveRun | null;
   status: LiveStatus;
   error: string | null;
-  /** Demo only: playback controls. */
-  demo: {
-    speed: number;
-    setSpeed: (s: number) => void;
-    paused: boolean;
-    setPaused: (p: boolean) => void;
-    restart: () => void;
-    progress: number;
-  } | null;
-}
-
-export interface UseLiveRunOptions {
-  /** Demo: start this far into the run (0..1), so the page isn't empty on load. */
-  startAt?: number;
-  /** Demo: restart when it reaches the end (landing hero). */
-  loop?: boolean;
-  speed?: number;
-  demo?: DemoOptions;
 }
 
 async function loadSnapshot(id: RunId): Promise<LiveSnapshot> {
@@ -70,23 +49,11 @@ async function loadTrials(id: RunId): Promise<Trial[]> {
   return out;
 }
 
-export function useLiveRun(runId: string, opts: UseLiveRunOptions = {}): LiveHandle {
-  const isDemo = runId === "demo";
+export function useLiveRun(runId: string): LiveHandle {
   const [live, setLive] = useState<LiveRun | null>(null);
   const [status, setStatus] = useState<LiveStatus>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [speed, setSpeed] = useState(opts.speed ?? 1);
-  const [paused, setPaused] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [epoch, setEpoch] = useState(0);
   const buffer = useRef<AnybenchEvent[]>([]);
-  const speedRef = useRef(speed);
-  const pausedRef = useRef(paused);
-  speedRef.current = speed;
-  pausedRef.current = paused;
-
-  const demoOpts = opts.demo;
-  const demoRun = useMemo(() => (isDemo ? createDemoRun(demoOpts) : null), [isDemo, demoOpts]);
 
   // Flush the buffer once per animation frame.
   useEffect(() => {
@@ -112,40 +79,8 @@ export function useLiveRun(runId: string, opts: UseLiveRunOptions = {}): LiveHan
     return () => caf(handle);
   }, []);
 
-  // Demo playback.
+  // Snapshot, then SSE.
   useEffect(() => {
-    if (!demoRun) return;
-    const { snapshot, timeline, durationMs } = demoRun;
-    const startMs = durationMs * (epoch === 0 ? (opts.startAt ?? 0) : 0);
-    let i = 0;
-    const pre: AnybenchEvent[] = [];
-    while (i < timeline.length && timeline[i]!.atMs <= startMs) pre.push(timeline[i++]!.event);
-    buffer.current = [];
-    setLive(applyEvents(initLive(snapshot), pre));
-    setStatus("live");
-    let clock = startMs;
-    let last = performance.now();
-    const id = window.setInterval(() => {
-      const now = performance.now();
-      const dt = now - last;
-      last = now;
-      if (pausedRef.current) return;
-      clock += dt * speedRef.current;
-      while (i < timeline.length && timeline[i]!.atMs <= clock)
-        buffer.current.push(timeline[i++]!.event);
-      setProgress(Math.min(1, clock / durationMs));
-      if (i >= timeline.length) {
-        if (opts.loop && clock > durationMs + 6000) setEpoch((e) => e + 1);
-        else if (!opts.loop) setStatus("ended");
-      }
-    }, 50);
-    return () => window.clearInterval(id);
-    // opts.startAt / opts.loop are read once per epoch on purpose.
-  }, [demoRun, epoch]);
-
-  // Real run: snapshot, then SSE.
-  useEffect(() => {
-    if (isDemo) return;
     const ctrl = new AbortController();
     let cancelled = false;
     (async () => {
@@ -175,29 +110,19 @@ export function useLiveRun(runId: string, opts: UseLiveRunOptions = {}): LiveHan
       cancelled = true;
       ctrl.abort();
     };
-  }, [isDemo, runId]);
+  }, [runId]);
 
   // Trials that appeared after the snapshot.
   const refreshing = useRef(false);
   useEffect(() => {
-    if (isDemo || !live?.needsTrialRefresh || refreshing.current) return;
+    if (!live?.needsTrialRefresh || refreshing.current) return;
     refreshing.current = true;
     loadTrials(runId as RunId)
       .then((list) => setLive((prev) => (prev ? mergeTrials(prev, list) : prev)))
       .finally(() => {
         refreshing.current = false;
       });
-  }, [isDemo, live?.needsTrialRefresh, runId]);
+  }, [live?.needsTrialRefresh, runId]);
 
-  const restart = useCallback(() => {
-    setPaused(false);
-    setEpoch((e) => e + 1);
-  }, []);
-
-  return {
-    live,
-    status,
-    error,
-    demo: isDemo ? { speed, setSpeed, paused, setPaused, restart, progress } : null,
-  };
+  return { live, status, error };
 }

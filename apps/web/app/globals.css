@@ -292,10 +292,10 @@ svg {
   justify-content: center;
   gap: var(--space-2);
   min-height: 44px;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--fg);
+  color: var(--bg);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: 999px;
   padding: var(--space-3) var(--space-5);
   font-family: var(--body);
   font-weight: 500;
@@ -304,10 +304,10 @@ svg {
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
-  transition: filter 120ms var(--ease-out);
+  transition: background-color 140ms var(--ease-out);
 }
 .btn:hover {
-  filter: brightness(1.08);
+  background: color-mix(in srgb, var(--fg) 85%, var(--bg));
 }
 .btn-quiet {
   background: transparent;
@@ -315,7 +315,7 @@ svg {
   border-color: var(--line-strong);
 }
 .btn-quiet:hover {
-  box-shadow: none;
+  background: transparent;
   border-color: var(--fg);
 }
 .eyebrow {

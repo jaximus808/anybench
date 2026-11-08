@@ -40,9 +40,10 @@ Checked live on 2026-11-07 with Context.dev styleguide and scrape:
 
 ## Principles
 
-1. **The product is the hero.** The landing page plays a real run, through the same reducer the
-   live run page uses (`lib/live/model.ts`, with simulated events from
-   `lib/live/simulator.ts`), and labels it as simulated.
+1. **The product is the hero.** The landing hero shows a still of the run page (stages,
+   counts, the trial grid), labelled "example" with made-up numbers. There is no simulated
+   "live" demo on the site: the founder cut it on 2026-11-07. The real live page is
+   `/runs/[id]`.
 2. **Colour means state, never decoration.**
    - Orange = running / live.
    - Green = gate passed.

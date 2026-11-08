@@ -9,7 +9,7 @@ import {
   stageIndex,
   tallyByContender,
 } from "../lib/live/model";
-import { createDemoRun } from "../lib/live/simulator";
+import { createDemoRun } from "./fixtures/simulator";
 
 describe("demo run simulator", () => {
   const demo = createDemoRun();

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import styles from "./landing.module.css";
 
 const FEATURES = [
@@ -20,6 +19,7 @@ const FEATURES = [
   ],
 ] as const;
 
+/** What a customer sees on their own run page (/runs/[id]). Static copy: no demo run. */
 export function WatchLive() {
   return (
     <section className={styles.watchSec} aria-labelledby="watch-h">
@@ -41,11 +41,6 @@ export function WatchLive() {
           </div>
         ))}
       </dl>
-      <Link href="/runs/demo" className={styles.watchCta}>
-        <span className={styles.liveDot} aria-hidden="true" />
-        Open the live demo run
-        <span aria-hidden="true">→</span>
-      </Link>
     </section>
   );
 }

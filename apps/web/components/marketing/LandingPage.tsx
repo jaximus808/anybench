@@ -12,9 +12,9 @@ import { WatchLive } from "./WatchLive";
 import { WhyDifferent } from "./WhyDifferent";
 
 /**
- * The marketing landing page at `/` (TDM-99, redesigned). Always dark (.instrument): the hero
- * is a live screen, not a document. Static except the hero's simulated run, which plays in
- * the browser with no network calls.
+ * The marketing landing page at `/` (TDM-99, redesigned). Always dark (.instrument), like the
+ * run page it shows. Static: the hero figure is a labelled example, and the trial-field canvas
+ * behind it is decorative. No network calls.
  */
 export function LandingPage() {
   return (
