@@ -1,4 +1,4 @@
-// TDM-163: one lead per email and per repo, enforced by migration 0004's partial unique indexes,
+// TDM-163: one lead per email and per repo, enforced by migration 0006's partial unique indexes,
 // so concurrent sourcing/import runs can't insert (and later email) the same person twice.
 import { MemoryLeadStore, PgLeadStore, importOptinCsv, type NewLead } from "@anybench/outreach";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

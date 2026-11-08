@@ -16,5 +16,5 @@ Default tests never touch the network.
 - `findEmailViaHunter(monid, { domain, fullName })`: Hunter `/email-finder` via Monid, maxCost $0.0245.
 - `runSourcing({ queryId, limit, contextDev, github, monid?, store })`: works through `SAVED_CLAIM_QUERIES`, applies the fit check, then does the Hunter lookup, dedupes (repo URL, company domain, email), checks suppression, and writes `leads` rows with `signals.provenance`.
 - `importOptinCsv({ csv, file, store })`: `name,email,repo` rows, `source=hackathon_optin`.
-- `PgLeadStore(pgClient)` / `MemoryLeadStore`: the `leads` + `suppressions` tables. `insert` returns `{id}` or `{duplicate: "email" | "repo"}`, enforced by the migration-0004 partial unique indexes (`on conflict do nothing`).
+- `PgLeadStore(pgClient)` / `MemoryLeadStore`: the `leads` + `suppressions` tables. `insert` returns `{id}` or `{duplicate: "email" | "repo"}`, enforced by the migration-0006 partial unique indexes (`on conflict do nothing`).
 - Monid: a run with an unknown charge (poll timeout, transport error, 5xx with no run) is booked at maxCost and halts the client (`halted()`, later runs fail with `HALTED`).

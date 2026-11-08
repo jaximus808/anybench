@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "leads_email_lower_uniq" ON "leads" USING btree (lower("email")) WHERE "leads"."email" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "leads_github_url_lower_uniq" ON "leads" USING btree (lower("github_url")) WHERE "leads"."github_url" is not null;

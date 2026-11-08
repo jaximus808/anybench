@@ -44,7 +44,7 @@ export interface LeadStore {
   suppressedDomains(domains: string[]): Promise<Set<string>>;
   /**
    * Insert unless a lead with the same email or repo URL (case-insensitive) exists. The check is
-   * the DB's partial unique indexes (migration 0004), so two concurrent runs can't both insert
+   * the DB's partial unique indexes (migration 0006), so two concurrent runs can't both insert
    * the same person or repo; the loser gets `{ duplicate }` instead of an id.
    */
   insert(lead: NewLead): Promise<InsertResult>;
