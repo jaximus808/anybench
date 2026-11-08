@@ -106,6 +106,41 @@ class SyntheticLogTdm74 {
   }
 }
 
+/** Any byte-addressable log the fake reader can serve. */
+interface ByteLogTdm74 {
+  readonly size: number;
+  bytes(start: number, end: number): Buffer;
+}
+
+/** A log held in memory (small logs for the sweep tests). */
+class BufferLogTdm74 implements ByteLogTdm74 {
+  readonly buf: Buffer;
+  constructor(text: string) {
+    this.buf = Buffer.from(text);
+  }
+  get size() {
+    return this.buf.length;
+  }
+  bytes(start: number, end: number): Buffer {
+    return this.buf.subarray(start, Math.max(start, Math.min(end, this.buf.length)));
+  }
+  /** Byte offset of `needle` (must be ASCII-before). */
+  indexOf(needle: string): number {
+    return this.buf.indexOf(needle);
+  }
+}
+
+/** Throws if `text` holds any 12-char piece of `secret` (so also slice(0,-1) and slice(1)). */
+function expectNoFragmentTdm74(text: string, secret: string, where: string) {
+  expect(text.includes(secret.slice(0, -1)), `${where}: secret minus last char`).toBe(false);
+  expect(text.includes(secret.slice(1)), `${where}: secret minus first char`).toBe(false);
+  for (let i = 0; i + 12 <= secret.length; i++) {
+    if (text.includes(secret.slice(i, i + 12))) {
+      throw new Error(`${where}: served a fragment of the secret at ${i}: ${text.slice(0, 200)}`);
+    }
+  }
+}
+
 /** Segments of `segment` bytes over a log of `size` bytes. */
 function chunksTdm74(size: number, segment: number): LogChunk[] {
   const out: LogChunk[] = [];
@@ -116,7 +151,7 @@ function chunksTdm74(size: number, segment: number): LogChunk[] {
 
 /** A reader serving the synthetic log's segments; records every read. */
 function fakeReaderTdm74(
-  log: SyntheticLogTdm74,
+  log: ByteLogTdm74,
   chunks: () => LogChunk[],
   stream = "stdout",
 ): TrialLogReader & { reads: TrialLogRange[]; short: Map<number, number> } {
@@ -182,7 +217,7 @@ describe("readLogSlice (TDM-74, no DB)", () => {
     expect(all.startsWith("line 000000000 ")).toBe(true);
   });
 
-  it("moves a mid-token offset back to the token start, so a key is never split", async () => {
+  it("moves a mid-token offset back to the token start, so the key is redacted whole", async () => {
     const plants = new Map([[3, PLANTED_KEY_TDM74]]);
     const log = new SyntheticLogTdm74(100, plants);
     const chunks = chunksTdm74(log.size, 1024);
@@ -246,27 +281,101 @@ describe("readLogSlice (TDM-74, no DB)", () => {
     reader.short.set(1280, 128);
     const c = await readLogSlice(reader, redactor, { ...req, offset: 1280 }, { chunks });
     expect([c.offset, c.next_offset, c.eof]).toEqual([1280, 1920, true]);
-    expect(c.text).toBe(log.bytes(1280, 1408).toString());
+    // After a gap the first token may be a fragment (its start is missing): masked.
+    expect(c.text).toBe("[TRUNCATED]" + log.bytes(1284, 1408).toString());
   });
 
-  it("cuts a token longer than the window on a UTF-8 boundary", async () => {
-    const text = "é".repeat(3000); // 6000 bytes, no break byte
-    const buf = Buffer.from(text);
-    const chunks: LogChunk[] = [{ offset: 0, bytes: buf.length }];
-    const reader: TrialLogReader = {
-      async read(r) {
-        return new Uint8Array(buf.subarray(r.start, r.end));
-      },
-    };
+  it("masks a token longer than the look-ahead instead of serving part of it", async () => {
+    const text = "é".repeat(6000) + " tail\n"; // a 12,000-byte token, no break byte
+    const log = new BufferLogTdm74(text);
+    const chunks: LogChunk[] = [{ offset: 0, bytes: log.size }];
+    const reader = fakeReaderTdm74(log, () => chunks);
     const s = await readLogSlice(
       reader,
       redactor,
-      { trial: TRIAL_REF, stream: "stdout", offset: 0, bytes: 1001, final: false },
+      { trial: TRIAL_REF, stream: "stdout", offset: 0, bytes: 1001, final: true },
       { chunks },
     );
-    expect(s.next_offset).toBe(1000);
-    expect(s.text).toBe("é".repeat(500));
+    expect(s).toEqual({ offset: 0, next_offset: 1001 + 4096, text: "[TRUNCATED]", eof: false });
+    const t = await readLogSlice(
+      reader,
+      redactor,
+      { trial: TRIAL_REF, stream: "stdout", offset: s.next_offset, bytes: 8000, final: true },
+      { chunks },
+    );
+    expect(t.text).toBe("[TRUNCATED] tail\n");
+    expect(t.eof).toBe(true);
   });
+
+  // Review (TDM-74): a client-chosen `bytes` ending inside `token=<secret>`, or an offset inside a
+  // token longer than the look-back, must never return part of the secret.
+  const SWEEP_SECRET_TDM74 = mintRunnerToken(RUNNER_SECRET_TDM74, TRIAL_REF.id, 1);
+  const sweepRedactor = createRedactor({ RUNNER_TOKEN_1: SWEEP_SECRET_TDM74 });
+  const sweepLogs: [string, string][] = [
+    ["glued to token=", `line one\nauth token=${SWEEP_SECRET_TDM74} ok\nline three\n`],
+    [
+      "inside a token longer than the look-back",
+      `start\n${"A".repeat(5000)}${SWEEP_SECRET_TDM74}${"B".repeat(300)} after\nend\n`,
+    ],
+    [
+      "inside a token longer than the look-ahead",
+      `start\nk=${SWEEP_SECRET_TDM74}${"C".repeat(9000)}\nend\n`,
+    ],
+  ];
+
+  for (const [label, text] of sweepLogs) {
+    it(`sweep: no offset or bytes returns part of a secret ${label}`, async () => {
+      const log = new BufferLogTdm74(text);
+      const at = log.indexOf(SWEEP_SECRET_TDM74);
+      // Segment boundaries inside the secret too.
+      for (const segment of [log.size, 37]) {
+        const chunks = chunksTdm74(log.size, segment);
+        const reader = fakeReaderTdm74(log, () => chunks);
+        for (
+          let offset = Math.max(0, at - 8);
+          offset <= at + SWEEP_SECRET_TDM74.length + 2;
+          offset++
+        ) {
+          for (const bytes of [1, 2, 5, 13, 40, 59, 64, 100, 1000, 4096, 9000]) {
+            for (const final of [true, false]) {
+              const s = await readLogSlice(
+                reader,
+                sweepRedactor,
+                { trial: TRIAL_REF, stream: "stdout", offset, bytes, final },
+                { chunks },
+              );
+              expectNoFragmentTdm74(
+                s.text,
+                SWEEP_SECRET_TDM74,
+                `seg ${segment} @${offset}+${bytes} final=${final}`,
+              );
+              expect(s.next_offset).toBeGreaterThanOrEqual(offset - 4096);
+            }
+          }
+        }
+        // Following next_offset end to end, with tiny windows, concatenates to a clean log.
+        for (const bytes of [1, 7, 61]) {
+          let offset = at + 1; // start inside the secret
+          let all = "";
+          for (let i = 0; i < 20_000; i++) {
+            const s = await readLogSlice(
+              reader,
+              sweepRedactor,
+              { trial: TRIAL_REF, stream: "stdout", offset, bytes, final: true },
+              { chunks },
+            );
+            all += s.text;
+            expect(s.next_offset).toBeGreaterThan(offset);
+            offset = s.next_offset;
+            if (s.eof) break;
+          }
+          expect(offset).toBe(log.size);
+          expectNoFragmentTdm74(all, SWEEP_SECRET_TDM74, `walk seg ${segment} bytes ${bytes}`);
+          expect(all.endsWith(text.slice(text.lastIndexOf("\n", text.length - 2) + 1))).toBe(true);
+        }
+      }
+    }, 120_000);
+  }
 });
 
 describe("artifactLogReader (TDM-74, no DB)", () => {
@@ -431,7 +540,7 @@ describe.skipIf(!available)("trial log routes (TDM-74, local Postgres)", () => {
   let deps: AppDeps;
   let repeat = 0;
   /** Each trial's chunk list, served by the fake reader. */
-  const logs = new Map<string, { log: SyntheticLogTdm74; chunks: LogChunk[] }>();
+  const logs = new Map<string, { log: ByteLogTdm74; chunks: LogChunk[] }>();
   const reads: TrialLogRange[] = [];
 
   const reader: TrialLogReader = {
@@ -723,6 +832,60 @@ describe.skipIf(!available)("trial log routes (TDM-74, local Postgres)", () => {
     // Restore keyA for later tests (it was revoked with the rest of ownerA's keys).
     keyA = await seedApiKeyTdm67(h.db, ownerA, ["logs:read"]);
   }, 30_000);
+
+  it("sweep over HTTP and SSE: no slice or concatenation of frames holds part of the runner token", async () => {
+    const trialId = await seedTrial("done");
+    const secret = mintRunnerToken(RUNNER_SECRET_TDM74, trialId, 1);
+    const log = new BufferLogTdm74(
+      `one\nauth token=${secret} ok\n${"A".repeat(5000)}${secret}${"B".repeat(50)} x\nend\n`,
+    );
+    const chunks = chunksTdm74(log.size, 1024);
+    logs.set(trialId, { log, chunks });
+    await announce(trialId, chunks);
+    const glued = log.indexOf(secret);
+    const long = log.buf.indexOf(secret, glued + 1);
+    for (const at of [glued, long]) {
+      for (let offset = at - 2; offset <= at + secret.length; offset += 3) {
+        for (const bytes of [1, 13, 100]) {
+          const r = await get(`/trials/${trialId}/log?offset=${offset}&bytes=${bytes}`);
+          expectNoFragmentTdm74(await r.text(), secret, `GET @${offset}+${bytes}`);
+        }
+      }
+    }
+    for (const [bytes, from] of [
+      [13, 0],
+      [5, glued + 1],
+      [7, long + 1],
+    ] as const) {
+      const res = await get(`/trials/${trialId}/log/stream?bytes=${bytes}`, keyA, {
+        "last-event-id": String(from),
+      });
+      const { frames } = await readFramesTdm74(res, (fs) => fs.some((f) => f.event === "end"));
+      const text = frames
+        .filter((f) => f.id !== undefined)
+        .map((f) => (JSON.parse(f.data) as LogBody).text)
+        .join("");
+      expectNoFragmentTdm74(text, secret, `SSE from ${from} bytes ${bytes}`);
+      expect(text.endsWith("end\n")).toBe(true);
+    }
+  }, 120_000);
+
+  it("a flood of duplicate log_chunk offsets cannot push real segments out of the index", async () => {
+    const trialId = await seedTrial("done");
+    const log = new SyntheticLogTdm74(20, new Map());
+    const chunks = chunksTdm74(log.size, 640);
+    logs.set(trialId, { log, chunks });
+    await announce(
+      trialId,
+      Array.from({ length: 600 }, () => chunks[0]!),
+    );
+    await announce(trialId, chunks.slice(1));
+    const body = (await (
+      await get(`/trials/${trialId}/log?offset=0&bytes=65536`)
+    ).json()) as LogBody;
+    expect([body.offset, body.next_offset, body.eof]).toEqual([0, log.size, true]);
+    expect(body.text).toBe(log.bytes(0, log.size).toString());
+  });
 
   it("is 503 without a log reader", async () => {
     const trialId = await seedTrial("done");
