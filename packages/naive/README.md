@@ -13,5 +13,17 @@ interface in memory for offline tests.
 - `FakeNaive` (also `@anybench/naive/fake`): `script(role, ...)`, `scriptDefault`, `failNext`,
   `setSubscription`, `setBalance`, `spentMicroUsd()`, `eventsOf(id)`, `sessionCreates`, `release(id)`.
 
+- Per-trial model tokens through the Naïve proxy (`proxy-credentials.ts`, TDM-16; see
+  `docs/findings/claude-code-naive-proxy.md`):
+  - `provisionClaudeCodeProxyEnv({ keys: liveProxyKeys(admin), computers }, { trialId, computerId, model, smallFastModel? })`
+    mints an `anybench-trial-<trialId>` key holding only `proxy:write` and writes
+    `$HOME/.anybench/proxy.env` (0600) for Claude Code. The secret is non-enumerable; read it with
+    `trialProxySecret(cred)` for the redactor.
+  - On every heartbeat: `enforceTrialProxyBudget({ keys, spend: liveLedgerSpend(admin) }, { keyId, capMicroUsd, since: cred.createdAt })`
+    revokes the key once spend reaches the cap.
+  - At trial end, on every path: `revokeTrialProxyCredential(keys, cred)`. In the `computer.reap`
+    sweep: `revokeStaleTrialProxyKeys(keys, keepIdsOfLiveTrials)`.
+  - Fakes: `FakeProxyKeys`, `FakeProxySpend`.
+
 Tests never call the live API; `test/tdm13-live-smoke.test.ts` runs only with `NAIVE_LIVE=1`.
 See plan.md sections 5 and 11, and `docs/findings/naive-sdk-client.md`.

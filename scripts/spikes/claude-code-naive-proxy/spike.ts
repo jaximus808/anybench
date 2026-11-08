@@ -46,7 +46,9 @@ function redact(v: unknown): string {
   const st = readState();
   for (const s of [adminKey, st.keySecret])
     if (s && s.length >= 8) out = out.split(s).join("<secret>");
-  return out.replace(/sk_(live|test)_[A-Za-z0-9_-]+/g, "sk_<redacted>");
+  return out
+    .replace(/sk_(live|test)_[A-Za-z0-9_-]+/g, "sk_<redacted>")
+    .replace(/mcp_[A-Za-z0-9]{12,}/g, "mcp_<redacted>");
 }
 function log(step: string, data: unknown): void {
   const line = redact({ at: new Date().toISOString(), step, data });
@@ -311,6 +313,179 @@ switch (cmd) {
         content: readFileSync(arg).toString("base64"),
       }),
     );
+    break;
+  }
+  case "scope-probe": {
+    // Mint a fresh trial proxy:write key (and an MCP-session credential), then call every route that
+    // could reach a computer, an agent or a session, against made-up ids / invalid bodies.
+    // 403 = scope blocks the route; 400/404 = the scope lets the request through to the handler.
+    const naive = await import(join(root, "packages/naive/dist/index.js"));
+    const keys = naive.liveProxyKeys({ apiKey: adminKey, baseUrl: BASE });
+    const cred = await naive.mintTrialProxyCredential(keys, {
+      trialId: "tdm16-scope-probe",
+      baseUrl: BASE,
+    });
+    writeState({ ...readState(), keyId: cred.keyId, keySecret: naive.trialProxySecret(cred) });
+    log("minted", { keyId: cred.keyId, credJson: JSON.parse(JSON.stringify(cred)) });
+    const mcs = await step("mcpSessions.create proxy:write", () =>
+      admin.mcpSessions.create({
+        name: "tdm16-scope-probe",
+        scopes: ["proxy:write"],
+        allowed_tools: ["models_list_catalog"],
+        expires_in_seconds: 300,
+      }),
+    );
+    const mcsSecret = (mcs as { secret?: string } | undefined)?.secret;
+    const mcsId = (mcs as { id?: string } | undefined)?.id;
+    const FAKE = "cmp_00000000000000000000000000000000";
+    const routes: Array<[string, string, unknown]> = [
+      ["POST", `/v1/computers/${FAKE}/exec`, { command: "true" }],
+      ["POST", `/v1/computers/${FAKE}/fs/read`, { path: "/home/naive/x" }],
+      [
+        "POST",
+        `/v1/computers/${FAKE}/fs/write`,
+        { path: "/home/naive/x", encoding: "base64", content: "" },
+      ],
+      ["POST", `/v1/computers/${FAKE}/fs/remove`, { path: "/home/naive/x" }],
+      ["POST", `/v1/computers/${FAKE}/fs/list`, { path: "/home/naive" }],
+      ["DELETE", `/v1/computers/${FAKE}`, undefined],
+      ["POST", `/v1/computers/${FAKE}/pause`, {}],
+      ["POST", `/v1/computers/${FAKE}/resume`, {}],
+      ["POST", `/v1/computers/${FAKE}/snapshot`, {}],
+      ["PATCH", `/v1/computers/${FAKE}`, { name: "x" }],
+      ["GET", `/v1/computers/${FAKE}`, undefined],
+      ["GET", `/v1/computers/${FAKE}/inspect`, undefined],
+      ["GET", `/v1/computers/${FAKE}/commands`, undefined],
+      ["GET", `/v1/computers`, undefined],
+      ["POST", `/v1/computers`, { vcpu: -1, memory_mb: 1 }],
+      ["POST", `/v1/sessions`, { agent_id: "agt_00000000000000000000000000", message: 1 }],
+      ["POST", `/v1/agents`, { name: 1 }],
+      ["GET", `/v1/agents`, undefined],
+      ["GET", `/v1/sessions`, undefined],
+      ["POST", `/v1/api_keys`, { name: 1 }],
+      ["POST", `/v1/mcp_sessions`, { name: 1 }],
+      ["GET", `/v1/proxy/calls`, undefined],
+      ["GET", `/v1/credits/ledger`, undefined],
+      ["GET", `/v1/files`, undefined],
+      ["POST", `/v1/apps`, { name: 1 }],
+    ];
+    const probe = async (label: string, token: string) => {
+      const rows: Array<Record<string, unknown>> = [];
+      for (const [method, path, body] of routes) {
+        const res = await fetch(`${BASE}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        const text = await res.text();
+        let code: string | undefined;
+        let message: string | undefined;
+        try {
+          const j = JSON.parse(text) as { error?: { code?: string; message?: string } };
+          code = j.error?.code;
+          message = j.error?.message?.slice(0, 120);
+        } catch {
+          /* not json */
+        }
+        rows.push({
+          method,
+          path: path.replace(FAKE, "<fake>"),
+          status: res.status,
+          code,
+          message,
+          body: code ? undefined : text.slice(0, 120),
+        });
+      }
+      log(`scope probe (${label})`, rows);
+    };
+    await probe("trial proxy:write key", naive.trialProxySecret(cred));
+    if (mcsSecret) {
+      log(
+        "proxy call with mcp-session bearer",
+        await (async () => {
+          const res = await fetch(`${BASE}/v1/proxy/anthropic/v1/messages`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${mcsSecret}` },
+            body: JSON.stringify({
+              model: "anthropic/claude-haiku-4.5",
+              max_tokens: 8,
+              messages: [{ role: "user", content: "Reply OK." }],
+            }),
+          });
+          return { status: res.status, body: (await res.text()).slice(0, 400) };
+        })(),
+      );
+      await probe("mcp-session proxy:write", mcsSecret);
+    }
+    log(
+      "proxy call with trial key",
+      await rawProxy("/v1/messages", {
+        model: "anthropic/claude-haiku-4.5",
+        max_tokens: 8,
+        messages: [{ role: "user", content: "Reply OK." }],
+      }),
+    );
+    if (mcsId) await step("mcpSessions.revoke", () => admin.mcpSessions.revoke(mcsId));
+    await step("revokeTrialProxyCredential", () => naive.revokeTrialProxyCredential(keys, cred));
+    log(
+      "proxy call after revoke",
+      await rawProxy("/v1/messages", {
+        model: "anthropic/claude-haiku-4.5",
+        max_tokens: 8,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    writeState({});
+    break;
+  }
+  case "mcs-probe": {
+    // Can a proxy:write key mint an MCP session (which could carry wider scopes)? Revokes anything made.
+    const naive = await import(join(root, "packages/naive/dist/index.js"));
+    const keys = naive.liveProxyKeys({ apiKey: adminKey, baseUrl: BASE });
+    const cred = await naive.mintTrialProxyCredential(keys, {
+      trialId: "tdm16-mcs-probe",
+      baseUrl: BASE,
+    });
+    writeState({ ...readState(), keyId: cred.keyId, keySecret: naive.trialProxySecret(cred) });
+    for (const body of [
+      { name: "tdm16-mcs-probe" },
+      {
+        name: "tdm16-mcs-probe",
+        scopes: ["computers:write"],
+        allowed_tools: ["computers_exec_command"],
+        expires_in_seconds: 60,
+      },
+      {
+        name: "tdm16-mcs-probe",
+        scopes: ["proxy:write"],
+        allowed_tools: ["models_list_catalog"],
+        expires_in_seconds: 60,
+      },
+    ]) {
+      const res = await fetch(`${BASE}/v1/mcp_sessions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${naive.trialProxySecret(cred)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      log(`POST /v1/mcp_sessions ${JSON.stringify(body)}`, {
+        status: res.status,
+        body: text.slice(0, 300),
+      });
+      const id = (() => {
+        try {
+          return (JSON.parse(text) as { id?: string }).id;
+        } catch {
+          return undefined;
+        }
+      })();
+      if (res.ok && id) await step(`admin revoke ${id}`, () => admin.mcpSessions.revoke(id));
+    }
+    await step("revokeTrialProxyCredential", () => naive.revokeTrialProxyCredential(keys, cred));
+    writeState({});
     break;
   }
   case "traces": {

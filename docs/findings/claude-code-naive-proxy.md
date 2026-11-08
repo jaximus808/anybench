@@ -15,6 +15,7 @@ Every claim comes from a live call. The spike script is `scripts/spikes/claude-c
 | `claude -p --output-format stream-json` end to end | **Yes**, with the env file below. |
 | Tandem | **Same path.** Tandem makes no model calls itself. Its workers are `claude` processes that inherit the environment, and the MCP tool round-trip works through the proxy (tested with a 25-tool MCP stub). |
 | Naïve `claude_code` harness | Listed (`preview`, `sandbox`, `billing: usage`) but **`runnable: false`**, and approvals, structured_output and streaming_deltas are all `false`. It can't be used today, and it wouldn't be a fair Claude Code vs Tandem setup anyway (see the end). |
+| Scope of a `proxy:write` key | Every route that touches a machine is **403**. Read-only computer metadata (list, get) is allowed; this risk is accepted, see section 6.1. |
 | Spend | **560,941 µ$ ($0.56)** = 507,602 µ$ tokens (20 proxy calls) + 53,339 µ$ for one 2 vCPU / 4 GiB computer over about 15 min. Read from `credits.ledger` filtered to this spike's two keys and its computer. |
 
 ## 1. Discovery
@@ -131,8 +132,56 @@ Catalogue list prices for models not run live, per MTok in/out: sonnet-5 $2/$10,
 
 ## 6. Security
 
-- The trial key holds only `proxy:write`. It can't read balance or traces, but it **can list the org's computers**, and **it has no per-key spend cap**: an agent under test that reads its own env can spend on any catalogue model up to the org balance. Mitigations: one key per trial, revoked at trial end (`revokeTrialProxyCredential`; verified, the next call is `401 unauthorized "invalid API key"`); a reaper sweep (`revokeStaleTrialProxyKeys`) for crashed trials; meter each trial's spend by key from the ledger, and trip the kill switch on it.
+### 6.1 Scope probe: what a `proxy:write` key can reach (review blocker, run 2026-11-08 03:44Z)
+
+`spike.ts scope-probe` mints a fresh trial key with `mintTrialProxyCredential`. It calls every route that could reach a computer, an agent or a session, using a made-up id `cmp_00000000000000000000000000000000` or an invalid body, so nothing is created. Then it revokes the key, and the next call gets `401 unauthorized "invalid API key"`. A 403 means the scope blocks the route. A 400 or 404 means the request got past the scope check to the handler.
+
+| Route (proxy:write key) | Status | Message |
+|---|---|---|
+| `POST /v1/computers/{id}/exec` | **403** | this API key is missing the `computers:write` scope |
+| `POST /v1/computers/{id}/fs/read` · `fs/write` · `fs/remove` · `fs/list` | **403** | missing `computers:write` |
+| `DELETE /v1/computers/{id}` · `PATCH /v1/computers/{id}` | **403** | missing `computers:write` |
+| `POST /v1/computers/{id}/pause` · `resume` · `snapshot` | **403** | missing `computers:write` |
+| `GET /v1/computers/{id}/inspect` · `GET …/commands` | **403** | missing `computers:write` |
+| `POST /v1/computers` (invalid body) | **403** | missing `computers:write` |
+| `GET /v1/computers` | 200 | `{"data":[],…}` (**read-only metadata**) |
+| `GET /v1/computers/{id}` | 404 | `no such computer` (**read-only metadata**, passes the scope) |
+| `POST /v1/sessions` · `GET /v1/sessions` | **403** | missing `sessions:write` / `sessions:read` |
+| `POST /v1/agents` · `GET /v1/agents` · `POST /v1/apps` | **403** | missing `agents:write` / `agents:read` |
+| `POST /v1/api_keys` | **403** | missing `admin` |
+| `POST /v1/mcp_sessions` (invalid body) | 400 | validation_failed (the body is validated first) |
+| `POST /v1/mcp_sessions {name}` | **403** | only a signed-in person can connect their own agent |
+| `POST /v1/mcp_sessions {name, scopes:["computers:write"], allowed_tools:["computers_exec_command"]}` | **403** | only an owner or an admin can choose an MCP session's scopes and tools |
+| `GET /v1/proxy/calls` · `GET /v1/credits/ledger` · `GET /v1/files` | **403** | missing `audit:read` / `billing:read` / `files:read` |
+| `POST /v1/proxy/anthropic/v1/messages` | 200 | (the one thing it is for) |
+
+**Decision (orchestrator, 2026-11-08): accepted.** A trial key can't exec on, read or write files on, inspect, snapshot, pause, delete or create any computer. It also can't mint a wider credential. The scoring computer is unreachable. What it *can* do is read computer **metadata**: list the org's computers and get one by id (id, name, vCPU/memory/disk, status, agent_id, snapshot_id). That is an accepted risk. The known exposure is that computer names carry run and trial tags (TDM-22 encodes them for the reaper), so a contender can see other trials' names and statuses. A follow-up ticket will make the tags opaque (an HMAC of run and trial id) while keeping them resolvable by the reaper.
+
+### 6.2 MCP-session credentials don't work on the proxy
+
+`mcpSessions.create {scopes:["proxy:write"], allowed_tools:["models_list_catalog"], expires_in_seconds:300}` (admin) mints an `mcp_…` bearer. Expiry would have made it a crash backstop. But the proxy refuses it: `403 "an MCP session may not call this route"`. The Naïve MCP catalog (366 tools) has no proxy tool, and an MCP bearer only works on REST routes behind an allowlisted tool. Every other route in the probe was 403 for it too. **So it can't be used for auto-expiry.** Trial keys are long-lived API keys, and the backstop is revoke-at-end plus the reaper sweep.
+
+### 6.3 Spend: there is no per-key cap on Naïve, so we enforce one
+
+A key has no spend limit of its own. An agent that reads its env can spend on any catalogue model up to the org balance. `enforceTrialProxyBudget` closes this after the fact:
+
+- `trialProxySpend(source, {keyId, since})` sums the key's debits as bigint micro-USD. `since` is the credential's `createdAt`. Neither live list filters by actor on the server, so the reader pages newest first and stops at `since`.
+  - `liveLedgerSpend` (`GET /v1/credits/ledger?type=debit&from=<since>`, needs `billing:read`) is the recommended source. The ledger is the authority on what was charged: it books a partial debit for a stream that failed part-way, where a trace's `billed_micro_usd` is null. Ledger rows also carry no prompt bodies.
+  - `liveProxyCallsSpend` (`GET /v1/proxy/calls`, needs `audit:read`) reads the traces' `billed_micro_usd`. It works too, but every row carries the full prompt and reply (about 38 KB per Claude Code call), so it's heavy for a heartbeat.
+  - Live check, read-only, for the probe key's one call: ledger `35 µ$, 1 call` in 786 ms; proxy.calls `35 µ$, 1 call` in 548 ms. The two sources agree.
+- `enforceTrialProxyBudget({keys, spend}, {keyId, capMicroUsd, since})` returns `{spentMicroUsd, capMicroUsd, remainingMicroUsd, calls, unpricedCalls, revoked}` and revokes the key once `spent >= cap`. It's after-the-fact: calls in flight when the cap is crossed still settle, so the overshoot is bounded by those calls' cost, not zero. Keep the poll interval short, and the cap below the run budget by one call's worth.
+
+### 6.4 Secret handling
+
+- On credentials from `mintTrialProxyCredential`/`makeTrialProxyCredential`, `TrialProxyCredential.secret` is **non-enumerable**, and `toJSON` replaces it with `<redacted:naive-proxy-key>`. So `JSON.stringify`, `{...cred}`, `Object.values` and `util.inspect` never carry it (unit-tested). Read it with `trialProxySecret(cred)`, and add it to the runner's redaction list with `createRedactor` (`@anybench/core`).
 - The secret travels only in the `fs/write` body. The helper makes `~/.anybench` 0700, pre-creates the file 0600 with `umask 077`, writes it, then re-checks `stat -c '%a %s'` and refuses anything but 600 at the right size. No exec argv contains it (unit-tested).
+
+### 6.5 Integration (TDM-39 coding-agent driver, TDM-49 executor/reaper)
+
+1. **Trial start:** `provisionClaudeCodeProxyEnv(...)`. Store `credential.keyId` and `credential.createdAt` on the trial row, never the secret, and add `trialProxySecret(credential)` to the trial's redactor.
+2. **Every heartbeat:** `enforceTrialProxyBudget({keys, spend: liveLedgerSpend(admin)}, {keyId, capMicroUsd: <trial token cap>, since: createdAt})`. On `revoked: true`, stop the subject and record the trial as budget-exceeded.
+3. **Trial end, on every path** (success, subject failure, timeout, cancel, infra failure): `revokeTrialProxyCredential(keys, {keyId})`, in a `finally`. It's idempotent, and a 404 counts as done.
+4. **`computer.reap` sweep:** `revokeStaleTrialProxyKeys(keys, keep)`, where `keep` is the set of `keyId`s of trials that are still live. That revokes the key of any trial that crashed before step 3.
 
 ## 7. Can the Naïve `claude_code` harness run a fair Claude Code vs Tandem benchmark?
 

@@ -32,6 +32,7 @@ export interface NaiveMintedKey {
   scopes: string[];
   /** Shown once, at create. Never log it. */
   secret: string;
+  createdAt: string;
 }
 
 export interface NaiveKeySummary {
@@ -44,8 +45,14 @@ export interface NaiveKeySummary {
 export interface TrialProxyCredential {
   trialId: string;
   keyId: string;
-  /** The `proxy:write` secret. Never log it or put it on a command line. */
-  secret: string;
+  /**
+   * The `proxy:write` secret. Never log it or put it on a command line. On credentials made by
+   * `mintTrialProxyCredential` it is non-enumerable and `toJSON` redacts it, so `JSON.stringify`,
+   * `console.log` and `{ ...cred }` never carry it. Read it with `trialProxySecret(cred)`.
+   */
+  readonly secret: string;
+  /** When Naïve created the key (ISO). Spend reads start here. */
+  createdAt: string;
   /** Naïve API base, e.g. `https://api.vetta.sh`. */
   baseUrl: string;
   /** What `ANTHROPIC_BASE_URL` must be: `<baseUrl>/v1/proxy/anthropic`. */
@@ -90,7 +97,13 @@ export function liveProxyKeys(options: {
   return {
     create: async (body) => {
       const k = await call(() => sdk.keys.create({ name: body.name, scopes: [...body.scopes] }));
-      return { id: k.id, name: k.name, scopes: [...k.scopes], secret: k.secret };
+      return {
+        id: k.id,
+        name: k.name,
+        scopes: [...k.scopes],
+        secret: k.secret,
+        createdAt: k.created_at,
+      };
     },
     list: async () => {
       const out: NaiveKeySummary[] = [];
@@ -139,13 +152,35 @@ export async function mintTrialProxyCredential(
       },
     );
   }
-  return {
+  return makeTrialProxyCredential({
     trialId,
     keyId: key.id,
     secret: key.secret,
+    createdAt: key.createdAt,
     baseUrl,
     anthropicBaseUrl: `${baseUrl}/v1/proxy/anthropic`,
-  };
+  });
+}
+
+export const REDACTED_SECRET = "<redacted:naive-proxy-key>";
+
+/** Builds a credential whose `secret` is non-enumerable and redacted by `toJSON`. */
+export function makeTrialProxyCredential(
+  fields: Omit<TrialProxyCredential, "secret"> & { secret: string },
+): TrialProxyCredential {
+  const { secret, ...rest } = fields;
+  const cred = { ...rest } as TrialProxyCredential;
+  Object.defineProperty(cred, "secret", { value: secret, enumerable: false, writable: false });
+  Object.defineProperty(cred, "toJSON", {
+    value: () => ({ ...rest, secret: REDACTED_SECRET }),
+    enumerable: false,
+  });
+  return cred;
+}
+
+/** The secret, for the env file and for the runner's redaction list (`createRedactor`). */
+export function trialProxySecret(cred: Pick<TrialProxyCredential, "secret">): string {
+  return cred.secret;
 }
 
 /** Revokes the trial's key. Safe to call twice. */
@@ -360,6 +395,208 @@ export async function provisionClaudeCodeProxyEnv(
   }
 }
 
+// ---------- per-key spend and the trial budget ----------
+
+/** One model call (or its debit) attributed to the key that made it. Money is bigint micro-USD. */
+export interface ProxySpendEntry {
+  /** `key_…` of the principal that made the call, or null for a user/system actor. */
+  actorKeyId: string | null;
+  /** What the call cost; null when the source did not price it (a call that failed mid-way). */
+  billedMicroUsd: bigint | null;
+  createdAt: string;
+}
+
+/**
+ * Where spend is read from. Both live sources list the whole organization newest first, with no
+ * actor filter on the server, so readers page back only as far as `since` (the key's creation).
+ */
+export interface ProxySpendSource {
+  /** Newest first. Must yield every entry created at or after `since`; may yield older ones. */
+  entries(since: string | undefined): AsyncIterable<ProxySpendEntry>;
+}
+
+const KeyIdSchema = z.string().regex(/^key_[0-9a-z]{20,}$/, "expected a key_… id");
+
+/** Integer micro-USD from the wire (a JS number), refusing floats. */
+function microFromWire(n: number | null | undefined): bigint | null {
+  if (n === null || n === undefined) return null;
+  if (!Number.isSafeInteger(n)) {
+    throw new NaiveError(`non-integer micro-USD ${n}`, { code: "response_unreadable" });
+  }
+  return BigInt(n);
+}
+
+function sdkFor(options: { apiKey: string; baseUrl?: string; fetch?: typeof globalThis.fetch }) {
+  return createClient({
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl ?? DEFAULT_NAIVE_BASE_URL,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+  });
+}
+
+/**
+ * `GET /v1/proxy/calls` (call traces). Needs `audit:read`. Each row is one model call with
+ * `billed_micro_usd`; it also carries the full prompt and reply, so a page is heavy (tens of KB per
+ * call): prefer `liveLedgerSpend` for a heartbeat poll.
+ */
+export function liveProxyCallsSpend(options: {
+  apiKey: string;
+  baseUrl?: string;
+  fetch?: typeof globalThis.fetch;
+  pageSize?: number;
+}): ProxySpendSource {
+  const sdk = sdkFor(options);
+  return {
+    async *entries(since) {
+      let after: string | undefined;
+      do {
+        const page = await (async () => {
+          try {
+            return await sdk.proxy.calls({
+              limit: options.pageSize ?? 50,
+              ...(after ? { after } : {}),
+            });
+          } catch (error) {
+            throw mapNaiveError(error);
+          }
+        })();
+        for (const c of page.data) {
+          yield {
+            actorKeyId: c.actor.type === "key" ? c.actor.id : null,
+            billedMicroUsd: microFromWire(c.billed_micro_usd),
+            createdAt: c.created_at,
+          };
+          if (since !== undefined && c.created_at < since) return;
+        }
+        after = page.has_more ? (page.next_cursor ?? undefined) : undefined;
+      } while (after);
+    },
+  };
+}
+
+/**
+ * `GET /v1/credits/ledger?type=debit&from=<since>` (needs `billing:read`). The ledger is the
+ * authority on what was charged (a trace's `billed_micro_usd` is "its copy", and is null for a
+ * call that failed part-way while the ledger still books the partial debit), and its rows carry
+ * no prompt bodies. Debits are negative on the wire; this yields them as positive spend.
+ */
+export function liveLedgerSpend(options: {
+  apiKey: string;
+  baseUrl?: string;
+  fetch?: typeof globalThis.fetch;
+  pageSize?: number;
+}): ProxySpendSource {
+  const sdk = sdkFor(options);
+  return {
+    async *entries(since) {
+      let after: string | undefined;
+      do {
+        const page = await (async () => {
+          try {
+            return await sdk.credits.ledger({
+              type: "debit",
+              limit: options.pageSize ?? 100,
+              ...(since ? { from: since } : {}),
+              ...(after ? { after } : {}),
+            });
+          } catch (error) {
+            throw mapNaiveError(error);
+          }
+        })();
+        for (const e of page.data) {
+          const amount = microFromWire(e.amount_micro_usd);
+          yield {
+            actorKeyId: e.actor.type === "key" ? e.actor.id : null,
+            billedMicroUsd: amount === null ? null : amount < 0n ? -amount : amount,
+            createdAt: e.created_at,
+          };
+        }
+        after = page.has_more ? (page.next_cursor ?? undefined) : undefined;
+      } while (after);
+    },
+  };
+}
+
+export interface TrialProxySpend {
+  keyId: string;
+  spentMicroUsd: bigint;
+  /** Entries attributed to the key. */
+  calls: number;
+  /** Of those, entries with no price (counted as 0). */
+  unpricedCalls: number;
+}
+
+/** Sums the spend attributed to one key since `since` (pass the credential's `createdAt`). */
+export async function trialProxySpend(
+  source: ProxySpendSource,
+  opts: { keyId: string; since?: string },
+): Promise<TrialProxySpend> {
+  const keyId = KeyIdSchema.parse(opts.keyId);
+  let spent = 0n;
+  let calls = 0;
+  let unpriced = 0;
+  for await (const e of source.entries(opts.since)) {
+    if (opts.since !== undefined && e.createdAt < opts.since) break;
+    if (e.actorKeyId !== keyId) continue;
+    calls += 1;
+    if (e.billedMicroUsd === null) unpriced += 1;
+    else spent += e.billedMicroUsd;
+  }
+  return { keyId, spentMicroUsd: spent, calls, unpricedCalls: unpriced };
+}
+
+export interface TrialProxyBudgetCheck extends TrialProxySpend {
+  capMicroUsd: bigint;
+  /** `cap - spent`, never below 0. */
+  remainingMicroUsd: bigint;
+  /** True when spend reached the cap and the key is (now) revoked. */
+  revoked: boolean;
+}
+
+/**
+ * Reads the key's spend and revokes the key once spend reaches `capMicroUsd`. Call it on every
+ * runner heartbeat. It is after-the-fact: calls in flight when the cap is crossed still settle,
+ * so the overshoot is bounded by what those calls cost (each one's `max_tokens` quote), not zero.
+ */
+export async function enforceTrialProxyBudget(
+  deps: { keys: Pick<NaiveProxyKeysApi, "revoke">; spend: ProxySpendSource },
+  opts: { keyId: string; capMicroUsd: bigint; since?: string },
+): Promise<TrialProxyBudgetCheck> {
+  if (typeof opts.capMicroUsd !== "bigint" || opts.capMicroUsd < 0n) {
+    throw new NaiveError("capMicroUsd must be a non-negative bigint", {
+      code: "validation_failed",
+    });
+  }
+  const spend = await trialProxySpend(deps.spend, {
+    keyId: opts.keyId,
+    ...(opts.since !== undefined ? { since: opts.since } : {}),
+  });
+  const over = spend.spentMicroUsd >= opts.capMicroUsd;
+  if (over) await deps.keys.revoke(spend.keyId);
+  const remaining = opts.capMicroUsd - spend.spentMicroUsd;
+  return {
+    ...spend,
+    capMicroUsd: opts.capMicroUsd,
+    remainingMicroUsd: remaining > 0n ? remaining : 0n,
+    revoked: over,
+  };
+}
+
+/** In-memory `ProxySpendSource` for tests: push entries in any order, read newest first. */
+export class FakeProxySpend implements ProxySpendSource {
+  readonly rows: ProxySpendEntry[] = [];
+  reads = 0;
+  add(entry: ProxySpendEntry): this {
+    this.rows.push(entry);
+    return this;
+  }
+  async *entries(): AsyncIterable<ProxySpendEntry> {
+    this.reads += 1;
+    const sorted = [...this.rows].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    for (const r of sorted) yield r;
+  }
+}
+
 /** In-memory `NaiveProxyKeysApi` for tests. */
 export class FakeProxyKeys implements NaiveProxyKeysApi {
   readonly keys = new Map<string, NaiveKeySummary & { secret: string; revoked: boolean }>();
@@ -376,7 +613,13 @@ export class FakeProxyKeys implements NaiveProxyKeysApi {
       secret,
       revoked: false,
     });
-    return { id, name: body.name, scopes: [...body.scopes], secret };
+    return {
+      id,
+      name: body.name,
+      scopes: [...body.scopes],
+      secret,
+      createdAt: "2026-11-08T00:00:00.000Z",
+    };
   }
   async list(): Promise<NaiveKeySummary[]> {
     return [...this.keys.values()]
