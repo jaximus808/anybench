@@ -137,21 +137,33 @@ export async function skepticReview(
     );
   }
 
-  const key = args.attempt ? `${ctx.idempotencyKey}:skeptic-${args.attempt}` : ctx.idempotencyKey;
-  const r = await runAgentStage(
-    { db: deps.db, client: deps.client },
-    {
-      ctx: { ...ctx, idempotencyKey: key },
-      role: SKEPTIC_ROLE,
-      input: buildSkepticInput(checks.material, checks.findings, {
-        proof: args.proof ?? null,
-        understanding: args.understanding ?? null,
-      }),
-      schema: SkepticOutputSchema,
-      budgetMicroUsd: args.budgetMicroUsd ?? SKEPTIC_BUDGET_MICRO_USD,
-      agent: { overrides: { model: choice.model } },
-    },
-  );
+  const baseKey = args.attempt
+    ? `${ctx.idempotencyKey}:skeptic-${args.attempt}`
+    : ctx.idempotencyKey;
+  // One retry on a fresh session key: a model that slips once (e.g. never submits its output,
+  // seen live) must not hold a run whose deterministic checks are clean. Still fail closed after.
+  const material = checks.material;
+  const model = choice.model;
+  const review1 = (key: string) =>
+    runAgentStage(
+      { db: deps.db, client: deps.client },
+      {
+        ctx: { ...ctx, idempotencyKey: key },
+        role: SKEPTIC_ROLE,
+        input: buildSkepticInput(material, checks.findings, {
+          proof: args.proof ?? null,
+          understanding: args.understanding ?? null,
+        }),
+        schema: SkepticOutputSchema,
+        budgetMicroUsd: args.budgetMicroUsd ?? SKEPTIC_BUDGET_MICRO_USD,
+        agent: { overrides: { model } },
+      },
+    );
+  let r = await review1(baseKey);
+  if (!r.ok) {
+    await say(ctx, `skeptic review did not complete (${r.reason}); retrying once`);
+    r = await review1(`${baseKey}:retry`);
+  }
   if (!r.ok) {
     const blocks = count(checks.findings, "block");
     return stageHold(

@@ -115,6 +115,34 @@ describe.skipIf(!available)("skepticReview on Postgres + FakeNaive (TDM-187)", (
     expect(said.some((t) => t.startsWith("skeptic (openai/gpt-5-mini): pass, 0 block"))).toBe(true);
   });
 
+  it("a skeptic session that fails once is retried on a fresh key; failing twice holds", async () => {
+    const kit = await loadKit(CLI_KIT);
+    const ctx = await ctxTdm187();
+    naive.script(
+      "skeptic",
+      { output: { not: "the schema" } },
+      { output: { verdict: "pass", summary: "", findings: [] } },
+    );
+    const before = creates().length;
+    const ok = await skepticReview(
+      { db: h.db, client: naive },
+      { ctx, kitDir: CLI_KIT, spec: kit.spec },
+    );
+    expect(ok).toMatchObject({ ok: true, value: { verdict: "pass" } });
+    expect(creates()).toHaveLength(before + 2);
+    const said = ctx.emitted.map((e) => (e.payload as { text?: string }).text ?? "");
+    expect(said.some((t) => t.includes("retrying once"))).toBe(true);
+
+    const ctx2 = await ctxTdm187();
+    naive.script("skeptic", { output: { not: "the schema" } }, { output: { still: "wrong" } });
+    const held = await skepticReview(
+      { db: h.db, client: naive },
+      { ctx: ctx2, kitDir: CLI_KIT, spec: kit.spec },
+    );
+    expect(held.ok).toBe(false);
+    if (!held.ok) expect(held.reason).toMatch(/skeptic review could not run/);
+  });
+
   it("a verified model block → repair; an unverified one stays a warning", async () => {
     const kit = await loadKit(CLI_KIT);
     const ctx = await ctxTdm187();
