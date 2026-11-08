@@ -12,6 +12,7 @@
 
 import { MicroUsdSchema } from "@anybench/core";
 import { z } from "zod";
+import { unmeasuredAssertions } from "./rule10.js";
 
 // ---- plan.md 17.4: metrics by subject class --------------------------------------------------
 
@@ -253,6 +254,13 @@ export const ScoutBriefSchema = z.strictObject({
       source_url: z.url(),
       /** True when `source` is a `path#Ln` ref that resolved in the fetched material. */
       source_in_repo: z.boolean(),
+      /**
+       * False when nothing we fetched backs this comparison: an https URL the scout named that is
+       * neither a resolved repo line nor linked from the fetched README/manifests. The writer must
+       * not present an unverified comparison as something the project itself names.
+       */
+      verified: z.boolean(),
+      verified_by: z.enum(["repo_line", "linked_in_material"]).nullable(),
       why: z.string(),
     }),
   ),
@@ -265,6 +273,9 @@ export const ScoutBriefSchema = z.strictObject({
     .strictObject({
       source: z.string(),
       found: z.boolean(),
+      /** `skipped_run_cap`: the run cap could not cover the lookup's max cost, so none ran. */
+      outcome: z.enum(["found", "not_found", "skipped_run_cap", "error"]),
+      /** Counted against the scout run cap. */
       cost_micro_usd: MicroUsdSchema,
     })
     .nullable(),
@@ -310,6 +321,20 @@ export class ScoutMaterial {
     return this.files.get(stripDotSlash(path));
   }
 
+  /** Does any fetched file contain this URL (scheme, `www.`, trailing slash and case ignored)? */
+  links(url: string): boolean {
+    const key = urlKey(url);
+    if (key.length < 8) return false;
+    for (const lines of this.files.values()) {
+      for (const l of lines) {
+        for (const m of l.matchAll(/https?:\/\/[^\s)<>"'\]]+/gi)) {
+          if (urlKey(m[0]) === key) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   permalink(path: string, line: number): string {
     return `${this.repoUrl}/blob/${this.rev}/${stripDotSlash(path)}#L${line}`;
   }
@@ -327,6 +352,18 @@ export class ScoutMaterial {
     }
     return { text: rows.join("\n"), truncated: lines.length > rows.length };
   }
+}
+
+function urlKey(u: string): string {
+  return u
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/[#?].*$/, "")
+    .replace(/[.,;:]+$/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "");
 }
 
 function stripDotSlash(p: string): string {
@@ -478,56 +515,7 @@ export function resolveRef(
   return { path, line };
 }
 
-// ---- 17.2 rule 10: honest wording ---------------------------------------------------------------
-
-/** A plan, not a result: "we'd check whether...", "to test if...". */
-const PLAN_HEDGE =
-  /\b(?:whether|if|would|could|might|may|we'd|we'll|will|to test|to check|to verify|check|test|measure|verify|confirm)\b/i;
-/** A report of THEIR claim: "the README says it is faster". */
-const REPORT_HEDGE =
-  /\b(?:claims?|claimed|claiming|says?|said|states?|stated|reports?|reported|according|readme|advertis\w*|promis\w*|suggests?|positions?|markets?|describes?)\b/i;
-
-/**
- * Results stated as fact. `excusedBy` lists the hedges that turn the sentence into a plan or a
- * report of the project's own claim. "We measured X" and "the claim is false" are only excused by
- * a plan ("we'd check whether the claim is true"), never by "the README says".
- */
-const ASSERTIONS: ReadonlyArray<{ re: RegExp; excusedBy: readonly RegExp[] }> = [
-  {
-    re: /\b(?:is|are|was|were|runs?|ran|looks?|seems?|performs?|proved?|proves|turned out)\s+(?:(?:much|far|significantly|clearly|noticeably|actually|really|about|roughly|\d+(?:\.\d+)?\s?(?:x|%|times))\s+)*(?:slower|faster|cheaper|costlier|pricier|worse|better|more accurate|less accurate|more efficient|less efficient|inaccurate|unreliable)\b/i,
-    excusedBy: [PLAN_HEDGE, REPORT_HEDGE],
-  },
-  {
-    re: /\b(?:beats|outperforms?|outperformed|underperforms?|underperformed|loses to|lost to|wins against|dominates)\b/i,
-    excusedBy: [PLAN_HEDGE, REPORT_HEDGE],
-  },
-  {
-    re: /\b(?:in fact|actually|really)\s+(?:slower|faster|cheaper|worse|better)\b/i,
-    excusedBy: [PLAN_HEDGE, REPORT_HEDGE],
-  },
-  {
-    re: /\b(?:we|our (?:tests?|runs?|benchmarks?|results?|measurements?|analysis))\s+(?:have\s+)?(?:found|measured|showed?|shown|observed|confirmed|proved?|proven|verified|benchmarked|tested)\b(?!\s+(?:nothing|anything|none)\b)/i,
-    excusedBy: [PLAN_HEDGE],
-  },
-  {
-    re: /\bclaims?\s+(?:is|are|was|were)\s+(?:false|wrong|inflated|misleading|exaggerated|unsupported|untrue|true|correct|accurate|valid|verified|confirmed|bogus)\b/i,
-    excusedBy: [PLAN_HEDGE],
-  },
-];
-
-/** Sentences in `text` that assert an unmeasured result. Empty when the text is honest. */
-export function unmeasuredAssertions(text: string): string[] {
-  const out: string[] = [];
-  for (const sentence of text.split(/(?<=[.!?;])\s+|\n+/)) {
-    const s = sentence.trim();
-    if (!s) continue;
-    const asserted = ASSERTIONS.some(
-      (a) => a.re.test(s) && !a.excusedBy.some((hedge) => hedge.test(s)),
-    );
-    if (asserted) out.push(s);
-  }
-  return out;
-}
+// ---- 17.2 rule 10: honest wording (the filter lives in rule10.ts) ----------------------------
 
 export class ScoutBriefRejectedError extends Error {
   readonly code = "unmeasured_assertion" as const;
@@ -655,14 +643,20 @@ export function verifyScoutOutput(
         source: `${r.path}#L${r.line}`,
         source_url: material.permalink(r.path, r.line),
         source_in_repo: true,
+        verified: true,
+        verified_by: "repo_line",
         why: c.why,
       });
     } else if (HTTPS_URL.safeParse(src).success) {
+      // We never fetch the URL itself; it counts as verified only when the fetched material links it.
+      const linked = material.links(src);
       compared.push({
         name: c.name,
         source: src,
         source_url: src,
         source_in_repo: false,
+        verified: linked,
+        verified_by: linked ? "linked_in_material" : null,
         why: c.why,
       });
     } else {

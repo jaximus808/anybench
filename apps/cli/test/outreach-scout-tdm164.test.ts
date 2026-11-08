@@ -89,7 +89,7 @@ describe("anybench outreach scout", () => {
     expect(c.out[0]).toMatch(
       /^l1\thttps:\/\/github.com\/o\/tool\tscored fit 75 · 1 cited claims\t\$0\.0123/,
     );
-    expect(c.out.at(-1)).toMatch(/Naïve spend \$0\.0123 of \$3\.0000 cap \(per lead \$0\.2500\)/);
+    expect(c.out.at(-1)).toMatch(/spend \$0\.0123 of \$3\.0000 cap \(Naïve \$0\.0123, email lookups \$0\.0000\) \(per lead \$0\.2500\)/);
   });
 
   it("--repo runs ad hoc without a database and --json prints micro-USD as strings", async () => {

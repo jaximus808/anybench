@@ -15,3 +15,5 @@ export * from "./source.js";
 export * from "./import.js";
 // 15.3a scout: fit score + cited claim brief per lead (TDM-164).
 export * from "./scout.js";
+// Plan 17.2 rule 10 wording filter, shared by the scout and the writer (TDM-165).
+export * from "./rule10.js";

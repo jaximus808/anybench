@@ -31,7 +31,8 @@ Answer with ONE JSON document that matches the output schema. No prose outside i
 - `claims`: the measurable claims the project makes about itself. Each `text` is a **verbatim
   quote** copied character for character from ONE row of `material.files` (without the `L<n>: `
   prefix; you may drop markdown such as `**`, links and HTML tags, but do not reword, merge rows or
-  fix typos). `source_ref` is `<path>#L<n>` for that row, e.g. `README.md#L32`. Quote only claims
+  fix typos, and never put `...` inside a quote: an elided quote is thrown away). Never quote
+  struck-through text or a sentence the project negates or retracts. `source_ref` is `<path>#L<n>` for that row, e.g. `README.md#L32`. Quote only claims
   that are actually in the material. Every quote is checked mechanically against the file; a quote
   that does not appear on its line is thrown away. Prefer 2–6 claims, the most specific first.
   `what_it_claims` restates the claim in neutral words ("the README says X is about 2x faster
@@ -50,7 +51,8 @@ Answer with ONE JSON document that matches the output schema. No prose outside i
   implementation, a labelled answer set, a reference-grid match. At least one.
 - `compared_against`: what the project would be compared with, and `source` for each: either a
   `source_ref` (`README.md#L<n>`) where the project itself names that baseline, or an https URL of
-  the baseline's own page. Prefer the baselines the project names itself.
+  the baseline's own page. Prefer the baselines the project names itself: a URL is only marked
+  verified when the material links it; any other URL is kept but marked unverified.
 - `caveats`: what could make the comparison unfair or the benchmark hard (needs a GPU, needs paid
   API keys, claims measured on a private benchmark, results depend on the model version, a fixture
   is not published).
@@ -64,5 +66,7 @@ Answer with ONE JSON document that matches the output schema. No prose outside i
 We have measured **nothing**. Never state or imply a result: never write that the project is
 slower, faster, cheaper, better or worse, that it beats or loses to anything, that a claim is
 false, inflated or true, or that "we found", "we measured" or "our tests show". Write "we'd check
-whether…", "the README says…", "to test the claim that…". Sentences that assert an unmeasured
+whether…", "the README says…", "to test the claim that…", with the hedge or the attribution
+FIRST: "the README says it is 2x faster" is fine, "it is 2x faster, the README says" is not, and
+"we will verify it, and it is slower" still asserts. Sentences that assert an unmeasured
 result are removed mechanically, and a `why` or `fit_reason` that asserts one voids the brief.

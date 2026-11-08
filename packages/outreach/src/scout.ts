@@ -6,9 +6,11 @@
 //   → status: `scored` (fit >= threshold, verified claims, contact_ok) or `skipped`
 //   → for scouted leads with no known email, the injected email finder (if any)
 //
-// Money: every session gets `min(per-lead budget, what is left of the run cap)` as its Naïve
-// budget, so a lead can never spend more than OUTREACH_PER_LEAD_BUDGET_MICRO_USD and a run never
-// more than OUTREACH_SCOUT_RUN_CAP_MICRO_USD. Spend is recorded per lead in integer micro-USD.
+// Money: a session starts only when the run cap has a whole per-lead budget left, and gets exactly
+// that budget, so a lead's Naïve spend never exceeds OUTREACH_PER_LEAD_BUDGET_MICRO_USD. The run cap
+// (OUTREACH_SCOUT_RUN_CAP_MICRO_USD) covers ALL the run's spend: Naïve sessions plus email lookups
+// (Hunter via Monid), and a lookup runs only when the cap still covers its max cost. Spend is
+// recorded per lead and per kind in integer micro-USD.
 //
 // Input is a small interface (`ScoutLead`) rather than the leads table, so this runs on any lead
 // source; `scoutLeadFromRow` adapts a `leads` row as TDM-163 [15.2a] writes it.
@@ -294,7 +296,12 @@ export class MemoryScoutLeadStore implements ScoutLeadStore {
 export interface ScoutEmailFinder {
   /** Shown in the brief, e.g. `hunter_via_monid`, `context_dev_people_enrich`. */
   readonly source: string;
-  /** Null when no address was found. Spend is that provider's, not Naïve's. */
+  /**
+   * The most one lookup can charge. A lookup runs only when the run cap still has this much left
+   * after the lead's Naïve session, and a lookup that throws is booked at this amount.
+   */
+  readonly maxCostMicroUsd: MicroUsd;
+  /** Null when no address was found. `costMicroUsd` counts against the scout run cap. */
   find(lead: ScoutLead): Promise<{ email: string | null; costMicroUsd: MicroUsd }>;
 }
 
@@ -331,7 +338,10 @@ export type ScoutLeadResult =
       status: "scored" | "skipped";
       fit: number;
       skipReason: ScoutSkipReason | null;
+      /** Naïve spend for this lead. */
       costMicroUsd: MicroUsd;
+      /** Email-lookup spend for this lead (0 when none ran). */
+      emailCostMicroUsd: MicroUsd;
       brief: ScoutBrief;
     }
   | {
@@ -346,7 +356,10 @@ export type ScoutLeadResult =
 export interface ScoutRunReport {
   agent: { id: string; version: number; model: string; action: string };
   results: ScoutLeadResult[];
+  /** Everything this run spent: Naïve + email lookups. Never above `runCapMicroUsd`. */
   spentMicroUsd: MicroUsd;
+  naiveSpentMicroUsd: MicroUsd;
+  emailSpentMicroUsd: MicroUsd;
   perLeadBudgetMicroUsd: MicroUsd;
   runCapMicroUsd: MicroUsd;
   fitThreshold: number;
@@ -528,6 +541,8 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
     },
     results: [],
     spentMicroUsd: 0n,
+    naiveSpentMicroUsd: 0n,
+    emailSpentMicroUsd: 0n,
     perLeadBudgetMicroUsd: perLead,
     runCapMicroUsd: runCap,
     fitThreshold,
@@ -547,6 +562,7 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
     }
     const fail = (code: string, message: string, cost: MicroUsd): void => {
       report.spentMicroUsd += cost;
+      report.naiveSpentMicroUsd += cost;
       report.results.push({
         leadId: lead.id,
         githubUrl: lead.githubUrl,
@@ -633,16 +649,44 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
             : null;
     const status = skipReason ? "skipped" : "scored";
 
+    report.spentMicroUsd += result.costMicroUsd;
+    report.naiveSpentMicroUsd += result.costMicroUsd;
+
     let contactLookup: ScoutBrief["contact_lookup"] = null;
     let foundEmail: string | null = null;
+    let emailCost: MicroUsd = 0n;
     if (status === "scored" && !lead.email && o.emailFinder) {
-      const found = await o.emailFinder.find(lead);
-      foundEmail = found.email;
-      contactLookup = {
-        source: o.emailFinder.source,
-        found: found.email !== null,
-        cost_micro_usd: found.costMicroUsd,
-      };
+      const finder = o.emailFinder;
+      if (runCap - report.spentMicroUsd < finder.maxCostMicroUsd) {
+        contactLookup = {
+          source: finder.source,
+          found: false,
+          outcome: "skipped_run_cap",
+          cost_micro_usd: 0n,
+        };
+        log(`lead ${lead.id}: email lookup skipped, the run cap can't cover its max cost`);
+      } else {
+        let outcome: "found" | "not_found" | "error";
+        try {
+          const found = await finder.find(lead);
+          foundEmail = found.email;
+          emailCost = found.costMicroUsd;
+          outcome = found.email !== null ? "found" : "not_found";
+        } catch (e) {
+          // Unknown charge: book the lookup's max so the run cap stays conservative.
+          emailCost = finder.maxCostMicroUsd;
+          outcome = "error";
+          log(`lead ${lead.id}: email lookup failed: ${(e as Error).message}`);
+        }
+        report.spentMicroUsd += emailCost;
+        report.emailSpentMicroUsd += emailCost;
+        contactLookup = {
+          source: finder.source,
+          found: foundEmail !== null,
+          outcome,
+          cost_micro_usd: emailCost,
+        };
+      }
     }
 
     const src = ingested.digest.source;
@@ -668,7 +712,6 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
       created_at: now().toISOString(),
     } satisfies ScoutBrief);
 
-    report.spentMicroUsd += result.costMicroUsd;
     report.results.push({
       leadId: lead.id,
       githubUrl: lead.githubUrl,
@@ -676,6 +719,7 @@ export async function runScout(o: ScoutOptions): Promise<ScoutRunReport> {
       fit: verified.fit,
       skipReason,
       costMicroUsd: result.costMicroUsd,
+      emailCostMicroUsd: emailCost,
       brief,
     });
     log(

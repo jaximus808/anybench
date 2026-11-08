@@ -29,7 +29,7 @@ reading or writing the database.
   --repo <url>                 ad-hoc repo instead of DB leads (repeatable; implies --dry-run)
   --threshold <0-100>          default $OUTREACH_FIT_THRESHOLD or 60
   --budget-micro-usd <N>       Naïve spend per lead (default $OUTREACH_PER_LEAD_BUDGET_MICRO_USD or 250000 = $0.25)
-  --run-cap-micro-usd <N>      Naïve spend per run (default $OUTREACH_SCOUT_RUN_CAP_MICRO_USD or 3000000 = $3)
+  --run-cap-micro-usd <N>      all spend per run, Naïve + email lookups (default $OUTREACH_SCOUT_RUN_CAP_MICRO_USD or 3000000 = $3)
   --model <id>                 override the scout model (packages/agents/scout/config.json)
   --out <file>                 write the full report (briefs included) as JSON
   --database-url <url>         default $DATABASE_URL, else $LOCAL_DATABASE_URL, else the local dev DB
@@ -187,10 +187,15 @@ export async function runOutreachScout(
           r.status === "error"
             ? `error ${r.error.code}`
             : `${r.status}${r.skipReason ? ` (${r.skipReason})` : ""} fit ${r.fit} · ${r.brief.claims.length} cited claims`;
-        out(`${r.leadId}\t${r.githubUrl}\t${detail}\t${usd(r.costMicroUsd)}`);
+        const email =
+          r.status !== "error" && r.emailCostMicroUsd > 0n
+            ? ` + email ${usd(r.emailCostMicroUsd)}`
+            : "";
+        out(`${r.leadId}\t${r.githubUrl}\t${detail}\t${usd(r.costMicroUsd)}${email}`);
       }
       out(
-        `scout: ${report.results.length} leads, Naïve spend ${usd(report.spentMicroUsd)} of ${usd(cap)} cap` +
+        `scout: ${report.results.length} leads, spend ${usd(report.spentMicroUsd)} of ${usd(cap)} cap` +
+          ` (Naïve ${usd(report.naiveSpentMicroUsd)}, email lookups ${usd(report.emailSpentMicroUsd)})` +
           ` (per lead ${usd(perLead)}), model ${report.agent.model}` +
           (report.stoppedBy
             ? `, stopped by ${report.stoppedBy} with ${report.unscouted.length} left`

@@ -175,9 +175,9 @@ describe("checkQuote: quotes must be on their cited line of the fetched text", (
       relocated: false,
     });
     expect(checkQuote(mat, "“Uses 46% fewer tokens than pi”", "README.md#L8").ok).toBe(true);
-    expect(
-      checkQuote(mat, "SWE-bench Verified: 27 → 33 of 50 ... Claude Sonnet", "README.md#L12").ok,
-    ).toBe(true);
+    expect(checkQuote(mat, "SWE-bench Verified: 27 → 33 of 50 with Claude", "README.md#L12").ok).toBe(
+      true,
+    );
   });
 
   it("relocates a real quote cited on the wrong line, refuses invented or trivial ones", () => {
@@ -273,10 +273,41 @@ describe("verifyScoutOutput", () => {
       METRICS_BY_CLASS.agent_harness.required.length,
     );
     expect(v.compared_against).toEqual([
-      expect.objectContaining({ name: "pi", source: "README.md#L8", source_in_repo: true }),
-      expect.objectContaining({ name: "Claude Code", source_in_repo: false }),
+      expect.objectContaining({
+        name: "pi",
+        source: "README.md#L8",
+        source_in_repo: true,
+        verified: true,
+        verified_by: "repo_line",
+      }),
+      // Never fetched, and the README doesn't link it: kept, but marked unverified.
+      expect.objectContaining({
+        name: "Claude Code",
+        source_in_repo: false,
+        verified: false,
+        verified_by: null,
+      }),
     ]);
     expect(v.caveats).toEqual(["Results depend on the pinned model version."]);
+  });
+
+  it("marks an external compared_against URL verified only when the fetched README links it", () => {
+    const v = verifyScoutOutput(
+      tdm164Output({
+        compared_against: [
+          { name: "pi", source: "https://github.com/example/pi/", why: "The README names pi." },
+          { name: "pi (www)", source: "https://www.GitHub.com/example/pi", why: "Same repo." },
+          { name: "serena", source: "https://github.com/oraios/serena", why: "A peer tool." },
+        ],
+      }),
+      tdm164Material(),
+    );
+    expect(v.compared_against.map((c) => [c.name, c.verified, c.verified_by])).toEqual([
+      ["pi", true, "linked_in_material"],
+      ["pi (www)", true, "linked_in_material"],
+      ["serena", false, null],
+    ]);
+    expect(v.compared_against.every((c) => c.source_url.startsWith("https://"))).toBe(true);
   });
 
   it("rejects a brief whose why or fit_reason asserts an unmeasured result, or that has no gate left", () => {
@@ -317,6 +348,7 @@ function tdm164Finder(): ScoutEmailFinder & { calls: string[] } {
   const calls: string[] = [];
   return {
     source: "test_finder",
+    maxCostMicroUsd: 24_500n,
     calls,
     find: async (lead) => {
       calls.push(lead.id);
@@ -348,7 +380,10 @@ describe("runScout (FakeNaive)", () => {
       ["lead-hi", "scored"],
       ["lead-lo", "skipped"],
     ]);
-    expect(report.spentMicroUsd).toBe(50_000n);
+    // The email lookup counts against the run cap alongside Naïve.
+    expect(report.naiveSpentMicroUsd).toBe(50_000n);
+    expect(report.emailSpentMicroUsd).toBe(24_500n);
+    expect(report.spentMicroUsd).toBe(74_500n);
     expect(finder.calls).toEqual(["lead-hi"]);
 
     const hi = store.leads.find((l) => l.id === "lead-hi")!;
@@ -359,6 +394,7 @@ describe("runScout (FakeNaive)", () => {
     expect(brief.contact_lookup).toEqual({
       source: "test_finder",
       found: true,
+      outcome: "found",
       cost_micro_usd: 24_500n,
     });
     expect(brief.contact.status).toBe("email_found");
@@ -395,6 +431,70 @@ describe("runScout (FakeNaive)", () => {
     expect(input.material.files[0]!.lines.split("\n")[6]).toBe(
       "L7: - **2x faster** than plain Claude Code on our 20-task suite",
     );
+  });
+
+  it("counts email-lookup spend against the run cap and skips a lookup the cap can't cover", async () => {
+    const naive = new FakeNaive();
+    naive.scriptDefault("scout", { output: tdm164Output(), costMicroUsd: 30_000n });
+    const finder = tdm164Finder();
+    finder.find = async (lead) => {
+      finder.calls.push(lead.id);
+      return { email: `${lead.id}@example.com`, costMicroUsd: 24_500n };
+    };
+    const leads = ["a", "b", "c"].map((id) => ({ id, githubUrl: `https://github.com/acme/${id}` }));
+    const report = await runScout({
+      naive,
+      leads,
+      ingest: async (url) => tdm164Ingest(url),
+      emailFinder: finder,
+      perLeadBudgetMicroUsd: 40_000n,
+      // a: session 30k + lookup 24.5k = 54.5k. b: 45.5k left >= 40k, session 30k (84.5k); the
+      // lookup's 24.5k max > 15.5k left: skipped. c: 15.5k left < 40k: not scouted. Without the
+      // email spend c would have had exactly 40k left and run.
+      runCapMicroUsd: 100_000n,
+    });
+    expect(finder.calls).toEqual(["a"]);
+    expect(report.results.map((r) => r.leadId)).toEqual(["a", "b"]);
+    expect(report.unscouted).toEqual(["c"]);
+    expect(report.stoppedBy).toBe("run_cap");
+    expect(report.naiveSpentMicroUsd).toBe(60_000n);
+    expect(report.emailSpentMicroUsd).toBe(24_500n);
+    expect(report.spentMicroUsd).toBe(84_500n);
+    expect(report.spentMicroUsd <= report.runCapMicroUsd).toBe(true);
+    const [a, b] = report.results;
+    expect(a).toMatchObject({ emailCostMicroUsd: 24_500n });
+    expect(a!.status !== "error" && a!.brief.contact_lookup).toEqual({
+      source: "test_finder",
+      found: true,
+      outcome: "found",
+      cost_micro_usd: 24_500n,
+    });
+    expect(b!.status !== "error" && b!.brief.contact_lookup).toEqual({
+      source: "test_finder",
+      found: false,
+      outcome: "skipped_run_cap",
+      cost_micro_usd: 0n,
+    });
+    expect(b!.status !== "error" && b!.brief.contact.status).toBe("none");
+  });
+
+  it("books a failed email lookup at its max cost", async () => {
+    const naive = new FakeNaive();
+    naive.scriptDefault("scout", { output: tdm164Output(), costMicroUsd: 10_000n });
+    const finder = tdm164Finder();
+    finder.find = async () => {
+      throw new Error("monid: transport error");
+    };
+    const report = await runScout({
+      naive,
+      leads: [{ id: "a", githubUrl: "https://github.com/acme/a" }],
+      ingest: async (url) => tdm164Ingest(url),
+      emailFinder: finder,
+    });
+    expect(report.emailSpentMicroUsd).toBe(24_500n);
+    expect(report.spentMicroUsd).toBe(34_500n);
+    const r = report.results[0]!;
+    expect(r.status !== "error" && r.brief.contact_lookup?.outcome).toBe("error");
   });
 
   it("stops at the run cap and never gives a session more than the per-lead budget", async () => {
