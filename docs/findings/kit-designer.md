@@ -303,7 +303,7 @@ Naïve health check before the run: credits and list answered in 966 ms. There w
 computers, all from the founder's run.
 
 ```
-run 01a1ba2f-…  (BurntSushi/ripgrep, auto_go off; events printed at 07:59:53Z after one job)
+run 01a1ba28-6c67-7c51-b259-df12d6383264  (BurntSushi/ripgrep, auto_go off; events printed at 07:59:53Z after one job)
 07:56:13.902Z  null → intake (created)
                intake → understand: software / cli / ready, 3 verified claims          1,909 µ$
                understand → research (pass-through) → kit_draft
