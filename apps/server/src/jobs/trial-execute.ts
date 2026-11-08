@@ -493,15 +493,3 @@ export function createTrialReattachJob() {
 }
 
 export const trialReattachJob = createTrialReattachJob();
-
-/** STUB for [5.6]: the gate runner is not merged yet; the trial waits in `collecting`. */
-export const trialGateStubJob = defineJob({
-  name: TRIAL_GATE_JOB,
-  payload: TrialGatePayloadSchema,
-  async run(payload, ctx) {
-    ctx.logger.warn(
-      { job: TRIAL_GATE_JOB, trialId: payload.trial_id, attempt: payload.attempt },
-      "trial.gate is a stub until [5.6] merges; trial left in collecting",
-    );
-  },
-});

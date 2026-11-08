@@ -19,8 +19,8 @@
 // failure_class infra | kit. Before the cap, GateInfraError throws so graphile-worker retries.
 //
 // Enqueue with payload `{trial_id, attempt}` and job key `trialGateJobKey(trialId, attempt)` (the
-// trial executor, [5.4] TDM-49, does this after `collecting`; whichever of TDM-49 / TDM-51 lands
-// second keeps ONE TRIAL_GATE_JOB / trialGateJobKey and deletes trialGateStubJob).
+// trial executor, [5.4] TDM-49, does this after `collecting`). TRIAL_GATE_JOB, trialGateJobKey and
+// TrialGatePayloadSchema are defined once, in trial-execute.ts, and re-exported here.
 import { fileURLToPath } from "node:url";
 import {
   AnybenchEventSchema,
@@ -61,15 +61,10 @@ import { trials } from "../db/schema/trials.js";
 import { drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
+import { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey } from "./trial-execute.js";
 import { defineJob, type JobContext } from "./types.js";
 
-export const TRIAL_GATE_JOB = "trial.gate";
-
-/** Same shape as TDM-49's trial.execute payload (snake_case). */
-export const TrialGatePayloadSchema = z.object({
-  trial_id: z.uuid(),
-  attempt: z.int().positive(),
-});
+export { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey };
 
 /**
  * Job runs that may hit GateInfraError (our computer, download, setup) before the trial is
@@ -78,11 +73,6 @@ export const TrialGatePayloadSchema = z.object({
  */
 export const GATE_INFRA_MAX_ATTEMPTS = 3;
 export type TrialGatePayload = z.infer<typeof TrialGatePayloadSchema>;
-
-/** job_key for trial.gate. Distinct from trial.execute's `trials:<id>:<attempt>`. */
-export function trialGateJobKey(trialId: string, attempt: number): string {
-  return `trials:${trialId}:${attempt}:gate`;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Ports

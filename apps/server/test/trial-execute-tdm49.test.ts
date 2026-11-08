@@ -20,13 +20,13 @@ import {
   workerHeartbeats,
 } from "../src/db/schema/index.js";
 import { JOBS } from "../src/jobs/index.js";
+import { trialGateJob } from "../src/jobs/trial-gate.js";
 import {
   createTrialExecuteJob,
   drizzleTrialExecStore,
   trialExecuteJob,
   trialExecuteJobKey,
   trialGateJobKey,
-  trialGateStubJob,
   trialReattachJob,
   TRIAL_REATTACH_INTERVAL_MS,
 } from "../src/jobs/trial-execute.js";
@@ -123,10 +123,10 @@ describe.skipIf(!available)("trial.execute (TDM-49, FakeProvider + local Postgre
     await h?.drop();
   });
 
-  it("registers trial.execute, trial.reattach (every 60 s) and the trial.gate stub", () => {
+  it("registers trial.execute, trial.reattach (every 60 s) and trial.gate (TDM-51)", () => {
     expect(JOBS).toContain(trialExecuteJob);
     expect(JOBS).toContain(trialReattachJob);
-    expect(JOBS).toContain(trialGateStubJob);
+    expect(JOBS).toContain(trialGateJob);
     expect(trialReattachJob.everyMs).toBe(TRIAL_REATTACH_INTERVAL_MS);
     expect(trialExecuteJobKey("t", 2)).toBe("trials:t:2");
     expect(trialGateJobKey("t", 2)).toBe("trials:t:2:gate");
