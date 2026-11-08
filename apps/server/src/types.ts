@@ -11,6 +11,7 @@ import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { JobQueue } from "./lib/job-queue.js";
 import type { Logger } from "./lib/logger.js";
 import type { TrialLogReader } from "./lib/trial-logs.js";
+import type { TrialTraceStore } from "./lib/trial-trace/store.js";
 import type { SentryHandle } from "./lib/sentry.js";
 import type { RateLimiter, RunSuggester } from "./lib/suggest.js";
 import type { EventsWriter, TrialArtifactStore } from "./routes/runner.js";
@@ -43,6 +44,12 @@ export interface AppDeps {
    * lib/trial-logs.ts artifactLogReader over the ArtifactStore. Log routes answer 503 without it.
    */
   trialLogs?: TrialLogReader;
+  /**
+   * Trial traces (GET /trials/:id/trace, /runs/:id/trace-summary). Default in the entries:
+   * lib/trial-trace/store.ts artifactTraceStore over the ArtifactStore. Trace routes answer 503
+   * without it.
+   */
+  traces?: TrialTraceStore;
   /** The run gate's billing check (TDM-67). Default: lib/billing-gate.ts defaultBillingGate. */
   billingGate?: BillingGate;
   /**

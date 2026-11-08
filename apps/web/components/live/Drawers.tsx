@@ -22,6 +22,7 @@ import {
 } from "../../lib/live/model";
 import { agentPhase } from "./AgentsPanel";
 import { bytes, clock, ms, pctOf, span, usd, usdSmall } from "./format";
+import { TrialTraceSection } from "../trace/TraceView";
 import styles from "./live.module.css";
 
 function Drawer({
@@ -29,18 +30,26 @@ function Drawer({
   kicker,
   onClose,
   children,
+  wide = false,
 }: {
   title: string;
   kicker: string;
   onClose: () => void;
   children: ReactNode;
+  wide?: boolean;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus();
   }, [title]);
   return (
-    <aside className={styles.drawer} role="dialog" aria-modal="false" aria-label={title}>
+    <aside
+      className={styles.drawer}
+      role="dialog"
+      aria-modal="false"
+      aria-label={title}
+      data-wide={wide || undefined}
+    >
       <header className={styles.drawerHead}>
         <div>
           <p className="eyebrow">{kicker}</p>
@@ -173,132 +182,161 @@ export function TrialDrawer({
 
   const gate = trial.gate;
   const detailGate = detail?.gate ?? null;
+  const [tab, setTab] = useState<"overview" | "trace">("overview");
 
   return (
-    <Drawer title={trialLabel(live, trial)} kicker="Trial" onClose={onClose}>
+    <Drawer title={trialLabel(live, trial)} kicker="Trial" onClose={onClose} wide={tab === "trace"}>
       <div className={styles.drawerStatus} data-tone={tone}>
         <span className={styles.statusDot} aria-hidden="true" />
         {TONE_TEXT[tone]}
         {tone === "active" ? <span className={styles.statusPhase}>{trial.state}</span> : null}
       </div>
 
-      <section
-        className={styles.gateBox}
-        data-pass={gate ? String(gate.passed) : "pending"}
-        aria-labelledby="gate-h"
-      >
-        <h3 id="gate-h">Correctness gate</h3>
-        {gate ? (
-          <>
-            <p className={styles.gateVerdict}>
-              {gate.passed ? "Passed" : "Failed"} <code>{gate.gate}</code>
-            </p>
-            {gate.summary ? <p className={styles.gateSummary}>{gate.summary}</p> : null}
-            {detailGate?.evidence.length ? (
-              <ul className={styles.evidence}>
-                {detailGate.evidence.map((e) => (
-                  <li key={e}>
-                    <code>{e}</code>
+      <div className={styles.drawerTabs} role="tablist" aria-label="Trial views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "overview"}
+          onClick={() => setTab("overview")}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "trace"}
+          onClick={() => setTab("trace")}
+          data-testid="trial-trace-tab"
+        >
+          Trace
+        </button>
+      </div>
+
+      {tab === "trace" ? (
+        <TrialTraceSection trialId={trial.id} final={final} />
+      ) : (
+        <>
+          <section
+            className={styles.gateBox}
+            data-pass={gate ? String(gate.passed) : "pending"}
+            aria-labelledby="gate-h"
+          >
+            <h3 id="gate-h">Correctness gate</h3>
+            {gate ? (
+              <>
+                <p className={styles.gateVerdict}>
+                  {gate.passed ? "Passed" : "Failed"} <code>{gate.gate}</code>
+                </p>
+                {gate.summary ? <p className={styles.gateSummary}>{gate.summary}</p> : null}
+                {detailGate?.evidence.length ? (
+                  <ul className={styles.evidence}>
+                    {detailGate.evidence.map((e) => (
+                      <li key={e}>
+                        <code>{e}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            ) : (
+              <p className={styles.gateSummary}>
+                Not gated yet. No number from this trial counts until its gate passes.
+              </p>
+            )}
+          </section>
+
+          <dl className={styles.stats}>
+            <Stat label="attempt">
+              <span className="num">{trial.attempt}</span>
+            </Stat>
+            <Stat label="elapsed">
+              <span className="num">
+                {trial.startedAt
+                  ? span((trial.endedAt ? ms(trial.endedAt) : nowMs) - ms(trial.startedAt))
+                  : "–"}
+              </span>
+            </Stat>
+            <Stat label="cost">
+              <span className="num">{usdSmall(trial.costMicroUsd)}</span>
+            </Stat>
+            <Stat label="log">
+              <span className="num">{bytes(trial.logBytes)}</span>
+            </Stat>
+            {detail?.provider ? <Stat label="provider">{detail.provider}</Stat> : null}
+            {detail?.computer_id ? (
+              <Stat label="computer">
+                <code>{detail.computer_id.slice(0, 8)}</code>
+              </Stat>
+            ) : null}
+          </dl>
+
+          {detail?.metrics && detailGate?.pass ? (
+            <section className={styles.drawerSection}>
+              <h3>Raw readings (gate passed)</h3>
+              <dl className={styles.stats}>
+                {Object.entries(detail.metrics).map(([k, v]) => (
+                  <Stat key={k} label={k}>
+                    <span className="num">{v}</span>
+                  </Stat>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+
+          <section className={styles.drawerSection} aria-labelledby="phases-h">
+            <h3 id="phases-h">Phases</h3>
+            <ol className={styles.timeline}>
+              {TRIAL_PHASES.slice(1).map((p) => {
+                const hits = phases.filter((x) => x.phaseTo === p);
+                const hit = hits[hits.length - 1];
+                const idx = phases.indexOf(hit!);
+                const nextAt = idx >= 0 && phases[idx + 1] ? ms(phases[idx + 1]!.at) : null;
+                const dur = hit ? (nextAt ?? (final ? ms(hit.at) : nowMs)) - ms(hit.at) : 0;
+                return (
+                  <li
+                    key={p}
+                    data-state={hit ? (trial.state === p && !final ? "now" : "done") : "todo"}
+                  >
+                    <span className={styles.tlName}>{p}</span>
+                    <span className="num">{hit ? clock(ms(hit.at) - start) : ""}</span>
+                    <span className="num">{hit && dur > 0 ? span(dur) : ""}</span>
+                  </li>
+                );
+              })}
+              {phases
+                .filter((x) => x.phaseTo === "failed_infra" || x.phaseTo === "failed_subject")
+                .map((x) => (
+                  <li key={x.seq} data-state="fail">
+                    <span className={styles.tlName}>{TRIAL_STATE_WORD[x.phaseTo!]}</span>
+                    <span className="num">{clock(ms(x.at) - start)}</span>
+                    <span />
                   </li>
                 ))}
-              </ul>
-            ) : null}
-          </>
-        ) : (
-          <p className={styles.gateSummary}>
-            Not gated yet. No number from this trial counts until its gate passes.
-          </p>
-        )}
-      </section>
+            </ol>
+          </section>
 
-      <dl className={styles.stats}>
-        <Stat label="attempt">
-          <span className="num">{trial.attempt}</span>
-        </Stat>
-        <Stat label="elapsed">
-          <span className="num">
-            {trial.startedAt
-              ? span((trial.endedAt ? ms(trial.endedAt) : nowMs) - ms(trial.startedAt))
-              : "–"}
-          </span>
-        </Stat>
-        <Stat label="cost">
-          <span className="num">{usdSmall(trial.costMicroUsd)}</span>
-        </Stat>
-        <Stat label="log">
-          <span className="num">{bytes(trial.logBytes)}</span>
-        </Stat>
-        {detail?.provider ? <Stat label="provider">{detail.provider}</Stat> : null}
-        {detail?.computer_id ? (
-          <Stat label="computer">
-            <code>{detail.computer_id.slice(0, 8)}</code>
-          </Stat>
-        ) : null}
-      </dl>
+          <section className={styles.drawerSection} aria-labelledby="tail-h">
+            <h3 id="tail-h">
+              Log tail {final ? null : <span className={styles.liveTag}>live</span>}
+            </h3>
+            {logErr ? <p className={styles.gateSummary}>Couldn’t read the log: {logErr}</p> : null}
+            <pre className={styles.tail} ref={tailRef}>
+              {log || "Waiting for output…"}
+            </pre>
+          </section>
 
-      {detail?.metrics && detailGate?.pass ? (
-        <section className={styles.drawerSection}>
-          <h3>Raw readings (gate passed)</h3>
-          <dl className={styles.stats}>
-            {Object.entries(detail.metrics).map(([k, v]) => (
-              <Stat key={k} label={k}>
-                <span className="num">{v}</span>
-              </Stat>
-            ))}
-          </dl>
-        </section>
-      ) : null}
-
-      <section className={styles.drawerSection} aria-labelledby="phases-h">
-        <h3 id="phases-h">Phases</h3>
-        <ol className={styles.timeline}>
-          {TRIAL_PHASES.slice(1).map((p) => {
-            const hits = phases.filter((x) => x.phaseTo === p);
-            const hit = hits[hits.length - 1];
-            const idx = phases.indexOf(hit!);
-            const nextAt = idx >= 0 && phases[idx + 1] ? ms(phases[idx + 1]!.at) : null;
-            const dur = hit ? (nextAt ?? (final ? ms(hit.at) : nowMs)) - ms(hit.at) : 0;
-            return (
-              <li
-                key={p}
-                data-state={hit ? (trial.state === p && !final ? "now" : "done") : "todo"}
-              >
-                <span className={styles.tlName}>{p}</span>
-                <span className="num">{hit ? clock(ms(hit.at) - start) : ""}</span>
-                <span className="num">{hit && dur > 0 ? span(dur) : ""}</span>
-              </li>
-            );
-          })}
-          {phases
-            .filter((x) => x.phaseTo === "failed_infra" || x.phaseTo === "failed_subject")
-            .map((x) => (
-              <li key={x.seq} data-state="fail">
-                <span className={styles.tlName}>{TRIAL_STATE_WORD[x.phaseTo!]}</span>
-                <span className="num">{clock(ms(x.at) - start)}</span>
-                <span />
-              </li>
-            ))}
-        </ol>
-      </section>
-
-      <section className={styles.drawerSection} aria-labelledby="tail-h">
-        <h3 id="tail-h">Log tail {final ? null : <span className={styles.liveTag}>live</span>}</h3>
-        {logErr ? <p className={styles.gateSummary}>Couldn’t read the log: {logErr}</p> : null}
-        <pre className={styles.tail} ref={tailRef}>
-          {log || "Waiting for output…"}
-        </pre>
-      </section>
-
-      <section className={styles.drawerSection}>
-        <h3>Events</h3>
-        <ol className={styles.miniFeed}>
-          {items.slice(-60).map((i) => (
-            <li key={i.seq}>
-              <span className="num">{clock(ms(i.at) - start)}</span> {i.text}
-            </li>
-          ))}
-        </ol>
-      </section>
+          <section className={styles.drawerSection}>
+            <h3>Events</h3>
+            <ol className={styles.miniFeed}>
+              {items.slice(-60).map((i) => (
+                <li key={i.seq}>
+                  <span className="num">{clock(ms(i.at) - start)}</span> {i.text}
+                </li>
+              ))}
+            </ol>
+          </section>
+        </>
+      )}
     </Drawer>
   );
 }

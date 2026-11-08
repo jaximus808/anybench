@@ -10,6 +10,7 @@ import { bootRuntime } from "./boot.js";
 import { loadConfig } from "./config.js";
 import { createDb } from "./db/client.js";
 import { artifactLogReader } from "./lib/trial-logs.js";
+import { artifactTraceStore } from "./lib/trial-trace/store.js";
 import type { AppEnv } from "./types.js";
 
 let appPromise: Promise<Hono<AppEnv>> | undefined;
@@ -35,6 +36,7 @@ export async function buildServerlessApp(
     db: dbh.db,
     artifacts,
     ...(trialLogs ? { trialLogs } : {}),
+    ...(artifacts ? { traces: artifactTraceStore(artifacts) } : {}),
     ...runtime,
   });
 }

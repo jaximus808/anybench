@@ -960,6 +960,34 @@ button.feedText:hover {
     opacity: 0;
   }
 }
+/* The Trace tab needs the room for its swimlanes. */
+.drawer[data-wide] {
+  width: min(1100px, 100vw);
+}
+.drawerTabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+.drawerTabs button {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px var(--space-3);
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.drawerTabs button[aria-selected="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.drawerTabs button:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
 /* Wide screens keep the whole run visible beside the drawer; narrower ones overlay it. */
 @media (min-width: 1720px) {
   .page[data-drawer="open"] .shell {

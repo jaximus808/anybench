@@ -1,0 +1,194 @@
+/* Where the time went: two stacked bars per setup on a shared scale, then a per-task table. */
+.box {
+  --k-model: var(--accent);
+  --k-model-deep: #b4520c;
+  --k-tool: #d6dbc8;
+  --k-board: #6fb7c6;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) 0 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.title {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: var(--text-lg);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.lede,
+.note {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  max-width: 80ch;
+  line-height: 1.5;
+}
+.diff {
+  font-size: var(--text-base);
+  line-height: 1.45;
+  max-width: 76ch;
+}
+.sub {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  margin-top: var(--space-3);
+}
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.name {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.n {
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+.barTrack {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.bar {
+  display: flex;
+  height: 26px;
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 2px;
+}
+.bar i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--on-accent);
+}
+.bar i[data-kind="model"] {
+  background: var(--k-model);
+}
+.bar i[data-kind="modelBoard"] {
+  color: var(--fg);
+  text-shadow:
+    0 0 3px #000,
+    0 0 6px #000;
+  background: repeating-linear-gradient(135deg, var(--k-model) 0 4px, var(--k-model-deep) 4px 8px);
+}
+.bar i[data-kind="tool"] {
+  background: var(--k-tool);
+}
+.bar i[data-kind="coord"],
+.bar i[data-kind="wait"] {
+  background: var(--k-board);
+}
+.bar i[data-kind="idle"] {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(139, 146, 130, 0.45) 0 1px,
+    transparent 1px 5px
+  );
+  color: var(--muted);
+}
+.total {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  white-space: nowrap;
+}
+.keyRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+.keyRow span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.keyRow span::before {
+  content: "";
+  width: 12px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--k-model);
+}
+.keyRow [data-kind="modelBoard"]::before {
+  background: repeating-linear-gradient(135deg, var(--k-model) 0 3px, var(--k-model-deep) 3px 6px);
+}
+.keyRow [data-kind="tool"]::before {
+  background: var(--k-tool);
+}
+.keyRow [data-kind="coord"]::before,
+.keyRow [data-kind="wait"]::before {
+  background: var(--k-board);
+}
+.keyRow [data-kind="idle"]::before {
+  background: repeating-linear-gradient(135deg, var(--muted) 0 1px, transparent 1px 4px);
+}
+.tableWrap {
+  overflow-x: auto;
+  margin-top: var(--space-3);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-2xs);
+}
+.table caption {
+  text-align: left;
+  color: var(--muted);
+  padding-bottom: var(--space-2);
+}
+.table th,
+.table td {
+  padding: 6px 8px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+.table thead th {
+  color: var(--muted);
+  font-weight: 400;
+  white-space: normal;
+  vertical-align: bottom;
+}
+.table th[scope="row"],
+.table td:nth-child(2),
+.table thead th:nth-child(-n + 2) {
+  text-align: left;
+}
+.table th[scope="row"] {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+.table tr[data-first] th,
+.table tr[data-first] td {
+  border-top: 1px solid var(--line-strong);
+}
+.table small {
+  color: var(--dim);
+}

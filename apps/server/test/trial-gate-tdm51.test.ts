@@ -3,6 +3,7 @@
 // the only writer of trials.gate, state edges collecting → gating → reviewing|done with events,
 // fail-closed verdicts recorded as failure_class "gate", idempotency, stale attempts and
 // subject snapshots refused for scoring.
+import { readFileSync } from "node:fs";
 import { newId, TrialIdSchema } from "@anybench/core";
 import { GateInfraError, runGates, SCORE_ROOT, type TrialGateRecord } from "@anybench/bench";
 import { ArtifactTransferError, createComputerRegistry } from "@anybench/envs";
@@ -273,6 +274,51 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
       kit_suspect: false,
       result: { pass: false, reason: "1/3 hidden cases fail" },
     });
+  });
+
+  it("traces the trial after scoring from its bundle; a trace failure never changes the score", async () => {
+    const bundle = new Uint8Array(
+      readFileSync(new URL("./fixtures/trial-trace/solo-todo-api.tar.gz", import.meta.url)),
+    );
+    const s = await seedTdm51(h.db, true);
+    const t = await trialTdm51(h.db, s, "gating");
+    const fake = fakeScoringTdm51({});
+    const put: { runId: string; trialId: string; actors: number }[] = [];
+    const report = await gateTrial(
+      depsTdm51(fake, {
+        traces: {
+          bundles: { bundle: async () => bundle },
+          traces: {
+            get: async () => null,
+            put: async (runId, trialId, trace) => {
+              put.push({ runId, trialId, actors: trace.actors.length });
+            },
+          },
+        },
+      }),
+      { trial_id: t.id, attempt: 1 },
+    );
+    expect(report).toMatchObject({ outcome: "scored", to: "done" });
+    expect(put).toEqual([{ runId: s.runId, trialId: t.id, actors: 1 }]);
+
+    // A broken bundle source: the trial is still scored the same way.
+    const t2 = await trialTdm51(h.db, s, "gating");
+    const report2 = await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: {
+            bundle: async () => {
+              throw new Error("store down");
+            },
+          },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t2.id, attempt: 1 },
+    );
+    expect(report2).toMatchObject({ outcome: "scored", to: "done" });
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t2.id));
+    expect(row!.state).toBe("done");
   });
 
   it("a check that broke on the outputs is the contender's counted FAIL plus trial.kit_suspect, never a re-roll", async () => {

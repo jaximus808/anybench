@@ -78,6 +78,12 @@ import {
 } from "../lib/compute.js";
 import { attemptProxySpend, trialMetrics, trialPhaseEdges } from "../orchestrator/trial-metrics.js";
 import { defineJob, type JobContext } from "./types.js";
+import {
+  artifactBundleSource,
+  artifactTraceStore,
+  buildAndStoreTrace,
+  type TraceDeps,
+} from "../lib/trial-trace/store.js";
 import { defaultLaunchBreaker } from "./trial-execute.js";
 import { OUTAGE_PAUSE_RETRY_MS } from "@anybench/bench";
 
@@ -208,6 +214,11 @@ export interface GateTrialDeps {
    * against maxInfraAttempts (the job re-enqueues the gate once the provider is back).
    */
   deferOutage?: boolean;
+  /**
+   * Trial traces: after scoring, build the trace from the bundle and store it. Best effort: a
+   * trace failure is logged and never changes the trial or its score.
+   */
+  traces?: TraceDeps | null;
 }
 
 export type GateTrialReport =
@@ -507,6 +518,25 @@ export async function gateTrial(
     { trialId: trial.id, to: t.to, gates: Object.keys(scored.gates).length, failedApplicable },
     "trial gated",
   );
+  if (deps.traces) {
+    // After the score is committed: reads the bundle, writes only the trace artifact.
+    try {
+      const trace = await buildAndStoreTrace(deps.traces, {
+        runId: trial.runId,
+        trialId: trial.id,
+        gate: scored,
+      });
+      deps.logger?.info(
+        { trialId: trial.id, actors: trace?.actors.length ?? 0, traced: trace !== null },
+        "trial traced",
+      );
+    } catch (err) {
+      deps.logger?.warn(
+        { trialId: trial.id, err: err instanceof Error ? err.message : String(err) },
+        "trial.gate: trace not built (the score stands)",
+      );
+    }
+  }
   return { outcome: "scored", to: t.to, record: scored };
 }
 
@@ -528,6 +558,8 @@ export interface TrialGateJobOptions {
   proxySpend?: (ctx: JobContext) => ProxySpendSource | null;
   /** worker-hardening: the provider-outage breaker (default: the shared Postgres one; null = none). */
   breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
+  /** Trial traces after scoring (production: the artifact store). Default: none. */
+  traces?: (ctx: JobContext) => TraceDeps | null;
 }
 
 export function createTrialGateJob(options: TrialGateJobOptions = {}) {
@@ -586,6 +618,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
             workerId: ctx.workerId,
             infraAttempt: helpers.job.attempts,
             deferOutage: pauses < GATE_MAX_OUTAGE_PAUSES,
+            traces: options.traces?.(ctx) ?? null,
           },
           payload,
         );
@@ -616,4 +649,10 @@ export const trialGateJob = createTrialGateJob({
   provider: (ctx) => computeProviderFromConfig(ctx.config),
   artifacts: () => artifactStoreFromEnv(),
   proxySpend: (ctx) => proxyDepsFromConfig(ctx.config)?.spend ?? null,
+  traces: () => {
+    const store = artifactStoreFromEnv();
+    return store
+      ? { bundles: artifactBundleSource(store), traces: artifactTraceStore(store) }
+      : null;
+  },
 });

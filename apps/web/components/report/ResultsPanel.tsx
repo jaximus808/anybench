@@ -22,6 +22,7 @@ import { RequirementCharts, TaskCharts } from "../bench/Charts";
 import { describeApiError } from "../../lib/live/useLiveRun";
 import { perTaskRows, proofBasis, resultRows, splitAnswer } from "./model";
 import styles from "./report.module.css";
+import { TimeBreakdownSection } from "../trace/TimeBreakdown";
 
 export type ResultsState =
   | { kind: "loading" }
@@ -142,13 +143,13 @@ export function ResultsView({
           </p>
         )
       ) : (
-        <ReportBody report={state.report} />
+        <ReportBody report={state.report} runId={runId} />
       )}
     </section>
   );
 }
 
-function ReportBody({ report }: { report: Report }) {
+function ReportBody({ report, runId }: { report: Report; runId: string }) {
   const { headline, proofLabel, disclosure } = splitAnswer(report.answer);
   const proof = proofBasis(report, proofLabel);
   const rows = resultRows(report);
@@ -322,6 +323,11 @@ function ReportBody({ report }: { report: Report }) {
           ) : null}
         </div>
       ) : null}
+
+      <TimeBreakdownSection
+        runId={runId}
+        names={Object.fromEntries(setups.map((c) => [c.contender_id, c.name]))}
+      />
 
       <dl className={styles.facts}>
         {disclosure ? (

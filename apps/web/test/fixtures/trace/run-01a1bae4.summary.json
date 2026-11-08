@@ -1,0 +1,265 @@
+{
+  "run_id": "01a1bae4-3254-7ab0-a68a-46d90aa060f7",
+  "setups": [
+    {
+      "contender_id": "27e77fea-3fb1-497d-8c1b-8f2306cfa7ac",
+      "setup": "claude-code-solo",
+      "missing": 0,
+      "all": {
+        "n": 18,
+        "passed": 17,
+        "duration_ms": 70915.22222222222,
+        "wall": {
+          "model_ms": 65351.666666666664,
+          "tool_ms": 3400.5555555555557,
+          "coordination_ms": 0,
+          "idle_ms": 2167.777777777778
+        },
+        "agent_ms": {
+          "model_ms": 65351.666666666664,
+          "model_board_ms": 0,
+          "tool_ms": 3400.5555555555557,
+          "board_ms": 0,
+          "wait_ms": 0
+        },
+        "sessions": 1,
+        "turns": 4.777777777777778,
+        "tool_calls": 4.166666666666667,
+        "board_calls": 0,
+        "lost_claims": 0,
+        "tokens": {
+          "n": 18,
+          "input": 11.555555555555555,
+          "output": 8273.833333333334,
+          "cache_read": 116354.72222222222,
+          "cache_write": 19349.5
+        }
+      },
+      "by_task": [
+        {
+          "workload_id": "auth-refactor",
+          "n": 6,
+          "passed": 6,
+          "duration_ms": 93655.33333333333,
+          "wall": {
+            "model_ms": 86973.33333333333,
+            "tool_ms": 4460,
+            "coordination_ms": 0,
+            "idle_ms": 2228.3333333333335
+          },
+          "agent_ms": {
+            "model_ms": 86973.33333333333,
+            "model_board_ms": 0,
+            "tool_ms": 4460,
+            "board_ms": 0,
+            "wait_ms": 0
+          },
+          "sessions": 1,
+          "turns": 6.666666666666667,
+          "tool_calls": 6.833333333333333,
+          "board_calls": 0,
+          "lost_claims": 0,
+          "tokens": {
+            "n": 6,
+            "input": 15.333333333333334,
+            "output": 11781.666666666666,
+            "cache_read": 188079.66666666666,
+            "cache_write": 26415.166666666668
+          }
+        },
+        {
+          "workload_id": "bug-hunt",
+          "n": 6,
+          "passed": 6,
+          "duration_ms": 36881.5,
+          "wall": {
+            "model_ms": 32306.666666666668,
+            "tool_ms": 2373.3333333333335,
+            "coordination_ms": 0,
+            "idle_ms": 2205
+          },
+          "agent_ms": {
+            "model_ms": 32306.666666666668,
+            "model_board_ms": 0,
+            "tool_ms": 2373.3333333333335,
+            "board_ms": 0,
+            "wait_ms": 0
+          },
+          "sessions": 1,
+          "turns": 3.5,
+          "tool_calls": 2.5,
+          "board_calls": 0,
+          "lost_claims": 0,
+          "tokens": {
+            "n": 6,
+            "input": 9,
+            "output": 3300.6666666666665,
+            "cache_read": 69215.83333333333,
+            "cache_write": 10740
+          }
+        },
+        {
+          "workload_id": "todo-api",
+          "n": 6,
+          "passed": 5,
+          "duration_ms": 82208.83333333333,
+          "wall": {
+            "model_ms": 76775,
+            "tool_ms": 3368.3333333333335,
+            "coordination_ms": 0,
+            "idle_ms": 2070
+          },
+          "agent_ms": {
+            "model_ms": 76775,
+            "model_board_ms": 0,
+            "tool_ms": 3368.3333333333335,
+            "board_ms": 0,
+            "wait_ms": 0
+          },
+          "sessions": 1,
+          "turns": 4.166666666666667,
+          "tool_calls": 3.1666666666666665,
+          "board_calls": 0,
+          "lost_claims": 0,
+          "tokens": {
+            "n": 6,
+            "input": 10.333333333333334,
+            "output": 9739.166666666666,
+            "cache_read": 91768.66666666667,
+            "cache_write": 20893.333333333332
+          }
+        }
+      ]
+    },
+    {
+      "contender_id": "af031210-9606-493d-8567-54c54bf690b2",
+      "setup": "tandem",
+      "missing": 0,
+      "all": {
+        "n": 18,
+        "passed": 16,
+        "duration_ms": 237302.88888888888,
+        "wall": {
+          "model_ms": 182506.66666666666,
+          "tool_ms": 5156.111111111111,
+          "coordination_ms": 33460.555555555555,
+          "idle_ms": 16184.444444444445
+        },
+        "agent_ms": {
+          "model_ms": 377761.6666666667,
+          "model_board_ms": 257564.11111111112,
+          "tool_ms": 18607.222222222223,
+          "board_ms": 427.77777777777777,
+          "wait_ms": 110302.77777777778
+        },
+        "sessions": 4,
+        "turns": 42.22222222222222,
+        "tool_calls": 16.166666666666668,
+        "board_calls": 30.77777777777778,
+        "lost_claims": 3.2222222222222223,
+        "tokens": {
+          "n": 14,
+          "input": 94.57142857142857,
+          "output": 36409.5,
+          "cache_read": 1981723.642857143,
+          "cache_write": 243510
+        }
+      },
+      "by_task": [
+        {
+          "workload_id": "auth-refactor",
+          "n": 6,
+          "passed": 6,
+          "duration_ms": 258628.33333333334,
+          "wall": {
+            "model_ms": 195595,
+            "tool_ms": 5098.333333333333,
+            "coordination_ms": 35870,
+            "idle_ms": 22070
+          },
+          "agent_ms": {
+            "model_ms": 390836.6666666667,
+            "model_board_ms": 264360.1666666667,
+            "tool_ms": 22536.666666666668,
+            "board_ms": 481.6666666666667,
+            "wait_ms": 110861.66666666667
+          },
+          "sessions": 4,
+          "turns": 44.333333333333336,
+          "tool_calls": 16.333333333333332,
+          "board_calls": 32,
+          "lost_claims": 3.5,
+          "tokens": {
+            "n": 4,
+            "input": 95.5,
+            "output": 37205,
+            "cache_read": 2049063.75,
+            "cache_write": 239346.25
+          }
+        },
+        {
+          "workload_id": "bug-hunt",
+          "n": 6,
+          "passed": 6,
+          "duration_ms": 208435.16666666666,
+          "wall": {
+            "model_ms": 140508.33333333334,
+            "tool_ms": 1738.3333333333333,
+            "coordination_ms": 45585,
+            "idle_ms": 20608.333333333332
+          },
+          "agent_ms": {
+            "model_ms": 295946.6666666667,
+            "model_board_ms": 212852.83333333334,
+            "tool_ms": 10093.333333333334,
+            "board_ms": 325,
+            "wait_ms": 100018.33333333333
+          },
+          "sessions": 4,
+          "turns": 34,
+          "tool_calls": 13.666666666666666,
+          "board_calls": 26.666666666666668,
+          "lost_claims": 2.1666666666666665,
+          "tokens": {
+            "n": 4,
+            "input": 78.5,
+            "output": 26322,
+            "cache_read": 1433020.25,
+            "cache_write": 207506.75
+          }
+        },
+        {
+          "workload_id": "todo-api",
+          "n": 6,
+          "passed": 4,
+          "duration_ms": 244845.16666666666,
+          "wall": {
+            "model_ms": 211416.66666666666,
+            "tool_ms": 8631.666666666666,
+            "coordination_ms": 18926.666666666668,
+            "idle_ms": 5875
+          },
+          "agent_ms": {
+            "model_ms": 446501.6666666667,
+            "model_board_ms": 295479.3333333333,
+            "tool_ms": 23191.666666666668,
+            "board_ms": 476.6666666666667,
+            "wait_ms": 120028.33333333333
+          },
+          "sessions": 4,
+          "turns": 48.333333333333336,
+          "tool_calls": 18.5,
+          "board_calls": 33.666666666666664,
+          "lost_claims": 4,
+          "tokens": {
+            "n": 6,
+            "input": 104.66666666666667,
+            "output": 42604.166666666664,
+            "cache_read": 2302632.5,
+            "cache_write": 270288
+          }
+        }
+      ]
+    }
+  ]
+}

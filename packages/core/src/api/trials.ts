@@ -8,6 +8,7 @@ import { ComputeProviderNameSchema } from "../schemas/env.js";
 import { TrialStateSchema } from "../state/trial.js";
 import { IsoDateTimeSchema, PageQuerySchema, csvListSchema, pageOf } from "./common.js";
 import { defineRoute, defineRoutes } from "./route.js";
+import { RunTraceSummarySchema, TrialTraceSchema } from "./trace.js";
 
 /** Failure taxonomy (plan.md P4). `infra` is ours: retried, never billed. */
 export const FAILURE_CLASSES = ["infra", "subject", "gate", "kit", "budget", "timeout"] as const;
@@ -96,6 +97,26 @@ export const trialRoutes = defineRoutes({
       /** True when the trial is final and next_offset is the end of the log. */
       eof: z.boolean(),
     }),
+  }),
+  trace: defineRoute({
+    id: "trials.trace",
+    method: "GET",
+    path: "/trials/:id/trace",
+    auth: ["session", "apiKey:runs:read"],
+    summary:
+      "What each agent session did and when (model turns, tool calls, board events), where the time went, and why the gate failed.",
+    params: trialParams,
+    response: z.object({ trace: TrialTraceSchema }),
+  }),
+  traceSummary: defineRoute({
+    id: "trials.traceSummary",
+    method: "GET",
+    path: "/runs/:id/trace-summary",
+    auth: ["session", "apiKey:runs:read"],
+    summary:
+      "Where the time went, per setup and task: model, tool and coordination time and tokens, averaged over the traced trials.",
+    params: z.object({ id: RunIdSchema }),
+    response: RunTraceSummarySchema,
   }),
   transcript: defineRoute({
     id: "trials.transcript",

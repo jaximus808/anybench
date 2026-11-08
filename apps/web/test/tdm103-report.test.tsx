@@ -184,7 +184,11 @@ describe("Results fetch (through the API client)", () => {
         </LiveApiContext.Provider>,
       );
     });
-    expect(calls).toEqual([`https://api.test/runs/${TDM103_RUN_ID}/report`]);
+    // The report, then (once it renders) where the time went.
+    expect(calls).toEqual([
+      `https://api.test/runs/${TDM103_RUN_ID}/report`,
+      `https://api.test/runs/${TDM103_RUN_ID}/trace-summary`,
+    ]);
     expect((await screen.findByTestId("results-headline")).textContent).toMatch(/^Result on wall/);
   });
 

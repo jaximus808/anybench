@@ -1,0 +1,22 @@
+{
+  "gates": {
+    "api-load": {
+      "result": {
+        "pass": false,
+        "reason": "no latency without correctness: 15/16 hidden tests passed, so the API was not load tested",
+        "evidence": ["api-load-hidden/hidden-tests.json", "api-load-hidden/hidden-tests.log"],
+        "applicable": true
+      },
+      "status": "verdict"
+    },
+    "hidden-tests": {
+      "result": {
+        "pass": false,
+        "reason": "15/16 hidden tests passed; first failure: persistence.test.ts › the data file stores a password hash, never the password: ENOENT: no such file or directory, open '/var/lib/anybench-score/work/hidden-tests/runhome/todo-api-hidden-yyT3sZ/data.json'",
+        "evidence": ["hidden-tests.json", "hidden-tests.log"],
+        "applicable": true
+      },
+      "status": "verdict"
+    }
+  }
+}

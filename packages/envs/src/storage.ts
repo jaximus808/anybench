@@ -153,6 +153,14 @@ export function trialArtifactKey(runId: string, trialId: string, name: string): 
   return trialPrefix(runId, trialId) + artifactNameSchema.parse(name);
 }
 
+/**
+ * Server-owned artifacts of a run (e.g. trial traces): `runs/<run>/server/<name>`. Outside every
+ * trial prefix, so no runner upload (always under `runs/<run>/trials/<trial>/`) can write one.
+ */
+export function serverArtifactKey(runId: string, name: string): string {
+  return `runs/${artifactIdSchema.parse(runId)}/server/${artifactNameSchema.parse(name)}`;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Plans (these cross the orchestrator → computer boundary, so they have schemas)
 
@@ -506,6 +514,48 @@ export class ArtifactStore {
         sha256,
         ...(res.ETag ? { etag: res.ETag } : {}),
       };
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+  }
+
+  /** Write a small server-owned artifact (serverArtifactKey); the server's own bytes, never a runner's. */
+  async putServerArtifact(
+    runId: string,
+    name: string,
+    body: Uint8Array,
+    contentType = "application/json",
+  ): Promise<StoredArtifact> {
+    const key = serverArtifactKey(runId, name);
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    const res = await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ContentLength: body.byteLength,
+        Metadata: { [SHA256_METADATA_KEY]: sha256 },
+      }),
+    );
+    return { key, sizeBytes: body.byteLength, sha256, ...(res.ETag ? { etag: res.ETag } : {}) };
+  }
+
+  /** Read a server-owned artifact, or null when it does not exist. Refuses one over `maxBytes`. */
+  async getServerArtifact(
+    runId: string,
+    name: string,
+    maxBytes = 16 * MIB,
+  ): Promise<Uint8Array | null> {
+    const key = serverArtifactKey(runId, name);
+    try {
+      const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      if ((res.ContentLength ?? 0) > maxBytes) {
+        await res.Body?.transformToWebStream().cancel();
+        throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+      }
+      return res.Body ? await res.Body.transformToByteArray() : new Uint8Array(0);
     } catch (err) {
       if (isNotFound(err)) return null;
       throw err;

@@ -3,6 +3,8 @@
 //                          first so the grid fills in creation order), optional ?state=a,b and
 //                          ?contender_id=
 //   GET /trials/:id        trials.get: one trial with machine info, metrics, gate and phases
+//   GET /trials/:id/trace  trials.trace: the trial's trace (server-built from its bundle)
+//   GET /runs/:id/trace-summary  trials.traceSummary: where the time went, per setup and task
 //
 // Tenancy: every read goes through scopedDb(actor); RLS on trials (owner + visible run) hides other
 // tenants' rows, so a foreign or unknown id is a 404. A key limited to other runs is a 403.
@@ -41,6 +43,8 @@ import {
 } from "../lib/api-route.js";
 import { requireScope } from "../lib/auth-key.js";
 import type { AppDeps } from "../types.js";
+import { gatePassed } from "../lib/trial-trace/parse.js";
+import { summarizeRunTraces, type TracedTrial } from "../lib/trial-trace/summary.js";
 
 const contract = apiRoutes.trials;
 
@@ -171,6 +175,57 @@ export function runTrialsRoutes(deps: AppDeps): Hono<ActorEnv> {
     });
   });
 
+  r.get("/:id/trace-summary", readRun, async (c) => {
+    const route = contract.traceSummary;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const runId = parsed.request.params.id;
+    const store = deps.traces;
+    if (!store) return fail(c, "unavailable", "trace storage is not configured");
+    const rows = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
+      const [visible] = await tx
+        .select({ id: runs.id })
+        .from(runs)
+        .where(eq(runs.id, runId))
+        .limit(1);
+      if (!visible) return null;
+      return tx
+        .select({
+          id: trials.id,
+          contenderId: trials.contenderId,
+          workloadId: trials.workloadId,
+          state: trials.state,
+          gate: trials.gate,
+        })
+        .from(trials)
+        .where(eq(trials.runId, runId))
+        .orderBy(asc(trials.createdAt), asc(trials.id));
+    });
+    if (!rows) return fail(c, "not_found", "run not found");
+    const traced: TracedTrial[] = [];
+    try {
+      // A few reads at a time; only trials the gate has scored can have a trace.
+      for (let i = 0; i < rows.length; i += 8) {
+        const batch = rows.slice(i, i + 8);
+        const got = await Promise.all(
+          batch.map((t) => (t.gate ? store.get(runId, t.id) : Promise.resolve(null))),
+        );
+        batch.forEach((t, j) =>
+          traced.push({
+            contenderId: t.contenderId,
+            workloadId: t.workloadId,
+            passed: gatePassed(t.gate),
+            trace: got[j] ?? null,
+          }),
+        );
+      }
+    } catch (err) {
+      c.get("log").warn({ err, runId }, "trace summary read failed");
+      return fail(c, "unavailable", "trace storage is unavailable; retry");
+    }
+    return send(c, route, summarizeRunTraces(runId, traced));
+  });
+
   return r;
 }
 
@@ -214,6 +269,34 @@ export function trialsRoutes(deps: AppDeps): Hono<ActorEnv> {
     if (!runAllowed(c.get("actor"), found.row.runId))
       return fail(c, "forbidden", "API key is not valid for this run");
     return send(c, route, { trial: toTrialDetail(found.row, found.phases) });
+  });
+
+  r.get("/:id/trace", read, async (c) => {
+    const route = contract.trace;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const id = parsed.request.params.id;
+    // Under RLS: a foreign or unknown trial is a 404.
+    const [row] = await scopedDb(c.get("actor"), deps.db).transaction((tx) =>
+      tx
+        .select({ id: trials.id, runId: trials.runId })
+        .from(trials)
+        .where(eq(trials.id, id))
+        .limit(1),
+    );
+    if (!row) return fail(c, "not_found", "trial not found");
+    if (!runAllowed(c.get("actor"), row.runId))
+      return fail(c, "forbidden", "API key is not valid for this run");
+    if (!deps.traces) return fail(c, "unavailable", "trace storage is not configured");
+    let trace;
+    try {
+      trace = await deps.traces.get(row.runId, row.id);
+    } catch (err) {
+      c.get("log").warn({ err, trialId: row.id }, "trace read failed");
+      return fail(c, "unavailable", "trace storage is unavailable; retry");
+    }
+    if (!trace) return fail(c, "not_found", "no trace yet: it is built when the trial is scored");
+    return send(c, route, { trace });
   });
 
   return r;

@@ -49,7 +49,12 @@ export interface RunsAppTdm67 {
 /** `Authorization: Bearer <user id>` authenticates. `billingGate` omitted = the default stub. */
 export function runsAppTdm67(
   url: string,
-  options: { env?: Record<string, string>; billingGate?: BillingGate } = {},
+  options: {
+    env?: Record<string, string>;
+    billingGate?: BillingGate;
+    /** Extra deps (e.g. a fake trace store). */
+    deps?: Partial<AppDeps>;
+  } = {},
 ): RunsAppTdm67 {
   const config = loadConfig({
     DATABASE_URL: url,
@@ -75,6 +80,7 @@ export function runsAppTdm67(
       return { kind: "user", userId: m[1]! };
     },
     jobs,
+    ...options.deps,
   };
   if (options.billingGate) {
     const inner = options.billingGate;
