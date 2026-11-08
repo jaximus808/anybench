@@ -4,7 +4,9 @@
 //   research    pass-through: no new baselines (the curated kit names its own), with an event.
 //   designKit   github.com/jaximus808/tandem (any case, with or without .git) → the curated kit
 //               `kits/tandem-vs-claude-code` from this repo's kits/ directory, validated by
-//               packages/kit loadKit. Any other repo → needs_human with CURATED_KIT_UNAVAILABLE.
+//               packages/kit loadKit, cut to the SMOKE profile (todo-api, 1 repeat, no warm-up,
+//               TANDEM_WORKERS 3: 3 trials) unless the question asks for a "full benchmark".
+//               Any other repo → needs_human with CURATED_KIT_UNAVAILABLE.
 //               TODO([6.6] TDM-60 kit designer): design kits for any repo on Naïve.
 //   analyze     not built ([6.8]).
 //
@@ -13,6 +15,8 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { expandTrials, expandTrialsInputFromKit } from "@anybench/bench";
+import { formatSchemaIssues, safeParseKitSpec, type KitSpec } from "@anybench/core";
 import { KitLoadError, loadKit, type LoadedKit } from "@anybench/kit";
 import {
   stageHold,
@@ -29,6 +33,46 @@ export const CURATED_KIT_UNAVAILABLE =
 
 const TANDEM_REPO =
   /^(?:https?:\/\/)?(?:www\.)?(?:github\.com\/)?jaximus808\/tandem(?:\.git)?\/?$/i;
+
+/** The Tandem kit's smoke workload. */
+export const SMOKE_WORKLOAD = "todo-api";
+
+/** The full Tandem kit only when the question asks for a "full benchmark" (any case). */
+export function wantsFullBenchmark(question: string): boolean {
+  return /full\s+benchmark/i.test(question);
+}
+
+/** Trials the scheduler will plan for a kit (warm-ups included). */
+export function trialCount(spec: KitSpec): number {
+  return expandTrials(expandTrialsInputFromKit("count", spec)).length;
+}
+
+/**
+ * The smoke profile of the Tandem kit: only `todo-api`, 1 repeat, no warm-up, TANDEM_WORKERS 3,
+ * so A (solo), B (subagents) and C (Tandem ×3) run once each: 3 trials. Re-validated after the cut.
+ */
+export function smokeProfile(
+  spec: KitSpec,
+): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
+  const cut = {
+    ...spec,
+    workloads: spec.workloads.filter((w) => w.id === SMOKE_WORKLOAD),
+    repeats: 1,
+    schedule: { ...spec.schedule, warmups: 0 },
+    vary: { ...spec.vary, TANDEM_WORKERS: [3] },
+  };
+  if (cut.workloads.length === 0) {
+    return { ok: false, reason: `the curated Tandem kit has no ${SMOKE_WORKLOAD} workload` };
+  }
+  const r = safeParseKitSpec(cut);
+  if (!r.success) {
+    return {
+      ok: false,
+      reason: `the smoke profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
+    };
+  }
+  return { ok: true, spec: r.data };
+}
 
 /** Is this run's source the Tandem repo? */
 export function isTandemRepo(source: StageContext["run"]["intake"]["source"]): boolean {
@@ -137,7 +181,18 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       }
       const kit = loaded.kit;
       await say(ctx, "kit_designer", `using the curated Tandem kit (${CURATED_TANDEM_KIT})`);
-      return stageOk({ spec: kit.spec });
+      if (wantsFullBenchmark(ctx.run.question)) {
+        await say(ctx, "kit_designer", `full profile: ${trialCount(kit.spec)} trials`);
+        return stageOk({ spec: kit.spec });
+      }
+      const smoke = smokeProfile(kit.spec);
+      if (!smoke.ok) return stageHold(smoke.reason);
+      await say(
+        ctx,
+        "kit_designer",
+        `smoke profile: ${trialCount(smoke.spec)} trials (${SMOKE_WORKLOAD}, 1 repeat, no warm-up, TANDEM_WORKERS=3); ask for a "full benchmark" for the whole kit`,
+      );
+      return stageOk({ spec: smoke.spec });
     },
 
     analyze: unbuiltAgentStages.analyze,

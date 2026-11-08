@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadKit, validateKitDir } from "@anybench/kit";
+import { safeParseKitSpec } from "@anybench/core";
 import { FakeNaive } from "@anybench/naive/fake";
 import { FakeProvider } from "@anybench/providers";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -39,6 +40,9 @@ import {
   curatedKitStages,
   defaultKitsDir,
   isTandemRepo,
+  smokeProfile,
+  trialCount,
+  wantsFullBenchmark,
 } from "../src/orchestrator/curated.js";
 import { naiveSessionCanceller } from "../src/orchestrator/defaults.js";
 import { stageHold } from "../src/orchestrator/ports.js";
@@ -568,11 +572,13 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       .from(events)
       .where(and(eq(events.runId, id), eq(events.type, "agent.message")))
       .orderBy(asc(events.seq));
-    expect(said.map((e) => (e.payload as { text: string }).text)).toEqual([
+    const texts = said.map((e) => (e.payload as { text: string }).text);
+    expect(texts.slice(0, 3)).toEqual([
       "using the curated Tandem kit",
       "using the curated Tandem kit: its contenders are the baselines",
       `using the curated Tandem kit (${CURATED_TANDEM_KIT})`,
     ]);
+    expect(texts[3]).toMatch(/^smoke profile: \d+ trials/);
     expect((await stateEdges(id)).map((e) => e[1])).toEqual([
       "intake",
       "understand",
@@ -609,6 +615,64 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     } else {
       expect((run.stageOutputs as { held_from?: string }).held_from).toBe("understand");
       expect(run.pausedReason).toMatch(/^the curated Tandem kit does not validate/);
+    }
+  }, 60_000);
+
+  it("CuratedKitStage: the Tandem kit defaults to the 3-trial smoke profile; 'full benchmark' gets all of it", async () => {
+    const full = await loadKit(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
+    const smoke = smokeProfile(full.spec);
+    expect(smoke.ok).toBe(true);
+    if (!smoke.ok) return;
+    expect(smoke.spec.workloads.map((w) => w.id)).toEqual(["todo-api"]);
+    expect(smoke.spec).toMatchObject({ repeats: 1, schedule: { warmups: 0 } });
+    expect(smoke.spec.vary.TANDEM_WORKERS).toEqual([3]);
+    expect(trialCount(smoke.spec)).toBe(3);
+    expect(smoke.spec.contenders.map((c) => c.id).sort()).toEqual(
+      ["claude-code-solo", "claude-code-subagents", "tandem"].sort(),
+    );
+    expect(trialCount(full.spec)).toBeGreaterThan(3);
+    expect(wantsFullBenchmark("Run the FULL Benchmark please")).toBe(true);
+    expect(wantsFullBenchmark("Does Tandem beat Claude Code?")).toBe(false);
+
+    for (const [question, expected] of [
+      ["Does Tandem beat Claude Code?", "smoke profile: 3 trials"],
+      [
+        "full benchmark: does Tandem beat Claude Code?",
+        `full profile: ${trialCount(full.spec)} trials`,
+      ],
+    ] as const) {
+      const r = rig();
+      const { w } = r.worker();
+      const pipeline = new FakePipeline({ digest: digestTdm54() });
+      pipeline.buildEnv = async () => stageHold("env build stops this test");
+      w.handlers.set(
+        "run.advance",
+        createRunAdvanceJob({
+          jobs: () => r.queue,
+          agents: () => curatedKitStages(),
+          pipeline: () => pipeline,
+          timing: { leaseRefreshMs: 50 },
+        }) as never,
+      );
+      const id = await createRun(r.queue, {
+        question,
+        source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+      });
+      await drainTdm54(w, r.queue);
+      const run = await runRow(id);
+      const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
+      const said = await h.db
+        .select({ payload: events.payload })
+        .from(events)
+        .where(and(eq(events.runId, id), eq(events.type, "agent.message")))
+        .orderBy(asc(events.seq));
+      expect(
+        said.map((e) => (e.payload as { text: string }).text).some((t) => t.startsWith(expected)),
+      ).toBe(true);
+      const stored = safeParseKitSpec(kit!.spec);
+      expect(stored.success && trialCount(stored.data)).toBe(
+        expected.startsWith("smoke") ? 3 : trialCount(full.spec),
+      );
     }
   }, 60_000);
 
