@@ -123,25 +123,55 @@ export async function designMinedAgentKit(
       dropped,
       costMicroUsd: cost,
     };
-  try {
-    await materializeAgentKit({
-      repoDir: input.repoDir,
-      dir: input.dir,
-      subject: input.subject,
-      tasks: kept,
-      template: input.template,
-      provenance: { run_id: ctx.run.id, dropped },
-    });
-  } catch (err) {
-    if (err instanceof MaterializeError || err instanceof MineLeakError)
-      return { ok: false, reason: err.message, dropped, costMicroUsd: cost };
-    throw err;
+  // Materialize + validate. An instruction the no-leak lint flags (it names a hidden test or
+  // quotes its expected value) drops that task, and the kit is written again without it.
+  let v: Awaited<ReturnType<typeof validateGeneratedKit>> | null = null;
+  for (let round = 0; round < 3; round++) {
+    if (kept.length === 0)
+      return {
+        ok: false,
+        reason: "no mined task survived the no-leak lint",
+        dropped,
+        costMicroUsd: cost,
+      };
+    try {
+      await materializeAgentKit({
+        repoDir: input.repoDir,
+        dir: input.dir,
+        subject: input.subject,
+        tasks: kept,
+        template: input.template,
+        provenance: { run_id: ctx.run.id, dropped },
+      });
+    } catch (err) {
+      if (err instanceof MaterializeError || err instanceof MineLeakError)
+        return { ok: false, reason: err.message, dropped, costMicroUsd: cost };
+      throw err;
+    }
+    v = await validateGeneratedKit(input.dir);
+    if (v.ok && v.kit) break;
+    const leaking = new Map<string, string>();
+    for (const issue of v.issues) {
+      const m = /^workloads\/(mined-[a-f0-9]{10})\/instruction\.md: (.*)$/.exec(issue);
+      if (m) leaking.set(m[1]!, m[2]!);
+    }
+    // Only instruction leaks are dropped and retried; any other issue is the kit's, not a task's.
+    if (
+      leaking.size === 0 ||
+      v.issues.some((i) => !/^workloads\/mined-[a-f0-9]{10}\/instruction\.md: /.test(i))
+    )
+      break;
+    for (const [id, why] of leaking) {
+      const at = kept.findIndex((k) => k.task.id === id);
+      if (at < 0) continue;
+      dropped.push({ id, why: `the issue ${why}` });
+      kept.splice(at, 1);
+    }
   }
-  const v = await validateGeneratedKit(input.dir);
-  if (!v.ok || !v.kit)
+  if (!v || !v.ok || !v.kit)
     return {
       ok: false,
-      reason: `the generated agent kit does not validate: ${v.issues.slice(0, 6).join("; ")}`,
+      reason: `the generated agent kit does not validate: ${(v?.issues ?? []).slice(0, 6).join("; ")}`,
       dropped,
       costMicroUsd: cost,
     };
