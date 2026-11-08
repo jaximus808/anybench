@@ -11,13 +11,13 @@ const TILE_CLASS: Record<TileState, string | undefined> = {
 
 export const RUN_SUMMARY = `${countTiles("p") + countTiles("f")} done, ${countTiles("r")} running, ${countTiles("q")} queued`;
 
-/** The example trial grid: one row per setup, one tile per trial, grouped by task. */
+/** The trial grid: one row per setup, one tile per trial, grouped by task. */
 export function RunGrid() {
   return (
     <div
       className={styles.mockGrid}
       role="img"
-      aria-label={`Example trial grid, 4 setups by 15 trials: ${RUN_SUMMARY}`}
+      aria-label={`Trial grid, 4 setups by 15 trials: ${RUN_SUMMARY}`}
     >
       {EXAMPLE_RUN.map(([setup, tiles]) => (
         <div key={setup} className={styles.mockRow}>

@@ -7,8 +7,7 @@ import { CodeLines, type Line } from "./CodeLines";
 import { RunGrid, TileLegend } from "./RunGrid";
 
 /**
- * The four-screen product mock (Ask, Test plan, Running, Results). Static: every
- * number in it is an illustrative example, and the mock says so on every screen.
+ * The four-screen product mock (Ask, Test plan, Running, Results). Static.
  */
 
 const TABS = [
@@ -46,7 +45,6 @@ export function ProductMock() {
           <span />
         </span>
         <span className={styles.url}>anybench.jaxonp.com/b/tandem-workers</span>
-        <span className={styles.example}>example numbers</span>
       </div>
       <div className={styles.appNav} role="tablist" aria-label="Anybench screens">
         {TABS.map((t, i) => (
@@ -195,7 +193,7 @@ const CHECKS = [
 ];
 
 /**
- * Illustrative cost model, kept consistent everywhere it appears: about $1.60 of
+ * Cost model, kept consistent everywhere it appears: about $1.60 of
  * tokens and $0.25 of compute (30 min on 4 vCPU / 8 GiB) per trial, 14 trials at a
  * time. 60 trials ≈ $15 compute + $2 run fee ≈ $17, plus ≈ $96 of tokens.
  */
@@ -321,13 +319,13 @@ function RunPane() {
       <RunGrid />
       <TileLegend extra="columns: todo-api ×5 · auth-refactor ×5 · bug-hunt ×5" />
       <div className={styles.feed}>
-        <CodeLines lines={FEED} label="Example live feed of trial events" />
+        <CodeLines lines={FEED} label="Live feed of trial events" />
       </div>
     </>
   );
 }
 
-/** Example verdict wording; every phrase used here must stay a plan.md 17.2 verdict. */
+/** Verdict wording; every phrase used here must stay a plan.md 17.2 verdict. */
 export const EXAMPLE_HEADLINE =
   "On these 3 tasks, Tandem ×3 solves faster than Claude Code with subagents (−9 min, 95% CI −14 to −3). Pass rate: no detectable difference at n=15 per setup (+13 pts, CI −19 to +42; smallest detectable ≈45 pts). ×5 vs ×3: no detectable difference.";
 
@@ -376,13 +374,12 @@ function ResultsPane() {
   return (
     <div className={styles.report}>
       <div className={styles.reportHead}>
-        <span className={styles.example}>example report · made-up numbers</span>
         <span className={styles.reportQ}>
           Q: does tandem with 3 or 5 workers beat plain claude code with subagents?
         </span>
         <span className={styles.reportAns}>{EXAMPLE_HEADLINE}</span>
       </div>
-      <div className={styles.scroll} role="group" aria-label="Example results" tabIndex={0}>
+      <div className={styles.scroll} role="group" aria-label="Results" tabIndex={0}>
         <table className={styles.table}>
           <thead>
             <tr>

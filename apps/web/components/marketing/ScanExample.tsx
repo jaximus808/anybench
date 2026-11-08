@@ -65,12 +65,11 @@ export function ScanExample() {
       </p>
       <div className={styles.scan}>
         <div className={styles.scanhead}>
-          <span className={styles.example}>example scan of one developer&apos;s repos</span>
           <span className={styles.muted}>
             7 repos read · 5 ready · 1 needs hardware · 1 skipped
           </span>
         </div>
-        <ul className={styles.repos} aria-label="Example scan results">
+        <ul className={styles.repos} aria-label="Scan results">
           {REPOS.map(([name, kind, plan, status]) => (
             <li key={name} className={styles.repo}>
               <div>

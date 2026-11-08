@@ -13,7 +13,7 @@ import { WhyDifferent } from "./WhyDifferent";
 
 /**
  * The marketing landing page at `/` (TDM-99, redesigned). Always dark (.instrument), like the
- * run page it shows. Static: the hero figure is a labelled example, and the trial-field canvas
+ * run page it shows. Static: the hero figure is a still, and the trial-field canvas
  * behind it is decorative. No network calls.
  */
 export function LandingPage() {

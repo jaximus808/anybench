@@ -100,7 +100,7 @@
 .powered a:hover {
   color: var(--fg);
 }
-/* ---------- example run (hero figure) ---------- */
+/* ---------- run (hero figure) ---------- */
 .inst {
   margin: 0;
   min-width: 0;
@@ -123,15 +123,6 @@
 .instTitle {
   color: var(--fg);
   font-weight: 600;
-}
-.exTag {
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: var(--text-2xs);
-  padding: 2px 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
 }
 .instStages {
   display: flex;

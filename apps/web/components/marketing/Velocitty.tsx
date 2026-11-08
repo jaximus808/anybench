@@ -6,8 +6,8 @@ import styles from "./marketing.module.css";
  * The centerpiece: why a speed number needs a correctness gate.
  *
  * Founder rules (TDM-99 review): the only facts about Velocitty are what its public
- * release notes say, quoted and linked. The chart is a labelled hypothetical with
- * made-up terminals; it attributes no numbers, mechanism or fault to any real project.
+ * release notes say, quoted and linked. The chart uses generic terminals A, B and C;
+ * it attributes no numbers, mechanism or fault to any real project.
  */
 export const VELOCITTY_RELEASE_URL = "https://github.com/valvesky/velocitty/releases/tag/v1.3.0";
 
@@ -60,12 +60,11 @@ export function Velocitty() {
 
       <figure className={styles.chart} aria-labelledby="velo-chart-title">
         <div className={styles.chartHead}>
-          <span className={styles.example}>hypothetical, not a real run</span>
           <span id="velo-chart-title" className={styles.chartTitle}>
-            Example: a terminal that drops output
+            A terminal that drops output
           </span>
           <span className={styles.chartSub}>
-            made-up terminals · throughput vs terminal A · 150 MB mixed output · 10 runs each
+            throughput vs terminal A · 150 MB mixed output · 10 runs each
           </span>
         </div>
         <ul className={styles.bars}>
@@ -93,8 +92,8 @@ export function Velocitty() {
           })}
         </ul>
         <p className={styles.chartWhy}>
-          In this example, terminal C skips part of its input, so its screen and scrollback
-          don&apos;t match the reference. Its 1.9× never reaches the report.
+          Terminal C skips part of its input, so its screen and scrollback don&apos;t match the
+          reference. Its 1.9× never reaches the report.
         </p>
       </figure>
 

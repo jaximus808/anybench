@@ -48,7 +48,6 @@ export function Pricing() {
         </dl>
       </div>
       <div className={styles.priceEstimate}>
-        <span className={styles.example}>estimate</span>
         <p>
           A 60-trial Tandem vs Claude Code benchmark like the one above is about $17, plus your
           tokens. A typical CLI or API benchmark is $2–4.

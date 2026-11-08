@@ -1,7 +1,7 @@
 import { CodeLines, type Line } from "./CodeLines";
 import styles from "./marketing.module.css";
 
-/** Example /anybench session, adapted from the product page's "What you'd see". */
+/** An /anybench session, adapted from the product page's "What you'd see". */
 const SESSION: Line[] = [
   [[">", "a"], [" /anybench does tandem with 3 or 5 workers beat plain"]],
   [["  claude code with subagents?"]],
@@ -66,7 +66,7 @@ export function ClaudeCodeSession() {
             ))}
           </ul>
         </div>
-        <figure className={styles.term} aria-label="Example /anybench session in Claude Code">
+        <figure className={styles.term} aria-label="/anybench session in Claude Code">
           <figcaption className={styles.termBar}>
             <span className={styles.termTitle}>
               <span className={styles.dots} aria-hidden="true">
@@ -76,9 +76,8 @@ export function ClaudeCodeSession() {
               </span>
               claude · ~/code/agentcanvas
             </span>
-            <span className={styles.example}>example output</span>
           </figcaption>
-          <CodeLines lines={SESSION} label="Example /anybench session transcript" />
+          <CodeLines lines={SESSION} label="/anybench session transcript" />
         </figure>
       </div>
     </section>

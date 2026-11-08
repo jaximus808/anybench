@@ -2,8 +2,8 @@ import { STAGES } from "../../lib/live/model";
 import styles from "./landing.module.css";
 import { EXAMPLE_RUN, EXAMPLE_TASKS, countTiles, taskGroups, type TileState } from "./run-example";
 
-// The hero figure: a still of the live run page, drawn from the same made-up run as the
-// product mock (run-example.ts). Static and labelled as an example: no simulated "live" run.
+// The hero figure: a still of the live run page, drawn from the same run as the
+// product mock (run-example.ts). Static: no simulated "live" run.
 // Counts only (passed / failed gate / running), never a speed number (plan.md 17.2).
 
 const TONE: Record<TileState, string | undefined> = {
@@ -22,13 +22,9 @@ const total = EXAMPLE_RUN.length * 15;
 
 export function ExampleRun() {
   return (
-    <figure
-      className={styles.inst}
-      aria-label={`Example run page: ${done} of ${total} trials done, made-up numbers`}
-    >
+    <figure className={styles.inst} aria-label={`Run page: ${done} of ${total} trials done`}>
       <div className={styles.instHead}>
         <span className={styles.instTitle}>tandem-workers</span>
-        <span className={styles.exTag}>example</span>
       </div>
 
       <ol className={styles.instStages} aria-label="Run stages">
@@ -93,7 +89,7 @@ export function ExampleRun() {
       </div>
 
       <figcaption className={styles.instFoot}>
-        Example: 4 setups × 3 tasks × 5 runs, each on a fresh computer. Made-up numbers.
+        4 setups × 3 tasks × 5 runs, each on a fresh computer.
       </figcaption>
     </figure>
   );

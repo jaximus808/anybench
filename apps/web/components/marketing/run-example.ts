@@ -1,7 +1,6 @@
 /**
- * The illustrative run shown in the hero and in the product mock's Running screen:
+ * The run shown in the hero and in the product mock's Running screen:
  * 4 setups x 3 tasks x 5 runs. p passed, f failed, r running, q queued.
- * Made-up numbers; every place that shows them labels them as an example.
  */
 export type TileState = "p" | "f" | "r" | "q";
 

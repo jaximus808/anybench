@@ -94,31 +94,6 @@
   white-space: nowrap;
   border: 0;
 }
-/* "This is not real data" marker. Used on every illustrative number. */
-.example {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1;
-  padding: 5px 8px;
-  border-radius: 2px;
-  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
-  background: transparent;
-  color: var(--accent-ink);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 10.5px;
-  align-self: flex-start;
-  white-space: nowrap;
-}
-.example::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  background: currentColor;
-}
 
 /* ---------- buttons and inputs ---------- */
 .btn {
@@ -1186,10 +1161,6 @@
   white-space: pre;
   overflow-x: auto;
   font-family: inherit;
-}
-.term .example {
-  background: #f0b35722;
-  color: #f0b357;
 }
 .cd {
   color: var(--code-dim);

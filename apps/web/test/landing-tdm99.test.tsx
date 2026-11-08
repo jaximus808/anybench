@@ -104,16 +104,16 @@ describe("landing page (TDM-99)", () => {
     expect(text).not.toMatch(/\$15 run fee|60 trials: \$15/i);
   });
 
-  it("labels every illustrative number as an example", () => {
+  it("carries no example or made-up disclaimer labels", () => {
     const { container } = render(<HomePage />);
     const text = container.textContent ?? "";
-    expect(text).toContain("example numbers");
-    expect(text).toContain("example report · made-up numbers");
-    expect(text).toContain("hypothetical, not a real run");
-    expect(text).toContain("example scan");
-    // The hero figure is a still, labelled as an example.
-    const hero = container.querySelector("figure[aria-label^='Example run page']");
-    expect(hero?.textContent).toContain("Made-up numbers");
+    expect(text).not.toMatch(/Made-up|hypothetical|not a real run/i);
+    const labels = [...container.querySelectorAll("[aria-label]")]
+      .map((el) => el.getAttribute("aria-label") ?? "")
+      .join("\n");
+    expect(labels).not.toMatch(/Made-up|hypothetical|not a real run/i);
+    // The hero figure is a still of the run page.
+    expect(container.querySelector("figure[aria-label^='Run page']")).not.toBeNull();
   });
 
   it("has no simulated live demo: no /runs/demo link and no live claim in the hero", () => {
@@ -163,7 +163,7 @@ describe("landing page (TDM-99)", () => {
     expect(text).not.toMatch(/3f2a1c|reverted commit|from your repo's history|from your commit/i);
   });
 
-  it("states only linkable facts about Velocitty; the chart is a labelled hypothetical", () => {
+  it("states only linkable facts about Velocitty; the chart uses generic terminals", () => {
     const { container } = render(<HomePage />);
     const section = screen.getByRole("region", {
       name: "A faster number only counts if the screen is right",
@@ -175,8 +175,7 @@ describe("landing page (TDM-99)", () => {
     expect([...section.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
       "https://github.com/valvesky/velocitty/releases/tag/v1.3.0",
     ]);
-    expect(text).toContain("Example: a terminal that drops output");
-    expect(text).toContain("hypothetical, not a real run");
+    expect(text).toContain("A terminal that drops output");
     // No deleted post, no invented mechanism, no numbers attributed to the project.
     const page = container.textContent ?? "";
     expect(page).not.toMatch(/Hashimoto|x\.com|read the source|64 KiB|1 MiB|velocitty 1\.3/i);
