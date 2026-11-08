@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # claude-code: `npm install -g @anthropic-ai/claude-code@<pin>` into its own root-owned prefix.
 # The package's postinstall puts the platform's native binary (an optional dependency, checked
-# against the registry's sha512 integrity by npm) at bin/claude. The version is exact (rule: no floating tags).
+# against the registry's sha512 integrity by npm) at bin/claude. The version is exact (rule: no
+# floating tags): 2.1.319 is the build TDM-16 verified end to end against Naïve's Anthropic proxy.
 set -euo pipefail
 . "$RECIPE_LIB"
 

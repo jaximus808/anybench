@@ -58,6 +58,19 @@ describe("agent recipe catalog", () => {
     expect(m.env.CLAUDE_CODE_VERSION).toBe(m.version);
     expect(m.env.ANYBENCH_CLAUDE_CODE_HOME).toBe(`/opt/anybench/claude-code-${m.version}`);
     expect(m.env.DISABLE_AUTOUPDATER).toBe("1");
+    // the non-secret Naïve proxy switches from TDM-16 (verified live on 2.1.319)
+    expect(m.env).toMatchObject({
+      ANTHROPIC_BASE_URL: "https://api.vetta.sh/v1/proxy/anthropic",
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+      MAX_THINKING_TOKENS: "0",
+      CLAUDE_CODE_MODEL_CAPABILITIES:
+        "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    });
+    // no secret is ever part of a recipe
+    expect(
+      Object.keys(m.env).filter((k) => /TOKEN|KEY|SECRET/.test(k) && k !== "MAX_THINKING_TOKENS"),
+    ).toEqual([]);
     expect(m.deps).toEqual(["node22", "eval-user"]);
     expect(install).toContain('"@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"');
   });

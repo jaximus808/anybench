@@ -6,7 +6,7 @@ same generic runner (`packages/envs/src/recipe.ts`). This was checked on docker-
 | recipe | version | what it installs | deps |
 |---|---|---|---|
 | `eval-user` | 1.0.0 | the non-root user `eval` (home `/home/eval`, bash, its own group, **no sudo**) that trials run agents as | none |
-| `claude-code` | 2.1.310 | `@anthropic-ai/claude-code@2.1.310` in `/opt/anybench/claude-code-2.1.310`, linked as `/usr/local/bin/claude`, `DISABLE_AUTOUPDATER=1` | node22, eval-user |
+| `claude-code` | 2.1.319 | `@anthropic-ai/claude-code@2.1.319` in `/opt/anybench/claude-code-2.1.319`, linked as `/usr/local/bin/claude`, configured for Naïve's Anthropic proxy (below) | node22, eval-user |
 | `tandem` | 0.2.0-mcp3.2.0 | the Tandem server binary v0.2.0 as `/usr/local/bin/tandem`, plus `@jaximus/tandem-mcp@3.2.0` as `/usr/local/bin/tandem-mcp`, with the npx cache warmed for the exec user and for `eval`. Exports `TANDEM_AUTOSTART=0` and `TANDEM_BIN` | node22, eval-user, claude-code |
 | `playwright` | 1.64.1-chromium | `playwright@1.64.1`, plus `playwright install --with-deps --only-shell chromium` into `PLAYWRIGHT_BROWSERS_PATH=/opt/anybench/ms-playwright` | node22, eval-user |
 
@@ -15,11 +15,13 @@ same generic runner (`packages/envs/src/recipe.ts`). This was checked on docker-
 
 ## Pins
 
-- **Claude Code 2.1.310** was published 2026-10-23, the newest release at least two weeks old, which
-  is the same rule `recipes.md` used. The npm package is a thin wrapper. Its postinstall copies the
+- **Claude Code 2.1.319** was published 2026-11-06. It is the build TDM-16
+  (`claude-code-naive-proxy.md`, on the TDM-16 branch) verified end to end against Naïve's Anthropic
+  proxy. The switch that proxy needs, `CLAUDE_CODE_MODEL_CAPABILITIES`, was found in that binary, so
+  this pin takes priority over the two-weeks-old rule. (The first live run below used 2.1.310.) The npm package is a thin wrapper. Its postinstall copies the
   platform's native binary (`@anthropic-ai/claude-code-linux-{x64,arm64}`, an optional dependency at
   the same version) to `bin/claude`. npm checks both tarballs against the registry's sha512
-  integrity. `claude --version` prints `2.1.310 (Claude Code)`.
+  integrity. `claude --version` prints `2.1.319 (Claude Code)`.
 - **Tandem server v0.2.0** was published 2026-10-28. It is 10 days old, but it is the release
   `tandem-mcp` 3.2.0's CHANGELOG pairs with ("Pairs with Tandem server v0.2.0"), and it is the subject
   of the benchmark. The sha256 comes from the release's `SHA256SUMS`, which matches GitHub's asset digest:
@@ -35,6 +37,28 @@ same generic runner (`packages/envs/src/recipe.ts`). This was checked on docker-
 Bump a pin by editing recipe.json: `version`, the `*_VERSION` env and the `/opt/anybench/<name>-<ver>`
 dirs, which the unit test checks against each other. No script contains `latest`, and the unit test
 fails if one ever does.
+
+## Claude Code configured for the Naïve proxy
+
+The recipe exports TDM-16's non-secret switches. Each one was verified live on 2.1.319, and
+dropping one makes the proxy's first call fail with a 400:
+
+```
+ANTHROPIC_BASE_URL=https://api.vetta.sh/v1/proxy/anthropic
+CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1      # else 400 unknown body field: context_management
+MAX_THINKING_TOKENS=0                          # else 400 thinking.type: expected "disabled"
+CLAUDE_CODE_MODEL_CAPABILITIES=-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  DISABLE_TELEMETRY=1  DISABLE_ERROR_REPORTING=1  DISABLE_AUTOUPDATER=1
+```
+
+The image holds **no secret**. Each trial gets `ANTHROPIC_AUTH_TOKEN`, a per-trial `proxy:write` key,
+together with `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` and
+`ANTHROPIC_SMALL_FAST_MODEL` (Naïve ids such as `anthropic/claude-sonnet-4.6`). These come from the
+0600 env file that TDM-16's `provisionClaudeCodeProxyEnv` writes. TDM-16 is not on main yet. The
+health check asserts the switches and greps the pinned binary for `CLAUDE_CODE_MODEL_CAPABILITIES`,
+so a version bump that drops the switch fails the build. It makes no model call, because that needs
+the trial token. A BYOK contender overrides `ANTHROPIC_BASE_URL` (and sets `ANTHROPIC_API_KEY`) in its
+own trial env.
 
 ## What the Tandem binary does
 
@@ -59,7 +83,30 @@ $ PORT=27891 TANDEM_DATA_DIR=/tmp/td tandem & ; curl http://127.0.0.1:27891/heal
   `TANDEM_AUTOSTART=0` stops the gateway from starting a server on its own. The harness driver and
   the approver sidecar (4.9, 5.7) start the server themselves.
 
-## Result: live on Naïve, the agent-cc build passes (2026-11-08)
+## Final live run (claude-code 2.1.319 + proxy config), 2026-11-08T03:46Z
+
+Same command as below:
+
+```
+TDM27-LIVE computer {"id":"cmp_01a1b94364ef7a01b2a57349ff9e168c","home":"/home/naive","createMs":4054}
+node22 2.9 s · python312-uv 1.9 s · git-time 12.7 s · hyperfine 0.4 s · hey 4.9 s · k6 1.0 s · eval-user 0.2 s
+claude-code installed 4.2 s, healthy 0.3 s (switches set, binary knows CLAUDE_CODE_MODEL_CAPABILITIES)
+tandem installed 11.3 s, healthy 3.0 s (tandem-mcp up --foreground as eval → /healthz 0.2.0)
+eval-user-check (sudo -n runuser -u eval -- env -i … bash -c '…'):
+  uid=1001(eval) gid=1001(eval) groups=1001(eval)
+  2.1.319 (Claude Code)
+  /usr/local/bin/tandem
+  {"ok":true,"version":"0.2.0"}
+  @jaximus/tandem-mcp 3.2.0
+TDM27-LIVE destroyed {"id":"cmp_01a1b94364ef7a01b2a57349ff9e168c","lifetimeMs":106572}
+ ✓ … builds base + claude-code + tandem and the eval user runs claude and tandem 107350ms
+```
+
+Cost from the ledger: **21,623 µ$** for that computer, one prorated part-block (about 235 s at
+92 µ$/s for 4/8). Total Naïve spend for this ticket: **105,399 µ$ (≈ $0.105)**. That is the two earlier
+4/8 builds below (one failed, one passed), this one, and the 1/1 probe. docker-local passed again on 2.1.319, 3/3 in 200 s.
+
+## Result: live on Naïve, the agent-cc build passes (2026-11-08, first pass, claude-code 2.1.310)
 
 ```
 cd packages/envs
@@ -192,6 +239,6 @@ heavy for every gate run on a shared Mac. Playwright has **not** run on Naïve y
 - The kit adapters (`kits/tandem-vs-claude-code/adapters/*/install.sh`) still run
   `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}`. On agent-cc that is
   already done. Those L1 scripts should drop the install, or the `:-latest` fallback, now that
-  `CLAUDE_CODE_VERSION=2.1.310` and `TANDEM_MCP_VERSION=3.2.0` are exported.
+  `CLAUDE_CODE_VERSION=2.1.319` and `TANDEM_MCP_VERSION=3.2.0` are exported.
 - The MCP config a trial writes should be `{"command":"npx","args":["--offline","-y","@jaximus/tandem-mcp@3.2.0"]}`
   (or `"command":"tandem-mcp"`), with `TANDEM_AUTOSTART=0` in its env.

@@ -124,7 +124,7 @@ describe.skipIf(!live)("agent-cc recipes on live Naïve", () => {
         });
         expect(check.exitCode).toBe(0);
         expect(check.stdout).toMatch(/uid=\d+\(eval\)/);
-        expect(check.stdout).toContain("2.1.310 (Claude Code)");
+        expect(check.stdout).toContain("2.1.319 (Claude Code)");
         expect(check.stdout).toContain('{"ok":true,"version":"0.2.0"}');
         expect(check.stdout).toContain("3.2.0");
       } finally {

@@ -1,12 +1,19 @@
 {
   "name": "claude-code",
-  "version": "2.1.310",
-  "description": "Claude Code CLI (@anthropic-ai/claude-code, pinned; native binary from npm) as /usr/local/bin/claude, runnable by the eval user, auto-updater off.",
+  "version": "2.1.319",
+  "description": "Claude Code CLI (@anthropic-ai/claude-code, pinned; native binary from npm) as /usr/local/bin/claude, runnable by the eval user, configured for Naïve's Anthropic proxy (the non-secret switches; the per-trial token and models come from the trial's proxy env file).",
   "deps": ["node22", "eval-user"],
   "arch": ["x64", "arm64"],
   "env": {
-    "CLAUDE_CODE_VERSION": "2.1.310",
-    "ANYBENCH_CLAUDE_CODE_HOME": "/opt/anybench/claude-code-2.1.310",
+    "CLAUDE_CODE_VERSION": "2.1.319",
+    "ANYBENCH_CLAUDE_CODE_HOME": "/opt/anybench/claude-code-2.1.319",
+    "ANTHROPIC_BASE_URL": "https://api.vetta.sh/v1/proxy/anthropic",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    "MAX_THINKING_TOKENS": "0",
+    "CLAUDE_CODE_MODEL_CAPABILITIES": "-effort,-max_effort,-xhigh_effort,-per_turn_effort,-adaptive_thinking,-context_management,-rejects_disabled_thinking",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
     "DISABLE_AUTOUPDATER": "1"
   },
   "path": [],
