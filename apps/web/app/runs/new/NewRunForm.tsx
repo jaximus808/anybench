@@ -6,6 +6,9 @@
 // it, and if the suggester fails the flow carries on by hand without saying so.
 // Submits runs.create with an Idempotency-Key and opens /runs/[id]. Creating a run is free; the
 // estimate shows on the run page and Go is where the billing gate applies.
+// Nothing waits forever (launch-ux): suggest gives up quietly after 20 s, create retries gateway
+// failures with the same key and stops at 25 s with a retry message, and the wait is shown in
+// seconds while it lasts.
 import { useRouter } from "next/navigation";
 import {
   useEffect,
@@ -33,6 +36,7 @@ import {
   type StepNo,
   type SuggestState,
 } from "./flow";
+import { ClientTimeoutError, CREATE_TIMEOUT_MS, createRunWithDeadline, formatWait } from "./launch";
 import {
   APPROVALS_LABEL,
   buildCreateRunBody,
@@ -66,16 +70,24 @@ export interface NewRunFormProps {
   client?: ApiClient;
   /** PUT to presigned upload URLs; injected in tests. */
   put?: PutFetch;
+  /** Deadlines in ms; tests shorten them. */
+  timing?: { suggestMs?: number; createMs?: number; retryDelayMs?: number };
 }
 
-export function NewRunForm({ client: injected, put }: NewRunFormProps) {
+export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormProps) {
+  const suggestMs = timing.suggestMs ?? SUGGEST_CLIENT_TIMEOUT_MS;
+  const createMs = timing.createMs ?? CREATE_TIMEOUT_MS;
   const router = useRouter();
   const client = injected ?? api();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [files, setFiles] = useState<ChosenFiles>({});
   const [errors, setErrors] = useState<string[]>([]);
   const [failure, setFailure] = useState<SubmitFailure | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusyState] = useState<string | null>(null);
+  // When the current wait (upload, create, suggest) began, for the seconds counter.
+  const [busySince, setBusySince] = useState<number | null>(null);
+  const [suggestSince, setSuggestSince] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // The furthest step revealed, and the one step that is open (the rest are one-line summaries).
   const [stage, setStage] = useState<StepNo>(1);
   const [open, setOpen] = useState<StepNo>(1);
@@ -97,6 +109,20 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   // Where focus goes after the open step changes (null on first paint: the repo field autofocuses).
   const focusStep = useRef<StepNo | null>(null);
+
+  function setBusy(label: string | null) {
+    setBusyState(label);
+    setBusySince((since) => (label === null ? null : (since ?? Date.now())));
+  }
+
+  // A one-second clock, only while something is being waited on.
+  const waiting = busy !== null || suggest.status === "loading";
+  useEffect(() => {
+    if (!waiting) return;
+    setNowMs(Date.now());
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [waiting]);
 
   useEffect(() => {
     let live = true;
@@ -177,11 +203,15 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
     if (suggest.status !== "idle" && suggest.key === req.key) return false;
     const seq = ++suggestSeq.current;
     setSuggest({ status: "loading", key: req.key });
+    setSuggestSince(Date.now());
+    // Give up quietly at the deadline, and abort the request so it doesn't linger.
+    const ctrl = new AbortController();
     const timer = setTimeout(() => {
+      ctrl.abort();
       if (suggestSeq.current === seq) setSuggest({ status: "failed", key: req.key });
-    }, SUGGEST_CLIENT_TIMEOUT_MS);
+    }, suggestMs);
     client.runs
-      .suggest({ body: req.body })
+      .suggest({ body: req.body }, { signal: ctrl.signal })
       .then(({ suggestion }) => {
         if (suggestSeq.current !== seq) return;
         const l = latest.current;
@@ -269,16 +299,28 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
         setBusy(null);
         return;
       }
-      idempotencyKey.current ??= newIdempotencyKey();
+      // The key survives a failed attempt, so pressing Start again can't make a second run.
+      const key = (idempotencyKey.current ??= newIdempotencyKey());
       setBusy("Starting the run…");
-      const { run } = await client.runs.create({
-        headers: { "idempotency-key": idempotencyKey.current },
-        body: built.body,
+      const { run } = await createRunWithDeadline(client, built.body, key, {
+        timeoutMs: createMs,
+        ...(timing.retryDelayMs !== undefined ? { retryDelayMs: timing.retryDelayMs } : {}),
+        onAttempt: (n) => {
+          if (n > 1) setBusy("Starting the run… retrying");
+        },
       });
       router.push(`/runs/${run.id}`);
     } catch (err) {
-      const f = describeError(err);
       setBusy(null);
+      if (err instanceof ClientTimeoutError) {
+        setFailure({
+          kind: "message",
+          message: `Anybench didn't answer within ${formatWait(err.timeoutMs)}. The run may still be starting. Press Design the test again: it resends the same request, so it can't create a second run.`,
+          issues: [],
+        });
+        return;
+      }
+      const f = describeError(err);
       if (f.kind === "signed_out") {
         router.replace(SIGNIN_NEW_RUN);
         return;
@@ -480,7 +522,10 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
               <span className={styles.liveDot} aria-hidden="true" />
               <span>
                 <b>Reading your repo…</b> Anybench is looking at the README and file tree to suggest
-                a question.
+                a question.{" "}
+                {suggestSince !== null ? (
+                  <span className="num">{formatWait(nowMs - suggestSince)}</span>
+                ) : null}
               </span>
             </p>
           )}
@@ -760,12 +805,25 @@ export function NewRunForm({ client: injected, put }: NewRunFormProps) {
           </Disclosure>
           {alerts}
           <div className={styles.actions}>
-            <button type="submit" className="btn" disabled={busy !== null}>
-              {busy ? "Working…" : "Design the test"}
+            <button
+              type="submit"
+              className="btn"
+              disabled={busy !== null}
+              aria-describedby="nr-start-status"
+            >
+              {busy ? "Starting…" : "Design the test"}
             </button>
+            {busy && busySince !== null ? (
+              <span className={styles.elapsed} aria-hidden="true">
+                <span className={styles.liveDot} />
+                <span className="num">{formatWait(nowMs - busySince)}</span>
+              </span>
+            ) : null}
           </div>
-          <p className={styles.status} role="status">
-            {busy ?? "Free to create. Nothing is billed until you press Go."}
+          <p className={styles.status} role="status" id="nr-start-status">
+            {busy
+              ? `${busy} Waited ${formatWait(nowMs - (busySince ?? nowMs))}${busy.startsWith("Starting") ? `; gives up at ${formatWait(createMs)}` : ""}.`
+              : "Free to create. Nothing is billed until you press Go."}
           </p>
         </Step>
       )}

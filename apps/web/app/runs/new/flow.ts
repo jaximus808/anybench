@@ -166,5 +166,8 @@ export type SuggestState =
   | { status: "ready"; key: string; data: RunSuggestion }
   | { status: "failed"; key: string };
 
-/** How long the screen waits for runs.suggest before carrying on without it. */
-export const SUGGEST_CLIENT_TIMEOUT_MS = 35_000;
+/**
+ * How long the screen waits for runs.suggest before carrying on without it (quietly). The request
+ * is aborted then, so a gateway that holds it for a minute doesn't keep a connection open.
+ */
+export const SUGGEST_CLIENT_TIMEOUT_MS = 20_000;

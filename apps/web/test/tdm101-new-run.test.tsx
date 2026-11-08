@@ -602,11 +602,12 @@ describe("New run flow: submit (TDM-101 logic)", () => {
   });
 
   it("reuses the Idempotency-Key when retrying the same form", async () => {
+    // A 500 is not retried on its own (launch-ux retries only gateway failures): the user does.
     let n = 0;
     const { calls, client } = mockApi(
       route("POST", "/runs", () =>
         ++n === 1
-          ? json(503, { error: { code: "unavailable", message: "down" } })
+          ? json(500, { error: { code: "internal", message: "down" } })
           : json(201, { run: run() }),
       ),
     );
