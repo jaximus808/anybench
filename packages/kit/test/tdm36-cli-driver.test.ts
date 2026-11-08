@@ -99,6 +99,16 @@ describe("examples/cli is generated from the templates", () => {
 });
 
 describe("template options are validated", () => {
+  it("rejects a gate that would pass on the exit code alone", () => {
+    expect(() => renderCliGateScript({ gate_id: "g", stdout: false })).toThrow(
+      /must compare stdout or at least one output file/,
+    );
+    expect(() => renderCliGateScript({ gate_id: "g", stdout: false, files: [] })).toThrow();
+    expect(renderCliGateScript({ gate_id: "g", stdout: false, files: ["a.txt"] })).toContain(
+      "files=('a.txt')",
+    );
+  });
+
   it("rejects bad ids, empty commands and escaping output files", () => {
     expect(() => renderCliDriverScript({ contender_id: "Rip Grep", command: "rg x" })).toThrow();
     expect(() => renderCliDriverScript({ contender_id: "rg", command: "   " })).toThrow();
@@ -433,6 +443,79 @@ describe("runner stub plans", async () => {
     await expect(
       planCliStubTrial(kit, "ripgrep", "literal-search", { root: "rel" }),
     ).rejects.toThrow();
+  });
+
+  // A copy of the example whose ripgrep driver (or do-less driver_patch) lives somewhere else.
+  async function kitWithTdm36(edit: { driverScript?: string; driverPatch?: string }) {
+    const dir = await tmpTdm36("guard-kit");
+    await cp(EXAMPLE, dir, { recursive: true });
+    const yamlPath = path.join(dir, "anybench.yaml");
+    let y = await readFile(yamlPath, "utf8");
+    const drv = await readFile(path.join(EXAMPLE, "adapters/ripgrep/driver.sh"));
+    if (edit.driverScript) {
+      await mkdir(path.dirname(path.join(dir, edit.driverScript)), { recursive: true });
+      await writeFile(path.join(dir, edit.driverScript), drv, { mode: 0o755 });
+      y = y.replace(
+        "      type: cli\n      verbs:\n        run: adapters/ripgrep/driver.sh run {in} {out}",
+        `      type: cli\n      script: ${edit.driverScript}\n      verbs:\n        run: ${edit.driverScript} run {in} {out}`,
+      );
+    }
+    if (edit.driverPatch) {
+      await mkdir(path.dirname(path.join(dir, edit.driverPatch)), { recursive: true });
+      await writeFile(path.join(dir, edit.driverPatch), drv, { mode: 0o755 });
+      y = y.replace(
+        "driver_patch: proof/do_less/truncate/driver.sh",
+        `driver_patch: ${edit.driverPatch}`,
+      );
+    }
+    await writeFile(yamlPath, y);
+    return loadKit(dir);
+  }
+
+  it.each(["reference/driver.sh", "gates/same-matches/driver.sh", "proof/oracle/driver.sh"])(
+    "refuses a driver.script at %s: answers and gates never reach the subject computer",
+    async (driverScript) => {
+      const bad = await kitWithTdm36({ driverScript });
+      expect(bad.contenders.find((c) => c.id === "ripgrep")?.driver).toBe(driverScript);
+      await expect(
+        planCliStubTrial(bad, "ripgrep", "literal-search", { root: "/r" }),
+      ).rejects.toThrow(/the cli stub only ships adapters\/ripgrep\/, but driver.script is/);
+    },
+  );
+
+  it.each(["reference/same-matches/driver.sh", "gates/same-matches/driver.sh"])(
+    "refuses an overlay driver_patch at %s",
+    async (driverPatch) => {
+      const bad = await kitWithTdm36({ driverPatch });
+      await expect(
+        planCliStubTrial(bad, "ripgrep", "literal-search", {
+          root: "/r",
+          overlay: "truncated-output",
+        }),
+      ).rejects.toThrow(/may not come from gates\/ or reference\//);
+    },
+  );
+
+  it("never ships gates/, reference/ or proof/ to the subject computer", async () => {
+    for (const c of kit.contenders) {
+      for (const w of kit.workloads) {
+        for (const overlay of [
+          undefined,
+          "truncated-output",
+          "first-match-only",
+          "grep-reference",
+        ]) {
+          const p = await planCliStubTrial(kit, c.id, w.id, {
+            root: "/r",
+            ...(overlay ? { overlay } : {}),
+          }).catch(() => null);
+          for (const f of p?.files ?? []) {
+            expect(f.to).toMatch(/^(kit\/adapters\/[a-z0-9-]+\/|in\/|run\.sh$)/);
+            expect(new TextDecoder().decode(f.content)).not.toContain("tree/src/power.c:4:");
+          }
+        }
+      }
+    }
   });
 
   it("ships only the gate and its reference to the scoring computer", async () => {

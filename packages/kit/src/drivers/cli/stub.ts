@@ -12,8 +12,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ProofOverlay } from "@anybench/core";
-import { hashKitPaths, type HashProblem } from "../../hash.js";
-import { normalizeKitPath } from "../../layout.js";
+import { canonicalKitPath, hashKitPaths, type HashProblem } from "../../hash.js";
+import { KIT_LAYOUT, normalizeKitPath } from "../../layout.js";
 import type { LoadedKit } from "../../validate.js";
 import { CLI_SCRIPT_SHEBANG, shQuote } from "./shell.js";
 
@@ -64,20 +64,42 @@ function problemsText(problems: readonly HashProblem[]): string {
   return problems.map((p) => `${p.path} (${p.kind})`).join(", ");
 }
 
-async function kitFiles(kit: LoadedKit, rel: string, toPrefix: string): Promise<CliStubFile[]> {
+/** A file to ship plus the kit path it came from (for the subject-computer guard). */
+interface SourcedFile extends CliStubFile {
+  kitPath: string;
+}
+
+async function kitFiles(kit: LoadedKit, rel: string, toPrefix: string): Promise<SourcedFile[]> {
   const { hash, problems } = await hashKitPaths(kit.dir, [rel]);
   if (problems.length > 0) throw new CliStubError(`cannot ship ${rel}: ${problemsText(problems)}`);
-  const out: CliStubFile[] = [];
+  const out: SourcedFile[] = [];
   for (const f of hash.files) {
     const content = new Uint8Array(await readFile(path.join(kit.dir, f.path)));
     const under = f.path.slice(normalizeKitPath(rel).length).replace(/^\//, "");
     out.push({
+      kitPath: f.path,
       to: path.posix.join(toPrefix, under),
       content,
       mode: f.path.endsWith(".sh") ? 0o755 : 0o644,
     });
   }
   return out;
+}
+
+const strip = ({ kitPath: _k, ...f }: SourcedFile): CliStubFile => f;
+
+/**
+ * Kit dirs that must never reach the subject computer (plan.md 17.2 rule 5: answers and gates
+ * never reach the subject computer). `proof/` holds oracle solutions and overlays.
+ */
+export const CLI_SUBJECT_FORBIDDEN_DIRS = [
+  KIT_LAYOUT.gatesDir,
+  KIT_LAYOUT.referenceDir,
+  KIT_LAYOUT.proofDir,
+] as const;
+
+function underDir(kitPath: string, dir: string): boolean {
+  return kitPath === dir || kitPath.startsWith(`${dir}/`);
 }
 
 function findOverlay(kit: LoadedKit, id: string): ProofOverlay {
@@ -139,12 +161,31 @@ export async function planCliStubTrial(
     );
   }
 
-  const adapterDir = path.posix.dirname(resolved.driver);
-  const files = await kitFiles(kit, adapterDir, `kit/${adapterDir}`);
-  if (!files.some((f) => f.to === `kit/${resolved.driver}`)) {
-    throw new CliStubError(`driver ${resolved.driver} is not under ${adapterDir}/`);
+  // The subject computer gets exactly adapters/<contender>/: a driver anywhere else (say
+  // reference/driver.sh) would ship its whole directory, answers included.
+  const adapterDir = `${KIT_LAYOUT.adaptersDir}/${contenderId}`;
+  const driverPath = canonicalKitPath(resolved.driver);
+  if (driverPath === undefined || path.posix.dirname(driverPath) !== adapterDir) {
+    throw new CliStubError(
+      `contender '${contenderId}': the cli stub only ships ${adapterDir}/, but driver.script is ${resolved.driver}`,
+    );
   }
+  const files = await kitFiles(kit, adapterDir, `kit/${adapterDir}`);
+  if (!files.some((f) => f.to === `kit/${driverPath}`)) {
+    throw new CliStubError(`driver ${driverPath} is not under ${adapterDir}/`);
+  }
+  let overlayDriver: string | undefined;
   if (overlay?.driver_patch !== undefined) {
+    overlayDriver = canonicalKitPath(overlay.driver_patch);
+    if (
+      overlayDriver === undefined ||
+      underDir(overlayDriver, KIT_LAYOUT.gatesDir) ||
+      underDir(overlayDriver, KIT_LAYOUT.referenceDir)
+    ) {
+      throw new CliStubError(
+        `overlay '${overlay.id}': driver_patch ${overlay.driver_patch} may not come from gates/ or reference/`,
+      );
+    }
     // A cli overlay's driver_patch is a whole replacement driver.sh (as in TDM-128's kit); the
     // contender's verbs are unchanged, so it is copied over the driver path.
     if (!overlay.driver_patch.endsWith(".sh")) {
@@ -152,13 +193,27 @@ export async function planCliStubTrial(
         `overlay '${overlay.id}': the cli stub takes a replacement driver .sh, not ${overlay.driver_patch}`,
       );
     }
-    const [patched] = await kitFiles(kit, overlay.driver_patch, `kit/${resolved.driver}`);
-    if (!patched) throw new CliStubError(`overlay driver ${overlay.driver_patch} is empty`);
-    const i = files.findIndex((f) => f.to === `kit/${resolved.driver}`);
-    files[i] = { ...patched, to: `kit/${resolved.driver}`, mode: 0o755 };
+    const patched = await kitFiles(kit, overlayDriver, `kit/${driverPath}`);
+    if (patched.length !== 1 || patched[0]!.kitPath !== overlayDriver) {
+      throw new CliStubError(`overlay '${overlay.id}': driver_patch must be one file`);
+    }
+    const i = files.findIndex((f) => f.to === `kit/${driverPath}`);
+    files[i] = { ...patched[0]!, to: `kit/${driverPath}`, mode: 0o755 };
   }
   const inputDir = `workloads/${workloadId}/input`;
   files.push(...(await kitFiles(kit, inputDir, "in")));
+
+  // Final guard: nothing from gates/, reference/ or proof/ goes to the subject computer, except
+  // the overlay's replacement driver, and only at the driver path.
+  for (const f of files) {
+    const allowed = f.kitPath === overlayDriver && f.to === `kit/${driverPath}`;
+    const hidden = CLI_SUBJECT_FORBIDDEN_DIRS.find((d) => underDir(f.kitPath, d));
+    if (hidden !== undefined && !allowed) {
+      throw new CliStubError(
+        `refusing to ship ${f.kitPath} to the subject computer: ${hidden}/ never reaches it`,
+      );
+    }
+  }
 
   const env: Record<string, string> = {
     ...opts.env,
@@ -205,14 +260,12 @@ export async function planCliStubTrial(
     'exit "$rc"',
     "",
   ].join("\n");
-  files.push(textFile("run.sh", script, 0o755));
-
   return {
     contenderId,
     workloadId,
     overlayId: overlay?.id ?? null,
     workloadSha256: workload.sha256,
-    files,
+    files: [...files.map(strip), textFile("run.sh", script, 0o755)],
     script,
     command: `bash ${shQuote(`${root}/run.sh`)}`,
     frozenTar,
@@ -254,11 +307,10 @@ export async function planCliStubGate(
     `exec bash ${shQuote(`${root}/kit/${gate.check}`)} "$root/frozen" ${shQuote(workloadId)} "$root/gate/gate.json"`,
     "",
   ].join("\n");
-  files.push(textFile("gate.sh", script, 0o755));
   return {
     gateId,
     workloadId,
-    files,
+    files: [...files.map(strip), textFile("gate.sh", script, 0o755)],
     script,
     command: `bash ${shQuote(`${root}/gate.sh`)}`,
     frozenTar,

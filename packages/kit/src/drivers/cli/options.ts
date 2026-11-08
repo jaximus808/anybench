@@ -64,21 +64,27 @@ export const CliDoLessTruncateSchema = z.strictObject({
 export type CliDoLessTruncate = z.output<typeof CliDoLessTruncateSchema>;
 export type CliDoLessTruncateInput = z.input<typeof CliDoLessTruncateSchema>;
 
-export const CliGateTemplateSchema = z.strictObject({
-  gate_id: KitSlugSchema,
-  /**
-   * Kit-relative reference dir. Per workload it holds `<workload>/stdout.txt` and, for each
-   * declared output file, `<workload>/files/<path>`. Default `reference/<gate_id>`.
-   */
-  reference: KitPathSchema.optional(),
-  /** Compare the gated run's stdout. Default true. */
-  stdout: z.boolean().default(true),
-  /** Sort stdout lines (LC_ALL=C) on both sides before comparing: for tools whose order is free. */
-  sort_lines: z.boolean().default(false),
-  /** Output files compared byte for byte against `<workload>/files/<path>`. */
-  files: z.array(CliOutputFileSchema).default([]),
-  /** Exit codes the gated run may end with. Default [0]. */
-  exit_codes: ExitCodesSchema.default([0]),
-});
+export const CliGateTemplateSchema = z
+  .strictObject({
+    gate_id: KitSlugSchema,
+    /**
+     * Kit-relative reference dir. Per workload it holds `<workload>/stdout.txt` and, for each
+     * declared output file, `<workload>/files/<path>`. Default `reference/<gate_id>`.
+     */
+    reference: KitPathSchema.optional(),
+    /** Compare the gated run's stdout. Default true. */
+    stdout: z.boolean().default(true),
+    /** Sort stdout lines (LC_ALL=C) on both sides before comparing: for tools whose order is free. */
+    sort_lines: z.boolean().default(false),
+    /** Output files compared byte for byte against `<workload>/files/<path>`. */
+    files: z.array(CliOutputFileSchema).default([]),
+    /** Exit codes the gated run may end with. Default [0]. */
+    exit_codes: ExitCodesSchema.default([0]),
+  })
+  .refine((g) => g.stdout || g.files.length > 0, {
+    error:
+      "an output-diff gate must compare stdout or at least one output file, not the exit code alone",
+    path: ["files"],
+  });
 export type CliGateTemplate = z.output<typeof CliGateTemplateSchema>;
 export type CliGateTemplateInput = z.input<typeof CliGateTemplateSchema>;
