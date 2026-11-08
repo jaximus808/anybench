@@ -109,19 +109,24 @@
   color: var(--muted);
   white-space: nowrap;
 }
-[data-tone="base"] {
+.swatch[data-tone="base"],
+.bar[data-tone="base"] {
   background: var(--muted);
 }
-[data-tone="a"] {
+.swatch[data-tone="a"],
+.bar[data-tone="a"] {
   background: var(--accent);
 }
-[data-tone="b"] {
+.swatch[data-tone="b"],
+.bar[data-tone="b"] {
   background: #4c8dff;
 }
-[data-tone="c"] {
+.swatch[data-tone="c"],
+.bar[data-tone="c"] {
   background: #33b37a;
 }
-[data-tone="d"] {
+.swatch[data-tone="d"],
+.bar[data-tone="d"] {
   background: #b06cff;
 }
 .taskHead {
