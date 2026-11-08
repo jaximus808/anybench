@@ -10,7 +10,7 @@
 // <base64>` line that a worker applies. Output is stream-json with a final `result` line carrying
 // a made-up cost, so the collector has something to sum.
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 type Obj = Record<string, unknown>;
@@ -41,6 +41,14 @@ out({
   model: opt("--model") ?? "fake-model",
   claude_code_version: "0.0.0-fake",
   session_id: `fake-${process.pid}`,
+  // What reached this session (names and the model id only, never a secret's value).
+  env_seen: {
+    anthropic_base_url: process.env.ANTHROPIC_BASE_URL ?? null,
+    anthropic_auth_token_set: process.env.ANTHROPIC_AUTH_TOKEN !== undefined,
+    anthropic_api_key_set: process.env.ANTHROPIC_API_KEY !== undefined,
+    anthropic_model: process.env.ANTHROPIC_MODEL ?? null,
+    max_thinking_tokens: process.env.MAX_THINKING_TOKENS ?? null,
+  },
   tools_disallowed: disallowed,
 });
 
@@ -120,10 +128,19 @@ child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/ini
 const worker = /You are Tandem worker `([^`]+)`/.exec(prompt)?.[1];
 if (/You are the Tandem planner/.test(prompt)) {
   await tool("canvas_connect", { code, role: "planner", name: "planner" });
-  const plan = JSON.parse(readFileSync(join(process.cwd(), "FAKE_PLAN.json"), "utf8")) as {
-    title: string;
-    tickets: { title: string; file: string; content: string }[];
-  };
+  // The toy workload ships FAKE_PLAN.json; any other workspace gets a two-note plan.
+  const planFile = join(process.cwd(), "FAKE_PLAN.json");
+  const plan = (
+    existsSync(planFile)
+      ? JSON.parse(readFileSync(planFile, "utf8"))
+      : {
+          title: "Notes",
+          tickets: [
+            { title: "note a", file: "NOTES-a.md", content: "a\n" },
+            { title: "note b", file: "NOTES-b.md", content: "b\n" },
+          ],
+        }
+  ) as { title: string; tickets: { title: string; file: string; content: string }[] };
   const tasks = plan.tickets.map((t) => ({
     title: t.title,
     body: `Surface: ${t.file}. Done when ${t.file} exists with the content below and the tests pass.\nFAKE_WRITE ${t.file} ${Buffer.from(t.content).toString("base64")}`,

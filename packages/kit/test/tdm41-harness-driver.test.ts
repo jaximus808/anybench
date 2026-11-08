@@ -91,7 +91,7 @@ describe("adapters/tandem scripts", () => {
   it("run.sh refuses to start without a policy, and never guesses one", () => {
     const r = spawnSync("bash", [path.join(ADAPTER_TDM41, "run.sh"), "/dev/null", "/tmp"], {
       encoding: "utf8",
-      env: { PATH: process.env.PATH, EVAL_OUT: tmpdir(), TANDEM_WORKERS: "2" },
+      env: { PATH: process.env.PATH, EVAL_OUT: tmpdir(), TANDEM_WORKERS: "2", CC_MODEL: "m" },
     });
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/ANYBENCH_HIL_POLICY is not set/);

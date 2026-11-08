@@ -52,15 +52,15 @@ describe("trialJobFromKit on kits/tandem-vs-claude-code", () => {
         AB_TOKEN_SOURCE: "naive_proxy",
         TANDEM_WORKERS: s.env.TANDEM_WORKERS,
       });
-      expect(job.env.TANDEM_MCP_VERSION).toBe("3.2.0");
-      expect(job.env.CLAUDE_CODE_VERSION).toBe("2.1.319");
+      expect(job.env?.TANDEM_MCP_VERSION).toBe("3.2.0");
+      expect(job.env?.CLAUDE_CODE_VERSION).toBe("2.1.319");
     }
   });
 
   it("a Claude Code contender gets its versions and model but no harness env", () => {
     const job = trialJobFromKit(kit, "claude-code-solo", "todo-api");
-    expect(job.env.CLAUDE_CODE_VERSION).toBe("2.1.319");
-    expect(job.env.CC_MODEL).toBe("anthropic/claude-sonnet-4.6");
+    expect(job.env?.CLAUDE_CODE_VERSION).toBe("2.1.319");
+    expect(job.env?.CC_MODEL).toBe("anthropic/claude-sonnet-4.6");
     expect(job.env).not.toHaveProperty("ANYBENCH_HIL_POLICY");
     expect(job.env).not.toHaveProperty("TANDEM_WORKERS");
   });

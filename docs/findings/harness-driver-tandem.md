@@ -144,17 +144,34 @@ on the toy workload, and `TANDEM_APPROVER_BIN` pointing at a shim for
 write the same `approvals.jsonl` fields (`simulated`, `decision`, `target`, `decided_by`,
 `latency_ms`), so the collector reads either one.
 
+## The real kit's contender C, ×3, on the Naïve proxy (after TDM-184 kit v2)
+
+The env came from `trialJobFromKit(kit, "tandem", "todo-api", setup)`, with the setup from
+`expandVarySetups` (`tandem@TANDEM_WORKERS=1|3|5`). It carries `versions`, `driver.model`
+(`ANYBENCH_MODEL` and `CC_MODEL`), `ANYBENCH_HIL_POLICY=auto`, `ANYBENCH_WALL_CAP_S=3600`, the
+kit's proxy settings, and `TANDEM_WORKERS=3`. The run used a stand-in `proxy.env` (base URL, a
+dummy token, `ANTHROPIC_MODEL=overridden`, `MAX_THINKING_TOKENS=999`) and
+`EVAL_SECRETS` with `ANTHROPIC_API_KEY`. The command was
+`driver.sh run workloads/todo-api/instruction.md <ws>`, with the real `eval-approver`, Tandem
+0.2.0 and the stand-in Claude Code. The results:
+
+- `run.json`: `completed`, 3 workers, policy auto, 20.4 s.
+- Every session (planner and workers 1–3) saw `ANTHROPIC_BASE_URL=https://api.vetta.sh/v1/proxy/anthropic`,
+  an auth token, **no** `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL=anthropic/claude-sonnet-4.6` and
+  `MAX_THINKING_TOKENS=0` (the kit's value beat the file's 999). Each got
+  `--model anthropic/claude-sonnet-4.6` and `--disallowedTools Task Agent`.
+- `approvals.summary.json`: 3 simulated approvals (`human-sim` 1, `policy:auto` 2), p95 593 ms.
+- `workspace/` had no `.mcp.json` and no `AGENTS.md`.
+
+The proxy block in run.sh is the same as the one in `adapters/claude-code/driver.sh`. It requires
+`$HOME/.anybench/proxy.env` (the worker provisions it per trial, TDM-16), keeps the kit's settings
+over the file's, exports `ANTHROPIC_MODEL=$CC_MODEL`, unsets `ANTHROPIC_API_KEY`, and unsets it
+again in each session after `EVAL_SECRETS`.
+
 ## Gates in the flagship kit
 
-`gates/hidden-tests/check.sh` and `gates/api-load/check.sh` now follow the gate runner contract
-(TDM-51) whenever `$AB_RUN` is set: `check.sh <frozen-out> <workload> <gate.json>`. The graded
-tree is `$AB_RUN_DIR/workspace`. `node --test` and the app under load run only through `$AB_RUN`.
-The reporter is copied next to the hidden tests so the contender uid can read it. Results come
-back over the test runner's stdout and stderr, not through a file the contender could write, and
-the api-load server child is inline `node -e`, so the contender uid never reads a kit file.
-Without `$AB_RUN`, the old proof-script signature still works. On the host, the todo-api oracle
-scored 16/16 in `$AB_RUN` mode, an empty workspace scored 0/16, a missing `workspace/` failed
-closed, and api-load on the oracle passed (p95 99.8 ms at 50 req/s over 150 requests).
+`gates/*/check.sh` follow the gate runner contract (TDM-184 shipped that). The harness driver's
+part is `$EVAL_OUT/workspace/`, which those checks read as `$AB_RUN_DIR/workspace`.
 
 ## Open
 
