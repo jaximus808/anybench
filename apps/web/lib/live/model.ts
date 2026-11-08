@@ -484,7 +484,9 @@ export function describeEvent(live: LiveRun, ev: AnybenchEvent): string {
     case "trial.network":
       return `${who ?? "trial"}: network probe, canary ${ev.payload.canary}`;
     case "trial.gate":
-      return `${who ?? "trial"}: gate ${ev.payload.gate} ${ev.payload.passed ? "passed" : "FAILED"}${ev.payload.summary ? ` (${ev.payload.summary})` : ""}`;
+      return ev.payload.summary && /^not applicable\b/i.test(ev.payload.summary)
+        ? `${who ?? "trial"}: gate ${ev.payload.gate} not applicable to this task`
+        : `${who ?? "trial"}: gate ${ev.payload.gate} ${ev.payload.passed ? "passed" : "FAILED"}${ev.payload.summary ? ` (${ev.payload.summary})` : ""}`;
     case "agent.tool.started":
       return `${ev.payload.agent_role} → ${ev.payload.tool}${ev.payload.input_preview ? ` ${short(ev.payload.input_preview, 90)}` : ""}`;
     case "agent.message":
@@ -614,13 +616,16 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
       case "trial.log_chunk":
         t.logBytes = Math.max(t.logBytes, ev.payload.offset + ev.payload.bytes);
         break;
-      case "trial.gate":
-        t.gate = {
-          gate: ev.payload.gate,
-          passed: ev.payload.passed,
-          summary: ev.payload.summary ?? null,
-        };
+      case "trial.gate": {
+        // A trial reports one event per gate. A gate that doesn't apply to this workload (e.g.
+        // api-load on a task with no API) says so in its summary and never decides the trial.
+        // Otherwise a failure wins: a later passing gate never hides an earlier failed one.
+        const summary = ev.payload.summary ?? null;
+        if (summary && /^not applicable\b/i.test(summary)) break;
+        if (t.gate && !t.gate.passed && ev.payload.passed) break;
+        t.gate = { gate: ev.payload.gate, passed: ev.payload.passed, summary };
         break;
+      }
       case "computer.created":
         t.computerId = ev.source_id;
         break;

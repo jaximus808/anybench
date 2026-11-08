@@ -103,6 +103,29 @@ describe("live model", () => {
   const half = demo.timeline.filter((e) => e.atMs < demo.durationMs * 0.45).map((e) => e.event);
   const live = applyEvents(initLive(demo.snapshot), half);
 
+  it("a not-applicable gate (api-load on a task with no API) never turns a passing trial red", () => {
+    const all = demo.timeline.map((e) => e.event);
+    const pass = all.find((e) => e.type === "trial.gate" && e.payload.passed);
+    expect(pass).toBeTruthy();
+    if (!pass || pass.type !== "trial.gate") return;
+    const base = applyEvents(initLive(demo.snapshot), all.slice(0, all.indexOf(pass) + 1));
+    const tid = pass.source_id;
+    expect(base.trials[tid]!.gate?.passed).toBe(true);
+    const na = {
+      ...pass,
+      seq: Math.max(...all.map((e) => e.seq)) + 1,
+      payload: {
+        ...pass.payload,
+        gate: "api-load",
+        passed: false,
+        summary: "not applicable: workload 'auth-refactor' has no API under load",
+      },
+    };
+    const after = applyEvents(base, [na]);
+    expect(after.trials[tid]!.gate?.passed).toBe(true);
+    expect(after.trials[tid]!.gate?.gate).toBe(pass.payload.gate);
+  });
+
   it("ignores replayed events (Last-Event-ID overlap)", () => {
     const again = applyEvents(live, half.slice(-50));
     expect(again).toBe(live);
