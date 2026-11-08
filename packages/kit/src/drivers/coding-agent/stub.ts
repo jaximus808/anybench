@@ -65,6 +65,11 @@ export interface PlanCodingAgentStubTrialOptions {
    * written to `<root>/proxy.env` (0600) and named by ANYBENCH_PROXY_ENV_FILE.
    */
   proxyEnv?: Readonly<Record<string, string>>;
+  /**
+   * Extra kit files the subject computer needs (e.g. `scripts/setup-workspace.sh`, which the
+   * Tandem kit's setup.sh calls). Never from gates/, reference/ or proof/oracle/.
+   */
+  extraKitPaths?: readonly string[];
   /** Driver types this stub runs. Default `coding-agent` (the harness driver can reuse it). */
   driverTypes?: readonly string[];
 }
@@ -227,10 +232,14 @@ export async function planCodingAgentStubTrial(
       `workload '${workloadId}': the instruction must live under workloads/`,
     );
   }
+  for (const extra of opts.extraKitPaths ?? []) {
+    const rel = normalizeKitPath(extra);
+    files.push(...(await kitFiles(kit, rel, `kit/${rel}`)));
+  }
   const setup = workload.setup === undefined ? undefined : normalizeKitPath(workload.setup);
   if (setup !== undefined && !files.some((f) => f.kitPath === setup)) {
     throw new CodingAgentStubError(
-      `workload '${workloadId}': setup ${setup} must live under ${workloadDir}/ (it is all the subject computer gets)`,
+      `workload '${workloadId}': setup ${setup} is not shipped (it must live under ${workloadDir}/ or be in extraKitPaths)`,
     );
   }
 
@@ -252,7 +261,10 @@ export async function planCodingAgentStubTrial(
   for (const [k, v] of [...secrets, ...proxyEnv]) {
     if (!ENV_NAME.test(k) || /[\n\0']/.test(v)) throw new CodingAgentStubError(`bad secret ${k}`);
   }
-  if (proxyEnv.length > 0) env.ANYBENCH_PROXY_ENV_FILE = `${root}/proxy.env`;
+  if (proxyEnv.length > 0) {
+    env.ANYBENCH_PROXY_ENV_FILE = `${root}/proxy.env`;
+    env.NAIVE_PROXY_ENV = `${root}/proxy.env`; // the Tandem kit's drivers read this name
+  }
 
   const paths = {
     in: `${root}/kit/${input}`,

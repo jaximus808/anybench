@@ -109,7 +109,7 @@ async function fakeClaude(
   const ctl = path.join(dir, "ctl");
   await mkdir(bin, { recursive: true });
   await mkdir(ctl, { recursive: true });
-  const key = `sk-ant-tdm39-fake-${randomBytes(12).toString("hex")}`;
+  const key = `tdm39-fake-key-${randomBytes(12).toString("hex")}`;
   await writeFile(path.join(ctl, "version"), `${opts.version ?? "2.1.319"} (Claude Code)\n`);
   await writeFile(path.join(ctl, "expected-key"), key);
   const script = [
@@ -530,25 +530,25 @@ describe("a trial on the host with a fake claude", () => {
     expect(run({ CLAUDE_CODE_VERSION: CC }).stderr).toMatch(/model '' is not a pin/);
     // The model id must fit the token source.
     expect(run({ CLAUDE_CODE_VERSION: CC, CC_MODEL: "claude-sonnet-4-5-20250929" }).stderr).toMatch(
-      /token source naive-proxy needs a Naïve model id/,
+      /token source naive_proxy needs a Naïve model id/,
     );
     expect(
       run({
         CLAUDE_CODE_VERSION: CC,
         CC_MODEL: NAIVE_MODEL,
-        ANYBENCH_TOKEN_SOURCE: "anthropic-key",
+        AB_TOKEN_SOURCE: "anthropic_key",
       }).stderr,
-    ).toMatch(/token source anthropic-key needs an Anthropic model id/);
+    ).toMatch(/token source anthropic_key needs an Anthropic model id/);
     expect(
-      run({ CLAUDE_CODE_VERSION: CC, CC_MODEL: NAIVE_MODEL, ANYBENCH_TOKEN_SOURCE: "openai" })
+      run({ CLAUDE_CODE_VERSION: CC, CC_MODEL: NAIVE_MODEL, AB_TOKEN_SOURCE: "openai" })
         .stderr,
-    ).toMatch(/ANYBENCH_TOKEN_SOURCE must be naive-proxy or anthropic-key/);
+    ).toMatch(/AB_TOKEN_SOURCE must be naive_proxy or anthropic_key/);
 
     // BYOK: a direct Anthropic key, recorded as such.
     const byok = run({
       CLAUDE_CODE_VERSION: CC,
       ANYBENCH_MODEL: "claude-sonnet-4-5-20250929",
-      ANYBENCH_TOKEN_SOURCE: "anthropic-key",
+      AB_TOKEN_SOURCE: "anthropic_key",
       ANTHROPIC_API_KEY: fake.key,
     });
     expect(byok.code, byok.stderr).toBe(0);
@@ -570,7 +570,7 @@ describe("a trial on the host with a fake claude", () => {
     const kit = await exampleKit();
     const noProxy = await runTrial(kit, await fakeClaude(), { proxyEnv: null });
     expect(noProxy.code).toBe(1);
-    expect(await readOut(noProxy, P.error)).toMatch(/token source naive-proxy: no proxy env file/);
+    expect(await readOut(noProxy, P.error)).toMatch(/token source naive_proxy: no proxy env file/);
 
     const fake = await fakeClaude();
     const base = {
@@ -610,79 +610,119 @@ describe("a trial on the host with a fake claude", () => {
   });
 });
 
-describe("drop-in for kits/tandem-vs-claude-code (contenders A and B)", () => {
-  // The kit's A/B driver (adapters/claude-code/driver.sh) reads CC_SETUP, CC_DISALLOWED_TOOLS,
-  // CC_MODEL, CC_MAX_TURNS and CLAUDE_MD_OVERLAY. The unbaked render takes the same env, so it
-  // can replace that file as is (pins from versions.CLAUDE_CODE_VERSION and driver.model).
+describe("kits/tandem-vs-claude-code contenders A and B through the stub", () => {
+  // The real kit (TDM-184 v2): driver.env carries AB_TOKEN_SOURCE=naive_proxy and the proxy
+  // settings, versions pins CLAUDE_CODE_VERSION, driver.model the Naïve model. The stub passes all
+  // of it to the adapter's env and writes the per-trial proxy env file, as the worker will.
   const TVCC = path.join(here, "..", "..", "..", "kits", "tandem-vs-claude-code");
+  const CONTENDERS = [
+    ["claude-code-solo", "Setup A: Claude Code solo"],
+    ["claude-code-subagents", "Setup B: Claude Code with subagents"],
+  ] as const;
 
-  async function tvccTrial(setup: string, extra: Record<string, string>) {
-    const dir = await tmpTdm39("tvcc");
-    await cpDir(path.join(TVCC, "adapters"), path.join(dir, "kit", "adapters"), {
-      recursive: true,
-    });
-    const driver = path.join(dir, "kit", "adapters", "claude-code", "driver.sh");
-    await writeFile(driver, renderCodingAgentDriverScript({ contender_id: "claude-code" }), {
-      mode: 0o755,
-    });
-    await mkdir(path.join(dir, "ws"));
+  async function tvccTrial(contender: string, opts: { ourDriver: boolean }) {
+    const kit = await loadKit(TVCC);
     const fake = await fakeClaude();
-    const r = bash(
-      [
-        driver,
-        "run",
-        path.join(TVCC, "workloads", "bug-hunt", "instruction.md"),
-        path.join(dir, "ws"),
-      ],
-      {
-        cwd: path.join(dir, "kit"),
-        env: {
-          PATH: `${fake.bin}:${process.env.PATH ?? ""}`,
-          HOME: dir,
-          EVAL_OUT: path.join(dir, "out"),
-          ANYBENCH_EVAL_USER: ME,
-          ANYBENCH_EVAL_HOME: path.join(dir, "eval-home"),
-          ANTHROPIC_API_KEY: fake.key,
-          ANYBENCH_TOKEN_SOURCE: "anthropic-key",
-          CLAUDE_CODE_VERSION: CC,
-          CC_MODEL: "claude-sonnet-4-5-20250929",
-          CC_SETUP: setup,
-          ...extra,
-        },
+    const root = await tmpTdm39("tvcc");
+    const plan = await planCodingAgentStubTrial(kit, contender, "bug-hunt", {
+      root,
+      extraKitPaths: ["scripts/setup-workspace.sh"],
+      env: {
+        PATH: `${fake.bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        ANYBENCH_EVAL_USER: ME,
+        ANYBENCH_EVAL_HOME: path.join(root, "eval-home"),
       },
-    );
-    return { dir, fake, r };
+      proxyEnv: {
+        ANTHROPIC_BASE_URL: "https://api.vetta.sh/v1/proxy/anthropic",
+        ANTHROPIC_AUTH_TOKEN: fake.key,
+        ANTHROPIC_MODEL: NAIVE_MODEL,
+      },
+    });
+    await materialize(plan.files, root);
+    if (opts.ourDriver) {
+      await writeFile(
+        path.join(root, "kit", "adapters", "claude-code", "driver.sh"),
+        renderCodingAgentDriverScript({ contender_id: "claude-code" }),
+        { mode: 0o755 },
+      );
+    }
+    const r = bash([path.join(root, "run.sh")], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, TMPDIR: tmpdir() },
+    });
+    return { kit, fake, root, plan, r, out: path.join(root, "out") };
   }
 
-  it("A: solo setup, subagents disabled by both names", async () => {
-    const { dir, fake, r } = await tvccTrial("claude-code-solo", {
-      CC_DISALLOWED_TOOLS: "Task Agent",
+  it("the stub hands the adapter driver.env, versions and driver.model", async () => {
+    const kit = await loadKit(TVCC);
+    const plan = await planCodingAgentStubTrial(kit, "claude-code-solo", "bug-hunt", {
+      root: "/home/naive/t1",
+      extraKitPaths: ["scripts/setup-workspace.sh"],
+      proxyEnv: { ANTHROPIC_BASE_URL: "https://x.test", ANTHROPIC_AUTH_TOKEN: "t0ken-value" },
     });
-    expect(r.code, r.stderr).toBe(0);
-    const argv = await argvOf(fake);
-    expect(argv.slice(-2)).toEqual(["--disallowedTools", "Task Agent"]);
-    expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toBe(
-      await readFile(path.join(TVCC, "adapters", "claude-code-solo", "CLAUDE.md"), "utf8"),
-    );
-    expect(await readFile(path.join(dir, "out", P.stream), "utf8")).toContain('"subtype":"init"');
+    for (const line of [
+      "export CLAUDE_CODE_VERSION='2.1.319'",
+      `export ANYBENCH_MODEL='${NAIVE_MODEL}'`,
+      "export ANYBENCH_TOKEN_CAP_TOKENS='8000000'",
+      "export AB_TOKEN_SOURCE='naive_proxy'",
+      "export CC_SETUP='claude-code-solo'",
+      "export CC_DISALLOWED_TOOLS='Task Agent'",
+      "export MAX_THINKING_TOKENS='0'",
+      "export NAIVE_PROXY_ENV='/home/naive/t1/proxy.env'",
+    ]) {
+      expect(plan.script).toContain(line);
+    }
+    expect(plan.script).not.toContain("t0ken-value");
+    const proxy = plan.files.find((f) => f.to === "proxy.env")!;
+    expect(proxy.mode).toBe(0o600);
+    expect(plan.files.map((f) => f.to).filter((f) => /^kit\/(gates|reference|proof)\//.test(f))).toEqual([]);
   });
 
-  it("B: the subagents setup lands in the eval user's ~/.claude; the planted regression appends", async () => {
-    const { dir, fake, r } = await tvccTrial("claude-code-subagents", {
-      CLAUDE_MD_OVERLAY: "adapters/claude-code-solo/CLAUDE.md",
+  for (const [contender, setupLine] of CONTENDERS) {
+    it(`${contender}: the kit's own driver runs on the proxy env the stub provisioned`, async () => {
+      const { fake, r, out } = await tvccTrial(contender, { ourDriver: false });
+      expect(r.code, r.stderr).toBe(0);
+      const seen = await readFile(path.join(fake.ctl, "seen"), "utf8");
+      expect(seen).toContain("key=ok");
+      expect(seen).toContain("auth_token=set api_key=\n");
+      expect(seen).toContain(`ANTHROPIC_MODEL=${NAIVE_MODEL}\n`);
+      expect(seen).toContain("MAX_THINKING_TOKENS=0\n");
+      const argv = await argvOf(fake);
+      expect(argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2)).toEqual(["--model", NAIVE_MODEL]);
+      expect(argv.includes("Agent")).toBe(contender === "claude-code-solo");
+      expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toContain(setupLine);
+      expect(await readFile(path.join(out, P.stream), "utf8")).toContain('"subtype":"init"');
     });
-    expect(r.code, r.stderr).toBe(0);
-    expect(await argvOf(fake)).not.toContain("--disallowedTools");
-    const md = await readFile(path.join(fake.ctl, "claude-md"), "utf8");
-    expect(md).toContain("Setup B: Claude Code with subagents");
-    expect(md).toContain("Setup A: Claude Code solo");
-    const agents = path.join(dir, "eval-home", ".claude", "agents");
-    const want = await readdir(
-      path.join(TVCC, "adapters", "claude-code-subagents", ".claude", "agents"),
-    );
-    expect(want.length).toBeGreaterThan(0);
-    expect((await readdir(agents)).sort()).toEqual(want.sort());
-  });
+
+    it(`${contender}: this driver as a drop-in: eval user, pins, proxy, redaction, freeze`, async () => {
+      const { fake, r, out } = await tvccTrial(contender, { ourDriver: true });
+      expect(r.code, r.stderr).toBe(0);
+      const seen = await readFile(path.join(fake.ctl, "seen"), "utf8");
+      expect(seen).toContain("key=ok");
+      expect(seen).toContain("auth_token=set api_key=\n");
+      expect(seen).toContain(`CLAUDE_CODE_MODEL_CAPABILITIES=${CAPS}\n`);
+      const argv = await argvOf(fake);
+      if (contender === "claude-code-solo") {
+        expect(argv.slice(-2)).toEqual(["--disallowedTools", "Task Agent"]);
+      } else {
+        expect(argv).not.toContain("--disallowedTools");
+      }
+      expect(argv).not.toContain("--max-turns"); // the kit sets no max_turns
+      expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toContain(setupLine);
+      expect(JSON.parse(await readFile(path.join(out, P.versions), "utf8"))).toMatchObject({
+        claude_code: CC,
+        model: NAIVE_MODEL,
+        token_source: "naive-proxy",
+        provider: "naive:anthropic",
+        effort: "naive-min",
+        thinking: "off",
+        token_cap_tokens: "8000000",
+      });
+      const stream = await readFile(path.join(out, P.stream), "utf8");
+      expect(stream).toContain("TOKEN=[REDACTED]");
+      expect(stream).not.toContain(fake.key);
+      await expect(stat(path.join(out, P.workspace, "src"))).resolves.toBeTruthy();
+    });
+  }
 });
 
 describe("the stub keeps answers off the subject computer", () => {
@@ -771,15 +811,15 @@ describe("comparability: one token source", () => {
     const second = structuredClone(kit.spec.contenders[0]!);
     second.id = "claude-code-byok";
     second.role = "baseline";
-    second.driver.env = { ANYBENCH_TOKEN_SOURCE: "anthropic-key" };
+    second.driver.env = { AB_TOKEN_SOURCE: "anthropic_key" };
     const issues = comparabilityIssues({
       ...kit.spec,
       contenders: [kit.spec.contenders[0]!, second],
     });
     expect(
       issues.filter((i) => i.code === "token_source_unequal").map((i) => i.at.join(".")),
-    ).toEqual(["contenders.1.driver.env.ANYBENCH_TOKEN_SOURCE"]);
-    second.driver.env = { ANYBENCH_TOKEN_SOURCE: "naive-proxy" };
+    ).toEqual(["contenders.1.driver.env.AB_TOKEN_SOURCE"]);
+    second.driver.env = { AB_TOKEN_SOURCE: "naive_proxy" };
     expect(
       comparabilityIssues({ ...kit.spec, contenders: [kit.spec.contenders[0]!, second] }).filter(
         (i) => i.code === "token_source_unequal",

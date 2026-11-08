@@ -93,11 +93,11 @@ const RUN = `run_agent() {
   # Token source (rule 4: the same for every contender): the Naïve proxy (default) or BYOK.
   token_source="\${${TOKEN_SOURCE_ENV}:-${DEFAULT_TOKEN_SOURCE}}"
   case "$token_source" in
-    naive-proxy)
-      case "$model" in */*) ;; *) fail "token source naive-proxy needs a Naïve model id (e.g. anthropic/claude-sonnet-4.6), not $model" ;; esac
+    naive_proxy)
+      case "$model" in */*) ;; *) fail "token source naive_proxy needs a Naïve model id (e.g. anthropic/claude-sonnet-4.6), not $model" ;; esac
       ;;
-    anthropic-key)
-      case "$model" in */*) fail "token source anthropic-key needs an Anthropic model id, not the Naïve id $model" ;; esac
+    anthropic_key)
+      case "$model" in */*) fail "token source anthropic_key needs an Anthropic model id, not the Naïve id $model" ;; esac
       ;;
     *) fail "${TOKEN_SOURCE_ENV} must be ${TOKEN_SOURCES.join(" or ")}, not '$token_source'" ;;
   esac
@@ -168,7 +168,9 @@ ${indentBlock(BASH_SECRETS, "  ")}
     fail "the proxy env file sets ANTHROPIC_MODEL=$proxy_model, but the kit pins $model"
   fi
   local effort=default thinking=default provider=anthropic
-  if [ "$token_source" = naive-proxy ]; then
+  local token_disclosed=anthropic-key
+  if [ "$token_source" = naive_proxy ]; then
+    token_disclosed=naive-proxy
     provider="naive:\${model%%/*}"
     # TDM-16: the proxy refuses effort, adaptive thinking and context management, so the proxy
     # env turns them off. Disclosed with every trial.
@@ -187,7 +189,7 @@ ${indentBlock(BASH_SECRETS, "  ")}
   node_version="$(as_eval node --version 2> /dev/null | tr -d '\\000-\\037"\\\\')" || node_version=""
   printf '{"contender":"%s","claude_code":"%s","claude_code_reported":"%s","model":"%s","node":"%s","eval_user":"%s","max_turns":"%s","token_cap_tokens":"%s","disallowed_tools":"%s","token_source":"%s","provider":"%s","effort":"%s","thinking":"%s","model_capabilities":"%s","do_less":%s}\\n' \\
     "$contender" "$cc_version" "$reported" "$model" "$node_version" "$eval_user" "$max_turns" "$token_cap" "$tools" \\
-    "$token_source" "$provider" "$effort" "$(printf '%s' "$thinking" | tr -d '\\000-\\037"\\\\')" "$(printf '%s' "$proxy_capabilities" | tr -d '\\000-\\037"\\\\')" \\
+    "$token_disclosed" "$provider" "$effort" "$(printf '%s' "$thinking" | tr -d '\\000-\\037"\\\\')" "$(printf '%s' "$proxy_capabilities" | tr -d '\\000-\\037"\\\\')" \\
     "$([ "$do_less" -eq 1 ] && echo true || echo false)" > "$out/${P.versions}"
 
   # 4. The run: stream-json redacted, teed to stdout (token meter) and to ${P.stream}.
@@ -270,8 +272,8 @@ function render(t: CodingAgentDriverTemplate, doLess: CodingAgentDoLess | undefi
     "# CC_MAX_TURNS / ANYBENCH_MAX_TURNS and CC_TOKEN_CAP / ANYBENCH_TOKEN_CAP_TOKENS (can only lower",
     "# the caps; the token cap stops the run when the stream crosses it), CLAUDE_MD_OVERLAY (kit-relative,",
     "# appended to CLAUDE.md: the planted regression), ANYBENCH_EVAL_USER / ANYBENCH_EVAL_HOME.",
-    `# ${TOKEN_SOURCE_ENV}: naive-proxy (default; the worker's ANYBENCH_PROXY_ENV_FILE, default`,
-    "# $HOME/.anybench/proxy.env) or anthropic-key (BYOK ANTHROPIC_API_KEY from the runner's env or",
+    `# ${TOKEN_SOURCE_ENV}: naive_proxy (default; the worker's proxy env file NAIVE_PROXY_ENV, default`,
+    "# $HOME/.anybench/proxy.env) or anthropic_key (BYOK ANTHROPIC_API_KEY from the runner's env or",
     "# EVAL_SECRETS). Credentials reach the agent only as 0600 files, never on a command line.",
     "set -euo pipefail",
     "",

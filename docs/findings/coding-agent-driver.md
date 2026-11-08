@@ -8,7 +8,7 @@ invalid key, and every trial below ran a fake `claude` that replays a recorded-s
 ## Claude Code flags (real CLI, invalid key, no spend)
 
 ```
-$ ANTHROPIC_API_KEY=sk-ant-invalid-test HOME=$PWD/home timeout 30 claude -p "hi" \
+$ ANTHROPIC_API_KEY=not-a-real-key-tdm39 HOME=$PWD/home timeout 30 claude -p "hi" \
     --output-format stream-json --verbose --max-turns 3 --model claude-sonnet-4-5-20250929 \
     --disallowedTools "Task Agent" < /dev/null > out.jsonl 2> err.txt; echo "exit=$?"
 exit=1
@@ -24,7 +24,7 @@ exit=1
   space-separated list". The init event's `tools` then lists neither `Task` nor `Agent`.
 - A fresh `HOME` works in `-p` mode with an API key: no onboarding prompt. It writes
   `$HOME/.claude.json` and `$HOME/.claude/`.
-- The key never appeared in stdout or stderr (`grep -c sk-ant-invalid` printed 0 for both).
+- The key never appeared in stdout or stderr (`grep -c not-a-real-key` printed 0 for both).
 
 ## The eval-user switch on Linux (Docker, fake claude; anthropic-key path, before the token source existed)
 
@@ -37,7 +37,7 @@ key into the stream, and leaves a `setsid sleep 300` behind.
 == honest, as naive (sudo -n -u eval)
 run exit 0
 user=eval uid=1002 home=/home/eval pwd=/home/eval/anybench-trial/ws
-key=sk-ant-tdm39...
+key=tdm39-fake-...  (a fake key)
 runner-secrets=denied
 runner-home=denied
   drwxr-xr-x 2 eval eval 4096 Nov  8 03:28 .claude
@@ -102,15 +102,26 @@ eval processes left: 0
   The cap file is what the executor watches to revoke the proxy key at once
   (`packages/bench/test/tdm39-executor-proxy-key.test.ts`).
 
-## Wiring TDM-16's helpers (executor)
+## Wiring TDM-16's helpers (executor, `packages/bench/src/executor.ts`)
 
-`TrialPrepared.proxy_key` is the adapter: the TrialSource passes
-`{ secret: cred.secret, revoke: () => revokeTrialProxyCredential(keys, cred), enforce: () =>
-enforceTrialProxyBudget({ keyId: cred.keyId, capMicroUsd }) }` and puts the proxy env file in
-`files` as `.anybench/proxy.env` (mode 0600). The executor calls `enforce` every poll, revokes on
-the runner's `token_cap.exceeded` or the driver's `coding-agent/token-cap.json`, and revokes at
-the end of the attempt on every path except a worker abort or lost lease. The secret also goes to
-`~/.anybench/env` as `ANYBENCH_PROXY_AUTH_TOKEN`, so the runner redacts it.
+- Trial start: a `TrialPrepared.naive_proxy {model, smallFastModel?, capMicroUsd}` plus
+  `ExecutorDeps.naiveProxy {keys: liveProxyKeys(admin), spend: liveLedgerSpend(admin)}` makes the
+  executor call `provisionClaudeCodeProxyEnv` at launch (over the ComputeProvider through
+  `naiveComputersOver`), before it writes `~/.anybench/env`. The key id and creation time are
+  logged; the secret is not.
+- `trialProxySecret(cred)` goes into `~/.anybench/env` as `ANYBENCH_PROXY_AUTH_TOKEN`, so the
+  runner redacts it from every log and event.
+- Every poll: `enforceTrialProxyBudget({keys, spend}, {keyId, capMicroUsd, since: createdAt})`,
+  plus the runner's `token_cap.exceeded` and the driver's `coding-agent/token-cap.json`. Any of
+  them revokes the key at once (`createProxyKeyGuard`, @anybench/kit).
+- End of the attempt, on every path except a worker abort or lost lease (the attempt is still
+  running and is re-attached): `revokeTrialProxyCredential`. A failed revoke is retried with
+  backoff and again at the end.
+- A source that mints its own key passes `TrialPrepared.proxy_key {secret, revoke, enforce}`.
+- Not done here (needs a migration): storing `keyId`/`createdAt` on the trial row, so a
+  re-attached execution can keep enforcing and `computer.reap` can call
+  `revokeStaleTrialProxyKeys(keys, keep)` with the live trials' key ids.
+
 `withCapacityRetry(computers)` (@anybench/naive) retries a Naïve 429 on create, exec, writeFile
 and mkdir with exponential backoff; it never retries a 5xx.
 

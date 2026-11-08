@@ -4,6 +4,7 @@
 // runner's redaction list (~/.anybench/env).
 import { describe, expect, it } from "vitest";
 import { parseEnvFile } from "@anybench/runner";
+import { FakeProxyKeys, FakeProxySpend } from "@anybench/naive";
 import { executeTrial, PROXY_SECRET_ENV_NAME, type TrialPrepared } from "../src/index.js";
 import {
   harnessTdm49,
@@ -116,5 +117,90 @@ describe("executor: Naïve proxy key (TDM-39)", () => {
     ac.abort();
     expect((await p).kind).toBe("aborted");
     expect(log).not.toContain("revoke");
+  });
+
+  it("mints the key with TDM-16 at launch, enforces the budget, revokes at the cap and at the end", async () => {
+    const h = harnessTdm49();
+    installFakeRunnerTdm49(h.fake, () => "ok", 40);
+    // The fake shell has no chmod / umask / stat: answer TDM-16's env-file checks.
+    h.fake.onExec(/proxy\.env|chmod 700/, (ctx) => {
+      if (!ctx.command.includes("stat -c")) return { exitCode: 0 };
+      const text = ctx.readFile(`${ctx.home}/.anybench/proxy.env`) ?? "";
+      return { exitCode: 0, stdout: `600 ${new TextEncoder().encode(text).byteLength}\n` };
+    });
+    let envText = "";
+    let proxyText = "";
+    h.fake.onExec(/\.anybench\/bin\/runner' --trial/, (ctx) => {
+      envText = ctx.readFile(`${ctx.home}/.anybench/env`) ?? "";
+      proxyText = ctx.readFile(`${ctx.home}/.anybench/proxy.env`) ?? "";
+      return { exitCode: 0 };
+    });
+    const keys = new FakeProxyKeys();
+    const spend = new FakeProxySpend();
+    const out = await executeTrial(
+      h.deps({
+        naiveProxy: { keys, spend },
+        source: {
+          prepare: async () => ({
+            ...preparedTdm49(),
+            naive_proxy: { model: "anthropic/claude-sonnet-4.6", capMicroUsd: 1_000_000n },
+          }),
+        },
+      }),
+      h.newTrial(),
+    );
+    // This fake launch never writes status: runner_start, a retry. The key is still revoked.
+    expect(out.kind).toBe("retry");
+    const [key] = [...keys.keys.values()];
+    expect(key!.name).toMatch(/^anybench-trial-/);
+    expect(key!.revoked).toBe(true);
+    expect(parseEnvFile(proxyText)).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: key!.secret,
+      ANTHROPIC_MODEL: "anthropic/claude-sonnet-4.6",
+      MAX_THINKING_TOKENS: "0",
+    });
+    expect(parseEnvFile(envText)[PROXY_SECRET_ENV_NAME]).toBe(key!.secret);
+    for (const c of h.fake.commands()) expect(c.command).not.toContain(key!.secret);
+  });
+
+  it("revokes mid-run when the ledger says the key spent its cap", async () => {
+    const h = harnessTdm49();
+    installFakeRunnerTdm49(h.fake, () => "ok", 40);
+    h.fake.onExec(/proxy\.env|chmod 700/, (ctx) => {
+      if (!ctx.command.includes("stat -c")) return { exitCode: 0 };
+      const text = ctx.readFile(`${ctx.home}/.anybench/proxy.env`) ?? "";
+      return { exitCode: 0, stdout: `600 ${new TextEncoder().encode(text).byteLength}\n` };
+    });
+    const keys = new FakeProxyKeys();
+    const spend = new FakeProxySpend();
+    let revokedWhile = "";
+    const trialId = h.newTrial();
+    const realRevoke = keys.revoke.bind(keys);
+    keys.revoke = async (id) => {
+      revokedWhile ||= (await h.store.get(trialId))!.state;
+      await realRevoke(id);
+    };
+    const p = executeTrial(
+      h.deps({
+        naiveProxy: { keys, spend },
+        source: {
+          prepare: async () => ({
+            ...preparedTdm49(),
+            naive_proxy: { model: "anthropic/claude-sonnet-4.6", capMicroUsd: 50_000n },
+          }),
+        },
+      }),
+      trialId,
+    );
+    await waitForTdm49(() => keys.keys.size > 0 && h.fake.detached().length > 0);
+    const [key] = [...keys.keys.values()];
+    spend.add({
+      actorKeyId: key!.id,
+      billedMicroUsd: 60_000n,
+      createdAt: "2026-11-08T00:00:01.000Z",
+    });
+    await waitForTdm49(() => key!.revoked);
+    expect(["installing", "warming", "running"]).toContain(revokedWhile);
+    expect((await p).kind).toBe("collected");
   });
 });

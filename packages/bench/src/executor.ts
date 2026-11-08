@@ -57,6 +57,8 @@
 // computer or launches a second runner for the same attempt.
 import {
   AnybenchEventSchema,
+  driverTokenCapTokens,
+  isAgentDriver,
   isTerminalTrialState,
   TRIAL_MAX_INFRA_RETRIES,
   TRIAL_PHASES,
@@ -76,6 +78,15 @@ import {
   DRIVER_TOKEN_CAP_FILE,
   type ProxyKeyGuard,
 } from "@anybench/kit";
+import {
+  enforceTrialProxyBudget,
+  provisionClaudeCodeProxyEnv,
+  revokeTrialProxyCredential,
+  trialProxySecret,
+  type NaiveComputersApi,
+  type NaiveProxyKeysApi,
+  type ProxySpendSource,
+} from "@anybench/naive";
 import {
   decodeText,
   isProviderError,
@@ -236,8 +247,20 @@ export interface TrialPrepared {
   secrets: Record<string, string>;
   /** Workload inputs and the like, relative to the computer's home (e.g. `eval/in/words.txt`). */
   files?: { path: string; content: string | Uint8Array; mode?: number }[];
-  /** TDM-39: the trial's Naïve proxy key, when its tokens come from the Naïve proxy. */
+  /** TDM-39: the trial's Naïve proxy key, when the source minted it itself. */
   proxy_key?: TrialProxyKey;
+  /**
+   * TDM-39: mint the trial's Naïve proxy key at launch (`ExecutorDeps.naiveProxy` required):
+   * `provisionClaudeCodeProxyEnv` writes ~/.anybench/proxy.env (0600) for the coding-agent
+   * driver; the budget is enforced each poll and the key revoked at the cap and at attempt end.
+   */
+  naive_proxy?: {
+    /** Naïve catalogue id, e.g. `anthropic/claude-sonnet-4.6`. */
+    model: string;
+    smallFastModel?: string;
+    /** The trial's spend cap (its token cap in micro-USD). */
+    capMicroUsd: MicroUsd;
+  };
 }
 
 /**
@@ -251,8 +274,11 @@ export interface TrialPrepared {
 export interface TrialProxyKey {
   /** Revoke the key (TDM-16 `revokeTrialProxyCredential`). Must be idempotent. */
   revoke: () => Promise<void>;
-  /** Each poll: TDM-16 `enforceTrialProxyBudget({keyId, capMicroUsd})` (revokes at the cap). */
-  enforce?: () => Promise<void>;
+  /**
+   * Each poll: TDM-16 `enforceTrialProxyBudget(...)`, which revokes at the cap. Return true when
+   * it did, so the executor records the cap hit.
+   */
+  enforce?: () => Promise<boolean | void>;
   /**
    * The key's secret. Added to ~/.anybench/env as ANYBENCH_PROXY_AUTH_TOKEN so the runner redacts
    * it from every log and event, even when the agent prints its env file into its transcript.
@@ -329,6 +355,11 @@ export interface ExecutorDeps {
   /** Upload the frozen bundle when the runner's own upload failed (fs/read fallback). */
   fallbackUpload?: (trial: ExecTrial, bundle: Uint8Array) => Promise<{ key: string } | null>;
   timing?: Partial<ExecutorTiming>;
+  /**
+   * TDM-39: Naïve proxy credentials for trials whose `TrialPrepared.naive_proxy` is set
+   * (`liveProxyKeys(admin)` + `liveLedgerSpend(admin)`, or the fakes in tests).
+   */
+  naiveProxy?: { keys: NaiveProxyKeysApi; spend: ProxySpendSource; baseUrl?: string };
   actor?: EventActor;
   logger?: ExecLogger;
   now?: () => number;
@@ -590,8 +621,49 @@ export function trialJobFromKit(
     },
     // What the kit says the adapters get (TDM-41): `versions`, `driver.model`, a harness's
     // human_in_loop and cap (anybench.yaml never reaches the subject computer), driver.env, and
-    // the `vary` setup, in that precedence.
-    env: contenderDriverEnv(kit, contender.id, workload.id, setup),
+    // the `vary` setup, in that precedence. TDM-39: under them, an agent driver's turn and token
+    // caps (ANYBENCH_MAX_TURNS, ANYBENCH_TOKEN_CAP_TOKENS); the spend cap goes to the runner.
+    env: { ...agentDriverEnv(d), ...contenderDriverEnv(kit, contender.id, workload.id, setup) },
+    ...(isAgentDriver(d) && d.token_cap_micro_usd !== undefined
+      ? { token_cap_micro_usd: d.token_cap_micro_usd }
+      : {}),
+  };
+}
+
+/** The agent pins and caps a coding-agent / harness driver reads (drivers/coding-agent). */
+function agentDriverEnv(d: KitSpec["contenders"][number]["driver"]): Record<string, string> {
+  if (!isAgentDriver(d)) return {};
+  const tokens = driverTokenCapTokens(d);
+  return {
+    ...(d.model !== undefined ? { ANYBENCH_MODEL: d.model } : {}),
+    ...(d.max_turns !== undefined ? { ANYBENCH_MAX_TURNS: String(d.max_turns) } : {}),
+    ...(tokens !== undefined ? { ANYBENCH_TOKEN_CAP_TOKENS: String(tokens) } : {}),
+  };
+}
+
+/**
+ * TDM-39: the slice of NaiveComputersApi that TDM-16's `provisionClaudeCodeProxyEnv` writes
+ * through, over the executor's ComputeProvider (fs.write for the file, exec for chmod / stat).
+ */
+export function naiveComputersOver(
+  provider: ComputerRegistry["provider"],
+): Pick<NaiveComputersApi, "mkdir" | "writeFile" | "exec"> {
+  return {
+    mkdir: async (id, path) => {
+      const r = await provider.exec(id, `mkdir -p ${shellQuote(path)}`, { timeoutMs: 30_000 });
+      if (r.exitCode !== 0) throw new Error(`mkdir ${path} failed (exit ${r.exitCode})`);
+    },
+    writeFile: async (id, path, content) => {
+      await provider.putFile(id, path, content, { mode: 0o600 });
+    },
+    exec: async (id, command, opts) => {
+      const r = await provider.exec(
+        id,
+        command,
+        opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {},
+      );
+      return { ...r, durationMs: r.durationMs };
+    },
   };
 }
 
@@ -657,6 +729,7 @@ class TrialExecution {
   private cancelWritten = false;
   /** TDM-39: revokes the trial's Naïve proxy key at a cap hit and at the end of the attempt. */
   private proxyGuard: ProxyKeyGuard | null = null;
+  private proxyKey: TrialProxyKey | null = null;
 
   constructor(
     private readonly deps: ExecutorDeps,
@@ -869,24 +942,7 @@ class TrialExecution {
     if (!this.prepared) {
       try {
         this.prepared = await this.deps.source.prepare(this.t);
-        const key = this.prepared.proxy_key;
-        if (key) {
-          this.proxyGuard = createProxyKeyGuard({
-            revoke: key.revoke,
-            sleep: (ms) => this.sleep(ms),
-            onRevoked: (r) => {
-              const log = { trialId: this.trialId, ...r };
-              if (r.ok) this.deps.logger?.info(log, "proxy key revoked");
-              else this.deps.logger?.error(log, "proxy key revoke FAILED (the reaper will retry)");
-            },
-          });
-          if (key.secret !== undefined) {
-            this.prepared = {
-              ...this.prepared,
-              secrets: { ...this.prepared.secrets, [PROXY_SECRET_ENV_NAME]: key.secret },
-            };
-          }
-        }
+        if (this.prepared.proxy_key) this.installProxyKey(this.prepared.proxy_key);
       } catch (err) {
         throw new InfraFailure(`could not prepare the trial: ${errMessage(err)}`, "prepare");
       }
@@ -1152,8 +1208,20 @@ class TrialExecution {
       throw new InfraFailure(`could not reset ~/eval (exit ${r.exitCode})`, "prepare");
     }
     this.checkStop();
+    // TDM-39: the proxy key first, so its secret joins the runner's redaction list below.
+    let proxySecret: string | undefined;
+    try {
+      proxySecret = await this.provisionProxyKey(prepared);
+    } catch (err) {
+      if (err instanceof InfraFailure) throw err;
+      throw new InfraFailure(`could not mint the Naïve proxy key: ${errMessage(err)}`, "prepare");
+    }
+    const secrets =
+      proxySecret === undefined
+        ? prepared.secrets
+        : { ...prepared.secrets, [PROXY_SECRET_ENV_NAME]: proxySecret };
     // Secrets and the token go through fs.write only (Naïve keeps exec history unredacted).
-    await provider.putFile(pid, p.envFile, formatEnvFile(prepared.secrets), { mode: 0o600 });
+    await provider.putFile(pid, p.envFile, formatEnvFile(secrets), { mode: 0o600 });
     for (const f of prepared.files ?? []) {
       await provider.putFile(pid, f.path, f.content, f.mode === undefined ? {} : { mode: f.mode });
     }
@@ -1312,13 +1380,72 @@ class TrialExecution {
     }
   }
 
+  /** TDM-39: watch this key: revoke at a cap and at attempt end. */
+  private installProxyKey(key: TrialProxyKey): void {
+    this.proxyKey = key;
+    this.proxyGuard = createProxyKeyGuard({
+      revoke: key.revoke,
+      sleep: (ms) => this.sleep(ms),
+      onRevoked: (r) => {
+        const log = { trialId: this.trialId, ...r };
+        if (r.ok) this.deps.logger?.info(log, "proxy key revoked");
+        else this.deps.logger?.error(log, "proxy key revoke FAILED (the reaper will retry)");
+      },
+    });
+  }
+
+  /**
+   * TDM-39: mint the trial's proxy key and write ~/.anybench/proxy.env (TDM-16). Returns the
+   * secret for the runner's redaction list. The key id and creation time are logged, never the
+   * secret.
+   */
+  private async provisionProxyKey(prepared: TrialPrepared): Promise<string | undefined> {
+    const want = prepared.naive_proxy;
+    if (!want) return prepared.proxy_key?.secret;
+    const np = this.deps.naiveProxy;
+    if (!np) {
+      throw new InfraFailure(
+        "the trial needs a Naïve proxy key but the worker has no Naïve admin key",
+        "prepare",
+      );
+    }
+    const pid = this.computer!.info.id;
+    const { credential } = await provisionClaudeCodeProxyEnv(
+      { keys: np.keys, computers: naiveComputersOver(this.deps.registry.provider) },
+      {
+        trialId: this.t.id,
+        computerId: pid,
+        model: want.model,
+        ...(want.smallFastModel ? { smallFastModel: want.smallFastModel } : {}),
+        ...(np.baseUrl ? { baseUrl: np.baseUrl } : {}),
+        fsHome: this.computer!.info.home,
+      },
+    );
+    this.deps.logger?.info(
+      { trialId: this.trialId, keyId: credential.keyId, createdAt: credential.createdAt },
+      "naive proxy key minted",
+    );
+    this.installProxyKey({
+      revoke: () => revokeTrialProxyCredential(np.keys, credential),
+      enforce: async () =>
+        (
+          await enforceTrialProxyBudget(
+            { keys: np.keys, spend: np.spend },
+            { keyId: credential.keyId, capMicroUsd: want.capMicroUsd, since: credential.createdAt },
+          )
+        ).revoked,
+    });
+    return trialProxySecret(credential);
+  }
+
   /** TDM-39: enforce the proxy budget and revoke the key the moment any cap is hit. */
   private async watchProxyKey(status: RunnerStatus | null): Promise<void> {
     const guard = this.proxyGuard;
-    const key = this.prepared?.proxy_key;
+    const key = this.proxyKey;
     if (!guard || !key || guard.revoked) return;
     try {
-      await key.enforce?.();
+      if ((await key.enforce?.()) === true)
+        await guard.capHit("naive: proxy spend reached the cap");
       if (status) await guard.observeRunnerStatus(status);
       if (!guard.revoked && (await this.driverTokenCapHit())) {
         await guard.capHit("coding-agent driver: token cap exceeded");

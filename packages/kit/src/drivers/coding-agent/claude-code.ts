@@ -90,15 +90,16 @@ eval_uid="$(as_eval id -u)" || fail "cannot run as $eval_user (runuser, or passw
 [ "$eval_uid" != 0 ] || fail "$eval_user is uid 0: the agent under test never runs as root"`;
 
 /** Where the model tokens come from (plan.md 17.2 rule 4: one source for every contender). */
-export const TOKEN_SOURCES = ["naive-proxy", "anthropic-key"] as const;
+export const TOKEN_SOURCES = ["naive_proxy", "anthropic_key"] as const;
 export type TokenSource = (typeof TOKEN_SOURCES)[number];
 /** Contender env (`driver.env`) that picks the token source. Harness drivers read it too. */
-export const TOKEN_SOURCE_ENV = "ANYBENCH_TOKEN_SOURCE";
+export const TOKEN_SOURCE_ENV = "AB_TOKEN_SOURCE";
 /** The default: our runs are paid from Naïve credit through the Naïve proxy (TDM-16). */
-export const DEFAULT_TOKEN_SOURCE: TokenSource = "naive-proxy";
+export const DEFAULT_TOKEN_SOURCE: TokenSource = "naive_proxy";
 /**
  * Where the worker writes the proxy env (`provisionClaudeCodeProxyEnv` in @anybench/naive):
- * `$HOME/.anybench/proxy.env` of the runner's user. ANYBENCH_PROXY_ENV_FILE overrides it.
+ * `$HOME/.anybench/proxy.env` of the runner's user. NAIVE_PROXY_ENV (the Tandem kit's name) or
+ * ANYBENCH_PROXY_ENV_FILE overrides it.
  */
 export const PROXY_ENV_FILE_DEFAULT = "$HOME/.anybench/proxy.env";
 /**
@@ -140,11 +141,11 @@ export const PROXY_SECRET_NAMES = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] 
  * \`$eval_home/.anybench-secrets/<NAME>\` (dir 0700), each written through a pipe (never argv).
  * The launcher exports every file to Claude Code and deletes them before it starts.
  *
- * - \`token_source=naive-proxy\`: every \`KEY='value'\` line of the proxy env file (base URL,
+ * - \`token_source=naive_proxy\`: every \`KEY='value'\` line of the proxy env file (base URL,
  *   the per-trial \`proxy:write\` token, the Naïve model ids, the capability switches). Sets
  *   \`proxy_model\` (ANTHROPIC_MODEL), \`proxy_thinking\` (MAX_THINKING_TOKENS) and
  *   \`proxy_capabilities\` (CLAUDE_CODE_MODEL_CAPABILITIES) for versions.json.
- * - \`token_source=anthropic-key\` (BYOK): ANTHROPIC_API_KEY from the env (the runner exports
+ * - \`token_source=anthropic_key\` (BYOK): ANTHROPIC_API_KEY from the env (the runner exports
  *   ~/.anybench/env to the driver) or the EVAL_SECRETS file.
  * Then each name in \`$secret_names\` the same way as the key. Secret values stay in
  * \`secret_value_<i>\` shell variables for the redactor; sets \`secret_count\`.
@@ -168,10 +169,10 @@ lookup_secret() {
   printf '%s' "$v"
 }
 proxy_model="" proxy_thinking="" proxy_capabilities=""
-if [ "$token_source" = naive-proxy ]; then
-  proxy_file="\${ANYBENCH_PROXY_ENV_FILE:-$HOME/.anybench/proxy.env}"
+if [ "$token_source" = naive_proxy ]; then
+  proxy_file="\${NAIVE_PROXY_ENV:-\${ANYBENCH_PROXY_ENV_FILE:-$HOME/.anybench/proxy.env}}"
   [ -f "$proxy_file" ] && [ -r "$proxy_file" ] ||
-    fail "token source naive-proxy: no proxy env file at $proxy_file (the worker writes it with provisionClaudeCodeProxyEnv)"
+    fail "token source naive_proxy: no proxy env file at $proxy_file (the worker writes it with provisionClaudeCodeProxyEnv)"
   saw_url=0 saw_token=0 key_re='^[A-Z_][A-Z0-9_]*$'
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in '' | '#'*) continue ;; esac
@@ -194,6 +195,14 @@ if [ "$token_source" = naive-proxy ]; then
   done < "$proxy_file"
   [ "$saw_url" -eq 1 ] && [ "$saw_token" -eq 1 ] ||
     fail "the proxy env file must set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN"
+  # The kit's proxy settings (driver.env) win over the file's, as in the Tandem kit's drivers.
+  for name in ${[...Object.keys(PROXY_REQUIRED_ENV), ...PROXY_MODEL_ENV.filter((n) => n !== "ANTHROPIC_MODEL")].join(" ")}; do
+    if [ -n "\${!name:-}" ]; then
+      put_env "$name" "\${!name}" 0
+      printf -v "proxy_seen_$name" '%s' "\${!name}"
+      [ "$name" != CLAUDE_CODE_MODEL_CAPABILITIES ] || proxy_capabilities="\${!name}"
+    fi
+  done
   # Required proxy switches (TDM-16): added when missing, refused when set to anything else.
 ${Object.entries(PROXY_REQUIRED_ENV)
   .filter(([k]) => k !== "CLAUDE_CODE_MODEL_CAPABILITIES")
@@ -222,7 +231,7 @@ ${Object.entries(PROXY_REQUIRED_ENV)
   proxy_model="$proxy_seen_ANTHROPIC_MODEL"
 else
   value="$(lookup_secret ANTHROPIC_API_KEY)"
-  [ -n "$value" ] || fail "secret ANTHROPIC_API_KEY is not set (token source anthropic-key: the worker writes it to ~/.anybench/env)"
+  [ -n "$value" ] || fail "secret ANTHROPIC_API_KEY is not set (token source anthropic_key: the worker writes it to ~/.anybench/env)"
   put_env ANTHROPIC_API_KEY "$value" 1
 fi
 for name in $secret_names; do

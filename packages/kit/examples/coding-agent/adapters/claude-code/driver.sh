@@ -14,8 +14,8 @@
 # CC_MAX_TURNS / ANYBENCH_MAX_TURNS and CC_TOKEN_CAP / ANYBENCH_TOKEN_CAP_TOKENS (can only lower
 # the caps; the token cap stops the run when the stream crosses it), CLAUDE_MD_OVERLAY (kit-relative,
 # appended to CLAUDE.md: the planted regression), ANYBENCH_EVAL_USER / ANYBENCH_EVAL_HOME.
-# ANYBENCH_TOKEN_SOURCE: naive-proxy (default; the worker's ANYBENCH_PROXY_ENV_FILE, default
-# $HOME/.anybench/proxy.env) or anthropic-key (BYOK ANTHROPIC_API_KEY from the runner's env or
+# AB_TOKEN_SOURCE: naive_proxy (default; the worker's proxy env file NAIVE_PROXY_ENV, default
+# $HOME/.anybench/proxy.env) or anthropic_key (BYOK ANTHROPIC_API_KEY from the runner's env or
 # EVAL_SECRETS). Credentials reach the agent only as 0600 files, never on a command line.
 set -euo pipefail
 
@@ -207,15 +207,15 @@ run_agent() {
     fail "model '$model' is not a pin: set driver.model to a dated id (e.g. claude-sonnet-4-5-20250929) or a Naïve id (e.g. anthropic/claude-sonnet-4.6)"
 
   # Token source (rule 4: the same for every contender): the Naïve proxy (default) or BYOK.
-  token_source="${ANYBENCH_TOKEN_SOURCE:-naive-proxy}"
+  token_source="${AB_TOKEN_SOURCE:-naive_proxy}"
   case "$token_source" in
-    naive-proxy)
-      case "$model" in */*) ;; *) fail "token source naive-proxy needs a Naïve model id (e.g. anthropic/claude-sonnet-4.6), not $model" ;; esac
+    naive_proxy)
+      case "$model" in */*) ;; *) fail "token source naive_proxy needs a Naïve model id (e.g. anthropic/claude-sonnet-4.6), not $model" ;; esac
       ;;
-    anthropic-key)
-      case "$model" in */*) fail "token source anthropic-key needs an Anthropic model id, not the Naïve id $model" ;; esac
+    anthropic_key)
+      case "$model" in */*) fail "token source anthropic_key needs an Anthropic model id, not the Naïve id $model" ;; esac
       ;;
-    *) fail "ANYBENCH_TOKEN_SOURCE must be naive-proxy or anthropic-key, not '$token_source'" ;;
+    *) fail "AB_TOKEN_SOURCE must be naive_proxy or anthropic_key, not '$token_source'" ;;
   esac
 
   # Turn cap: the lowest of the baked cap, the kit's (CC_MAX_TURNS / ANYBENCH_MAX_TURNS), the do-less cap.
@@ -318,10 +318,10 @@ run_agent() {
     printf '%s' "$v"
   }
   proxy_model="" proxy_thinking="" proxy_capabilities=""
-  if [ "$token_source" = naive-proxy ]; then
-    proxy_file="${ANYBENCH_PROXY_ENV_FILE:-$HOME/.anybench/proxy.env}"
+  if [ "$token_source" = naive_proxy ]; then
+    proxy_file="${NAIVE_PROXY_ENV:-${ANYBENCH_PROXY_ENV_FILE:-$HOME/.anybench/proxy.env}}"
     [ -f "$proxy_file" ] && [ -r "$proxy_file" ] ||
-      fail "token source naive-proxy: no proxy env file at $proxy_file (the worker writes it with provisionClaudeCodeProxyEnv)"
+      fail "token source naive_proxy: no proxy env file at $proxy_file (the worker writes it with provisionClaudeCodeProxyEnv)"
     saw_url=0 saw_token=0 key_re='^[A-Z_][A-Z0-9_]*$'
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in '' | '#'*) continue ;; esac
@@ -344,6 +344,14 @@ run_agent() {
     done < "$proxy_file"
     [ "$saw_url" -eq 1 ] && [ "$saw_token" -eq 1 ] ||
       fail "the proxy env file must set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN"
+    # The kit's proxy settings (driver.env) win over the file's, as in the Tandem kit's drivers.
+    for name in CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS MAX_THINKING_TOKENS CLAUDE_CODE_MODEL_CAPABILITIES ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_SMALL_FAST_MODEL; do
+      if [ -n "${!name:-}" ]; then
+        put_env "$name" "${!name}" 0
+        printf -v "proxy_seen_$name" '%s' "${!name}"
+        [ "$name" != CLAUDE_CODE_MODEL_CAPABILITIES ] || proxy_capabilities="${!name}"
+      fi
+    done
     # Required proxy switches (TDM-16): added when missing, refused when set to anything else.
     if [ -z "${proxy_seen_CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS+x}" ]; then put_env CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS '1' 0; proxy_seen_CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS='1'; fi
     [ "$proxy_seen_CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" = '1' ] || fail "the proxy env file sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=$proxy_seen_CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS; the Naïve proxy needs CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1"
@@ -366,7 +374,7 @@ run_agent() {
     proxy_model="$proxy_seen_ANTHROPIC_MODEL"
   else
     value="$(lookup_secret ANTHROPIC_API_KEY)"
-    [ -n "$value" ] || fail "secret ANTHROPIC_API_KEY is not set (token source anthropic-key: the worker writes it to ~/.anybench/env)"
+    [ -n "$value" ] || fail "secret ANTHROPIC_API_KEY is not set (token source anthropic_key: the worker writes it to ~/.anybench/env)"
     put_env ANTHROPIC_API_KEY "$value" 1
   fi
   for name in $secret_names; do
@@ -379,7 +387,9 @@ run_agent() {
     fail "the proxy env file sets ANTHROPIC_MODEL=$proxy_model, but the kit pins $model"
   fi
   local effort=default thinking=default provider=anthropic
-  if [ "$token_source" = naive-proxy ]; then
+  local token_disclosed=anthropic-key
+  if [ "$token_source" = naive_proxy ]; then
+    token_disclosed=naive-proxy
     provider="naive:${model%%/*}"
     # TDM-16: the proxy refuses effort, adaptive thinking and context management, so the proxy
     # env turns them off. Disclosed with every trial.
@@ -398,7 +408,7 @@ run_agent() {
   node_version="$(as_eval node --version 2> /dev/null | tr -d '\000-\037"\\')" || node_version=""
   printf '{"contender":"%s","claude_code":"%s","claude_code_reported":"%s","model":"%s","node":"%s","eval_user":"%s","max_turns":"%s","token_cap_tokens":"%s","disallowed_tools":"%s","token_source":"%s","provider":"%s","effort":"%s","thinking":"%s","model_capabilities":"%s","do_less":%s}\n' \
     "$contender" "$cc_version" "$reported" "$model" "$node_version" "$eval_user" "$max_turns" "$token_cap" "$tools" \
-    "$token_source" "$provider" "$effort" "$(printf '%s' "$thinking" | tr -d '\000-\037"\\')" "$(printf '%s' "$proxy_capabilities" | tr -d '\000-\037"\\')" \
+    "$token_disclosed" "$provider" "$effort" "$(printf '%s' "$thinking" | tr -d '\000-\037"\\')" "$(printf '%s' "$proxy_capabilities" | tr -d '\000-\037"\\')" \
     "$([ "$do_less" -eq 1 ] && echo true || echo false)" > "$out/versions.json"
 
   # 4. The run: stream-json redacted, teed to stdout (token meter) and to stream.jsonl.
