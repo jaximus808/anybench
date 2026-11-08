@@ -20,6 +20,7 @@ const PLAN_TABLES = [
   "reviews",
   "reports",
   "bottlenecks",
+  "scans", // TDM-67: GitHub scan requests (contract apiRoutes.scan)
   // agents
   "agent_sessions",
   "agent_events",

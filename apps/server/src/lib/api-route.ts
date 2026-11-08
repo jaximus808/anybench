@@ -1,0 +1,155 @@
+// Small Hono glue over the core route contract (TDM-67), shared by the runs, kits and scan routers.
+//
+// - `withActor(deps)`: authenticates through `deps.authenticate` (the session cookie by default,
+//   TDM-65; the API-key ticket TDM-66 wraps the same port), so routers never read cookies or keys
+//   themselves and stay unchanged when the authenticator grows. Sets `c.get("actor")`.
+// - `parseOrFail` / `send`: validate the request and the response against the core descriptor.
+//   Every success body passes `encodeRouteResponse`, which throws (500) rather than break the
+//   contract. Errors are core ApiErrorBody JSON.
+import {
+  API_ERROR_STATUS,
+  apiError,
+  encodeRouteResponse,
+  parseRouteRequest,
+  successStatus,
+  type ApiErrorCode,
+  type RawRequest,
+  type RouteRequest,
+  type RouteResult,
+  type RouteSpec,
+  type UserId,
+} from "@anybench/core";
+import type { Context, MiddlewareHandler } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { AppDeps, AppEnv } from "../types.js";
+
+/** The caller of a tenant route: always a user (API keys resolve to their owner). */
+export interface RouteActor {
+  kind: "user";
+  userId: UserId;
+}
+
+/** Hono env for routers behind `withActor`. */
+export interface ActorEnv {
+  Variables: AppEnv["Variables"] & { actor: RouteActor };
+}
+
+export type ActorContext = Context<ActorEnv>;
+
+/** JSON error with the core ApiErrorBody shape and the status that code implies. */
+export function fail(
+  c: Context<AppEnv> | ActorContext,
+  code: ApiErrorCode,
+  message: string,
+  issues?: string[],
+) {
+  return c.json(
+    apiError(code, message, {
+      ...(issues && issues.length > 0 ? { issues } : {}),
+      request_id: c.get("requestId"),
+    }),
+    API_ERROR_STATUS[code] as ContentfulStatusCode,
+  );
+}
+
+/** 401 without credentials; 403 for a non-user actor (system actors never call tenant routes). */
+export function withActor(deps: Pick<AppDeps, "authenticate">): MiddlewareHandler<ActorEnv> {
+  return async (c, next) => {
+    const actor = deps.authenticate ? await deps.authenticate(c.req.raw) : null;
+    if (!actor) return fail(c, "unauthorized", "sign in or pass an API key");
+    if (actor.kind !== "user") return fail(c, "forbidden", "tenant routes need a user");
+    c.set("actor", { kind: "user", userId: actor.userId.toLowerCase() as UserId });
+    await next();
+  };
+}
+
+/** The request body as JSON: undefined when empty, a 400 marker when it is not JSON. */
+async function jsonBody(c: ActorContext): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  const text = await c.req.text();
+  if (text.trim() === "") return { ok: true, body: undefined };
+  try {
+    return { ok: true, body: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export type Parsed<R extends RouteSpec> =
+  { ok: true; request: RouteRequest<R> } | { ok: false; response: Response };
+
+/** Validate params, query, headers and body against `route`; a failure is a ready 400. */
+export async function parseOrFail<R extends RouteSpec>(
+  c: ActorContext,
+  route: R,
+  headers: Record<string, string | undefined> = {},
+): Promise<Parsed<R>> {
+  const raw: RawRequest = { params: c.req.param(), query: c.req.queries(), headers };
+  if (route.body) {
+    const body = await jsonBody(c);
+    if (!body.ok)
+      return { ok: false, response: fail(c, "bad_request", "request body is not valid JSON") };
+    raw.body = body.body;
+  }
+  const parsed = parseRouteRequest(route, raw);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      response: fail(c, "validation_failed", parsed.error.error.message, parsed.error.error.issues),
+    };
+  }
+  return { ok: true, request: parsed.request };
+}
+
+/** Encode `result` with the route's response schema and send it with the route's success status. */
+export function send<R extends RouteSpec>(c: ActorContext, route: R, result: RouteResult<R>) {
+  return c.json(
+    encodeRouteResponse(route, result) as object,
+    successStatus(route) as ContentfulStatusCode,
+  );
+}
+
+/** ISO timestamp for a DB date (core IsoDateTimeSchema). */
+export function iso(d: Date): string {
+  return d.toISOString();
+}
+
+export function isoOrNull(d: Date | null | undefined): string | null {
+  return d ? d.toISOString() : null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Keyset cursors for `newest first` lists: (created_at, id) of the last row, base64url JSON.
+// created_at travels as Postgres text (microseconds), so no row is skipped or repeated.
+
+export interface PageCursor {
+  /** created_at as text with microseconds, e.g. `2026-11-07 21:00:00.123456+00`. */
+  c: string;
+  i: string;
+}
+
+/** Postgres timestamptz text (`2026-11-07 21:00:00.123456+00`) or ISO 8601. */
+const CURSOR_TS = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?([+-]\d{2}(:?\d{2})?|Z)$/;
+
+export function encodeCursor(cur: PageCursor): string {
+  return Buffer.from(JSON.stringify(cur), "utf8").toString("base64url");
+}
+
+export function decodeCursor(raw: string | undefined): PageCursor | null | undefined {
+  if (raw === undefined) return undefined;
+  try {
+    const v = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as unknown;
+    if (
+      v &&
+      typeof v === "object" &&
+      typeof (v as PageCursor).c === "string" &&
+      typeof (v as PageCursor).i === "string" &&
+      /^[0-9a-f-]{36}$/i.test((v as PageCursor).i) &&
+      CURSOR_TS.test((v as PageCursor).c)
+    ) {
+      return { c: (v as PageCursor).c, i: (v as PageCursor).i };
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}

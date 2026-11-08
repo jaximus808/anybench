@@ -4,8 +4,10 @@ import type { RequestIdVariables } from "hono/request-id";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import type { AuthActor } from "./lib/auth-key.js";
+import type { BillingGate } from "./lib/billing-gate.js";
 import type { EventFanout } from "./lib/events.js";
 import type { GitHubOAuth } from "./lib/github-oauth.js";
+import type { JobQueue } from "./lib/job-queue.js";
 import type { Logger } from "./lib/logger.js";
 import type { SentryHandle } from "./lib/sentry.js";
 import type { EventsWriter, TrialArtifactStore } from "./routes/runner.js";
@@ -33,6 +35,10 @@ export interface AppDeps {
   events?: EventsWriter;
   /** Trial artifact storage (`@anybench/envs` ArtifactStore). Upload routes answer 503 without it. */
   artifacts?: TrialArtifactStore;
+  /** The run gate's billing check (TDM-67). Default: lib/billing-gate.ts defaultBillingGate. */
+  billingGate?: BillingGate;
+  /** Enqueues graphile-worker jobs (TDM-67). Default: graphile_worker.add_job on `db`. */
+  jobs?: JobQueue;
 }
 
 /** Hono env for every router: `new Hono<AppEnv>()`. `c.get("log")` is a per-request child logger. */

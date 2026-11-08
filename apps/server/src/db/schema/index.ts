@@ -28,6 +28,7 @@ export * from "./published_benchmarks.js";
 export * from "./reports.js";
 export * from "./reviews.js";
 export * from "./runs.js";
+export * from "./scans.js";
 export * from "./sessions.js";
 export * from "./stripe_events.js";
 export * from "./suppressions.js";

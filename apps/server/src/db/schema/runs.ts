@@ -1,4 +1,13 @@
-import { bigint, check, index, pgTable, text, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  check,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  uuid,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { RUN_STATES } from "./_enums.js";
 import { createdAt, idPk, inList, microUsd, microUsdZero, tstz, updatedAt } from "./_shared.js";
@@ -21,6 +30,11 @@ export const runs = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     question: text("question").notNull(),
+    /**
+     * What POST /runs asked for (TDM-67): `{source, contenders, auto_go}` with the core RunSource
+     * and Contender shapes. The orchestrator ([5.9]) reads it to ingest and to decide auto-go.
+     */
+    intake: jsonb("intake"),
     state: text("state", { enum: RUN_STATES }).notNull().default("intake"),
     budgetMicroUsd: microUsd("budget_micro_usd").notNull(),
     spentMicroUsd: microUsdZero("spent_micro_usd"),

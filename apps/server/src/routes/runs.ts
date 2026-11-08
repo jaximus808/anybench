@@ -1,0 +1,595 @@
+// Run routes (TDM-67, contract core apiRoutes.runs). Mounted at /runs, next to the events router.
+//   GET   /runs              the caller's runs, newest first (keyset cursor), optional ?state=a,b
+//   POST  /runs              create a project + a run at `intake`, write `run.state_changed`
+//                            {from: null, to: intake} in the same transaction, enqueue run.advance
+//   GET   /runs/:id          run + counters + open alerts + agent sessions
+//   PATCH /runs/:id/kit      edit the run's kit (ticket alias of kits.createVersion; see kits.ts)
+//   POST  /runs/:id/go       leave awaiting_go: proven kit, estimate within budget, billing gate
+//   POST  /runs/:id/cancel   set cancel_requested_at, move to cancelled, write the event
+//
+// The API never runs ingest or agents: it persists and enqueues `run.advance` (job key
+// `runs:<id>:<step>`) after the write commits; the orchestrator ([5.9]) does the work. An enqueue
+// failure is logged and does not fail the request (the row is the source of truth).
+//
+// Tenancy: every read and write goes through scopedDb(actor), so RLS limits a user to their own
+// runs and a foreign or unknown run id is a 404 (no existence leak).
+//
+// Go and the billing gate: `deps.billingGate(actor, estimate)` (lib/billing-gate.ts). Its default
+// allows only under BILLING_MODE=off; in test/live it answers the contract's 402
+// `{reason, link_card_url}` until the real gate ([10.6]) is passed in AppDeps.
+import {
+  AlertIdSchema,
+  apiRoutes,
+  isTerminalRunState,
+  KitIdSchema,
+  newId,
+  PendingActionSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+  toJsonValue,
+  transitionRun,
+  UserIdSchema,
+  type AgentSession,
+  type Alert,
+  type AnybenchEvent,
+  type PaymentRequired,
+  type Run,
+  type RunCommand,
+  type RunDetail,
+  type RunSource,
+  type RunState,
+} from "@anybench/core";
+import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
+import { Hono } from "hono";
+import type { DbTx } from "../db/client.js";
+import { agentSessions } from "../db/schema/agent_sessions.js";
+import { alerts } from "../db/schema/alerts.js";
+import { contenders } from "../db/schema/contenders.js";
+import { kits } from "../db/schema/kits.js";
+import { projects } from "../db/schema/projects.js";
+import { runs } from "../db/schema/runs.js";
+import { trials } from "../db/schema/trials.js";
+import { scopedDb } from "../db/scoped.js";
+import {
+  decodeCursor,
+  encodeCursor,
+  fail,
+  iso,
+  isoOrNull,
+  parseOrFail,
+  send,
+  withActor,
+  type ActorContext,
+  type ActorEnv,
+  type RouteActor,
+} from "../lib/api-route.js";
+import type { BillingGate } from "../lib/billing-gate.js";
+import { appendEvents } from "../lib/events.js";
+import type { JobQueue } from "../lib/job-queue.js";
+import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
+import type { AppDeps } from "../types.js";
+import {
+  enqueueKitProof,
+  insertKitVersion,
+  isProven,
+  kitSpecHash,
+  kitSpecIssues,
+  type NewKitVersionResult,
+} from "./kits.js";
+
+const contract = apiRoutes.runs;
+
+export type RunsRouteDeps = AppDeps & { jobs: JobQueue; billingGate: BillingGate };
+
+type RunRow = typeof runs.$inferSelect;
+
+export function toRun(row: RunRow): Run {
+  return {
+    id: row.id as Run["id"],
+    project_id: (row.projectId ?? null) as Run["project_id"],
+    question: row.question,
+    state: row.state,
+    budget_micro_usd: row.budgetMicroUsd,
+    spent_micro_usd: row.spentMicroUsd,
+    estimate_micro_usd: row.estimateMicroUsd ?? null,
+    kit_id: (row.kitId ?? null) as Run["kit_id"],
+    paused_reason: row.pausedReason ?? null,
+    cancel_requested_at: isoOrNull(row.cancelRequestedAt),
+    comped: row.compedBy !== null,
+    created_at: iso(row.createdAt),
+    updated_at: iso(row.updatedAt),
+  };
+}
+
+function stateChanged(
+  runId: string,
+  actor: RouteActor,
+  from: RunState | null,
+  to: RunState,
+  extra: { command?: RunCommand["type"]; reason?: string } = {},
+): AnybenchEvent {
+  return {
+    run_id: runId,
+    seq: 0,
+    type: "run.state_changed",
+    source: "run",
+    source_id: runId,
+    severity: "info",
+    actor: { kind: "user", id: actor.userId },
+    cost_delta_micro_usd: 0n,
+    at: new Date().toISOString(),
+    payload: { from, to, ...extra },
+  };
+}
+
+async function enqueueAdvance(
+  deps: RunsRouteDeps,
+  c: ActorContext,
+  payload: RunAdvancePayload,
+  step: string,
+): Promise<void> {
+  try {
+    await deps.jobs.add(RUN_ADVANCE_JOB, payload, { jobKey: `runs:${payload.run_id}:${step}` });
+  } catch (err) {
+    c.get("log").error({ err, runId: payload.run_id, step }, "could not enqueue run.advance");
+  }
+}
+
+async function lockRun(tx: DbTx, id: string): Promise<RunRow | undefined> {
+  const [row] = await tx.select().from(runs).where(eq(runs.id, id)).for("update").limit(1);
+  return row;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Create
+
+function githubUrl(github: string): string {
+  const path = github
+    .replace(/^https:\/\/github\.com\//, "")
+    .replace(/^github\.com\//, "")
+    .replace(/\.git$/, "");
+  return `https://github.com/${path}`;
+}
+
+function projectOf(source: Exclude<RunSource, { kind: "kit" }>): {
+  source: string;
+  url: string | null;
+} {
+  switch (source.kind) {
+    case "github":
+      return { source: "github", url: githubUrl(source.github) };
+    case "binary":
+      return { source: "binary", url: source.binary_url ?? null };
+    case "claude_setup":
+      return { source: "claude_setup", url: null };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Detail
+
+/** Trial states counted as "running now" on the live page (everything between queued and an end). */
+const TRIAL_END_STATES = ["done", "failed_infra", "failed_subject", "cancelled"] as const;
+const AGENT_STATUSES = ["queued", "running", "waiting", "done", "failed", "cancelled"] as const;
+const AGENT_ENDED = new Set<string>(["done", "failed", "cancelled"]);
+
+function agentStatus(raw: string): AgentSession["status"] {
+  return (AGENT_STATUSES as readonly string[]).includes(raw)
+    ? (raw as AgentSession["status"])
+    : "queued"; // the table's default is `pending`
+}
+
+function toAgentSession(row: typeof agentSessions.$inferSelect, runId: string): AgentSession {
+  const status = agentStatus(row.status);
+  const pending = PendingActionSchema.safeParse(row.pendingAction);
+  return {
+    id: row.id as AgentSession["id"],
+    run_id: runId as AgentSession["run_id"],
+    role: row.role,
+    status,
+    budget_micro_usd: row.budgetMicroUsd,
+    cost_micro_usd: row.costMicroUsd,
+    last_tool: null,
+    stop_reason: row.stopReason ?? null,
+    pending_action: pending.success ? pending.data : null,
+    started_at: status === "queued" ? null : iso(row.createdAt),
+    ended_at: AGENT_ENDED.has(status) ? iso(row.updatedAt) : null,
+  };
+}
+
+function toAlert(row: typeof alerts.$inferSelect): Alert {
+  const payload =
+    row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : {};
+  const ackedBy = UserIdSchema.safeParse(row.ackedBy);
+  return {
+    id: AlertIdSchema.parse(row.id),
+    rule_key: row.ruleKey,
+    fingerprint: row.fingerprint,
+    run_id: (row.runId ?? null) as Alert["run_id"],
+    severity: row.severity,
+    status: row.status,
+    message: typeof payload.message === "string" ? payload.message : row.ruleKey,
+    first_seen: iso(row.firstSeen),
+    last_seen: iso(row.lastSeen),
+    count: Math.max(1, row.count),
+    acked_by: ackedBy.success ? ackedBy.data : null,
+    resolved_at: isoOrNull(row.resolvedAt),
+    auto_action: null,
+    payload,
+  };
+}
+
+async function runDetail(tx: DbTx, row: RunRow): Promise<RunDetail> {
+  const counts = await tx
+    .select({ state: trials.state, n: sql<number>`count(*)::int` })
+    .from(trials)
+    .where(eq(trials.runId, row.id))
+    .groupBy(trials.state);
+  const n = (pred: (s: string) => boolean) =>
+    counts.filter((r) => pred(r.state)).reduce((a, r) => a + r.n, 0);
+  const openAlerts = await tx
+    .select()
+    .from(alerts)
+    .where(and(eq(alerts.runId, row.id), ne(alerts.status, "resolved")))
+    .orderBy(desc(alerts.lastSeen));
+  const agents = await tx
+    .select()
+    .from(agentSessions)
+    .where(eq(agentSessions.runId, row.id))
+    .orderBy(agentSessions.createdAt);
+  const end = isTerminalRunState(row.state) ? row.updatedAt.getTime() : Date.now();
+  return {
+    run: toRun(row),
+    counters: {
+      trials_total: n(() => true),
+      trials_done: n((s) => s === "done"),
+      trials_running: n(
+        (s) => s !== "queued" && !(TRIAL_END_STATES as readonly string[]).includes(s),
+      ),
+      trials_failed: n((s) => s === "failed_infra" || s === "failed_subject"),
+      spent_micro_usd: row.spentMicroUsd,
+      projected_micro_usd: row.estimateMicroUsd ?? null,
+      elapsed_s: Math.max(0, Math.floor((end - row.createdAt.getTime()) / 1000)),
+      eta_s: null,
+      last_seq: Math.max(0, row.nextSeq - 1),
+    },
+    open_alerts: openAlerts.map(toAlert),
+    agents: agents.map((a) => toAgentSession(a, row.id)),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Go
+
+type GoCheck = { ok: true; estimate: bigint } | { ok: false; status: 404 | 409; message: string };
+
+/** Everything Go needs except billing: state, a proven kit, an estimate within the budget. */
+async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
+  if (!run) return { ok: false, status: 404, message: "run not found" };
+  if (run.state !== "awaiting_go") {
+    const t = transitionRun(run.state, {
+      type: "go",
+      estimate_fits_budget: true,
+      billing_gate_passed: true,
+    });
+    return { ok: false, status: 409, message: t.ok ? "run is not awaiting go" : t.error.message };
+  }
+  // No speed or quality number without a correctness gate: Go needs all six proof checks passed.
+  const [kit] = run.kitId
+    ? await tx.select({ proof: kits.proof }).from(kits).where(eq(kits.id, run.kitId)).limit(1)
+    : [];
+  if (!kit || !isProven(kit.proof)) {
+    return { ok: false, status: 409, message: "the run's kit has not passed all six proof checks" };
+  }
+  if (run.estimateMicroUsd === null) {
+    return { ok: false, status: 409, message: "the run has no cost estimate yet" };
+  }
+  const fits = run.estimateMicroUsd <= run.budgetMicroUsd;
+  if (!fits) {
+    const t = transitionRun(run.state, {
+      type: "go",
+      estimate_fits_budget: false,
+      billing_gate_passed: true,
+    });
+    return {
+      ok: false,
+      status: 409,
+      message: t.ok ? "estimate exceeds the run budget" : t.error.message,
+    };
+  }
+  return { ok: true, estimate: run.estimateMicroUsd };
+}
+
+// ---------------------------------------------------------------------------------------------
+
+export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
+  const r = new Hono<ActorEnv>();
+  // Per route, not r.use: this router shares the /runs mount with the events router.
+  const auth = withActor(deps);
+
+  r.get("/", auth, async (c) => {
+    const route = contract.list;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const { query } = parsed.request;
+    const cursor = decodeCursor(query.cursor);
+    if (cursor === null)
+      return fail(c, "validation_failed", "invalid cursor", ["query.cursor: invalid cursor"]);
+    const where: SQL[] = [];
+    if (query.state) where.push(inArray(runs.state, query.state));
+    if (cursor)
+      where.push(
+        sql`(${runs.createdAt}, ${runs.id}) < (${cursor.c}::timestamptz, ${cursor.i}::uuid)`,
+      );
+    const rows = await scopedDb(c.get("actor"), deps.db).transaction((tx) =>
+      tx
+        .select({ run: runs, c: sql<string>`${runs.createdAt}::text` })
+        .from(runs)
+        .where(where.length ? and(...where) : undefined)
+        .orderBy(desc(runs.createdAt), desc(runs.id))
+        .limit(query.limit + 1),
+    );
+    const more = rows.length > query.limit;
+    const page = more ? rows.slice(0, query.limit) : rows;
+    const last = page[page.length - 1];
+    return send(c, route, {
+      items: page.map((p) => toRun(p.run)),
+      next_cursor: more && last ? encodeCursor({ c: last.c, i: last.run.id }) : null,
+    });
+  });
+
+  r.post("/", auth, async (c) => {
+    const route = contract.create;
+    const parsed = await parseOrFail(c, route, {
+      "idempotency-key": c.req.header("idempotency-key"),
+    });
+    if (!parsed.ok) return parsed.response;
+    const { body, headers } = parsed.request;
+    const actor = c.get("actor");
+    const idempotencyKey = headers["idempotency-key"];
+
+    type Created = { run: RunRow; replay: boolean } | { notFound: string };
+    const created = await scopedDb(actor, deps.db).transaction(async (tx): Promise<Created> => {
+      if (idempotencyKey) {
+        // Best effort: a retried create with the same key returns the run it made.
+        const [prior] = await tx
+          .select()
+          .from(runs)
+          .where(sql`${runs.intake}->>'idempotency_key' = ${idempotencyKey}`)
+          .limit(1);
+        if (prior) return { run: prior, replay: true };
+      }
+
+      const runId = newId(RunIdSchema);
+      let projectId: string | null;
+      let rerun: { kitId: string; spec: unknown; filesUrl: string | null } | undefined;
+      if (body.source.kind === "kit") {
+        // Rerun a saved kit: same project, the kit copied as version 1 of the new run.
+        const [k] = await tx
+          .select({ spec: kits.spec, filesUrl: kits.filesUrl, projectId: runs.projectId })
+          .from(kits)
+          .innerJoin(runs, eq(runs.id, kits.runId))
+          .where(eq(kits.id, body.source.kit_id))
+          .limit(1);
+        if (!k) return { notFound: "kit not found" };
+        projectId = k.projectId;
+        rerun = { kitId: body.source.kit_id, spec: k.spec, filesUrl: k.filesUrl };
+      } else {
+        projectId = newId(ProjectIdSchema);
+        await tx
+          .insert(projects)
+          .values({ id: projectId, ownerId: actor.userId, ...projectOf(body.source) });
+      }
+
+      const intake = {
+        source: body.source,
+        contenders: body.contenders,
+        auto_go: body.auto_go,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+      };
+      const [run] = await tx
+        .insert(runs)
+        .values({
+          id: runId,
+          ownerId: actor.userId,
+          projectId,
+          question: body.question,
+          state: "intake",
+          budgetMicroUsd: body.budget_micro_usd,
+          intake: toJsonValue(intake),
+        })
+        .returning();
+      let row = run!;
+
+      if (rerun) {
+        const spec = kitSpecIssues(rerun.spec);
+        if (!spec.ok) throw new Error(`stored kit ${rerun.kitId} no longer validates`);
+        const [kit] = await tx
+          .insert(kits)
+          .values({
+            id: newId(KitIdSchema),
+            ownerId: actor.userId,
+            runId,
+            version: 1,
+            spec: spec.spec,
+            filesUrl: rerun.filesUrl,
+            proof: null,
+            hash: kitSpecHash(spec.spec),
+          })
+          .returning({ id: kits.id });
+        const [withKit] = await tx
+          .update(runs)
+          .set({ kitId: kit!.id })
+          .where(eq(runs.id, runId))
+          .returning();
+        row = withKit!;
+      }
+
+      if (body.contenders.length > 0) {
+        await tx.insert(contenders).values(
+          body.contenders.map((ct) => ({
+            runId,
+            // The kit Contender as given; the intake agent turns it into an adapter.
+            source: JSON.stringify(ct),
+            role: ct.role,
+            status: "kept" as const,
+            foundBy: "user",
+          })),
+        );
+      }
+
+      // Creation is the one edge with no prior state: {from: null, to: intake}.
+      const { lastSeq } = await appendEvents(tx, row.id as Run["id"], [
+        stateChanged(row.id, actor, null, "intake", { reason: "created" }),
+      ]);
+      return { run: { ...row, nextSeq: lastSeq + 1 }, replay: false };
+    });
+
+    if ("notFound" in created) return fail(c, "not_found", created.notFound);
+    if (!created.replay) {
+      await enqueueAdvance(deps, c, { run_id: created.run.id, reason: "created" }, "created");
+    }
+    return send(c, route, { run: toRun(created.run) });
+  });
+
+  r.get("/:id", auth, async (c) => {
+    const route = contract.get;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const detail = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(runs)
+        .where(eq(runs.id, parsed.request.params.id))
+        .limit(1);
+      return row ? runDetail(tx, row) : undefined;
+    });
+    if (!detail) return fail(c, "not_found", "run not found");
+    return send(c, route, detail);
+  });
+
+  // Ticket alias (TDM-67) for editing the run's current kit. The registry route is
+  // kits.createVersion (POST /kits/:id/versions); this one also works before a kit exists
+  // (creates version 1). Same body and response as kits.createVersion.
+  r.patch("/:id/kit", auth, async (c) => {
+    const kitRoute = apiRoutes.kits.createVersion;
+    const idOk = RunIdSchema.safeParse(c.req.param("id"));
+    if (!idOk.success)
+      return fail(c, "validation_failed", "invalid run id", ["params.id: expected a UUID"]);
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return fail(c, "bad_request", "request body is not valid JSON");
+    }
+    const spec = kitSpecIssues((raw as { spec?: unknown } | null)?.spec);
+    if (!spec.ok) return fail(c, "validation_failed", "invalid kit spec", spec.issues);
+    const upload = kitRoute.body.shape.files_upload_id.safeParse(
+      (raw as { files_upload_id?: unknown }).files_upload_id,
+    );
+    if (!upload.success)
+      return fail(c, "validation_failed", "invalid files_upload_id", [
+        "body.files_upload_id: expected a UUID",
+      ]);
+    const actor = c.get("actor");
+    const result: NewKitVersionResult = await scopedDb(actor, deps.db).transaction((tx) =>
+      insertKitVersion(tx, actor, idOk.data, spec.spec, upload.data),
+    );
+    if (!result.ok) return fail(c, result.code, result.message);
+    await enqueueKitProof(deps.jobs, c, result.kit.run_id, result.kit.id);
+    return send(c, kitRoute, { kit: result.kit });
+  });
+
+  r.post("/:id/go", auth, async (c) => {
+    const route = contract.go;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const id = parsed.request.params.id;
+    const actor = c.get("actor");
+    const scoped = scopedDb(actor, deps.db);
+
+    // 1. Read-only checks, then the billing gate outside any transaction (it may call Stripe).
+    const first = await scoped.transaction(async (tx) => {
+      const [row] = await tx.select().from(runs).where(eq(runs.id, id)).limit(1);
+      return goCheck(tx, row);
+    });
+    if (!first.ok) return fail(c, first.status === 404 ? "not_found" : "conflict", first.message);
+    const gate = await deps.billingGate({ userId: actor.userId }, first.estimate);
+    if (!gate.allowed) {
+      const body: PaymentRequired = { reason: gate.reason, link_card_url: gate.link_card_url };
+      return c.json(route.errors[402].parse(body), 402);
+    }
+
+    // 2. Lock, re-check (the run may have moved meanwhile), transition, event.
+    const moved = await scoped.transaction(async (tx) => {
+      const row = await lockRun(tx, id);
+      const again = await goCheck(tx, row);
+      if (!again.ok) return again;
+      const t = transitionRun(row!.state, {
+        type: "go",
+        estimate_fits_budget: true,
+        billing_gate_passed: true,
+      });
+      if (!t.ok) return { ok: false as const, status: 409 as const, message: t.error.message };
+      const [updated] = await tx
+        .update(runs)
+        .set({ state: t.to, updatedAt: sql`now()` })
+        .where(eq(runs.id, id))
+        .returning();
+      const { lastSeq } = await appendEvents(tx, id, [
+        stateChanged(id, actor, t.from, t.to, { command: "go" }),
+      ]);
+      return { ok: true as const, run: { ...updated!, nextSeq: lastSeq + 1 } };
+    });
+    if (!moved.ok) return fail(c, moved.status === 404 ? "not_found" : "conflict", moved.message);
+    await enqueueAdvance(deps, c, { run_id: id, reason: "go" }, "go");
+    return send(c, route, { run: toRun(moved.run) });
+  });
+
+  r.post("/:id/cancel", auth, async (c) => {
+    const route = contract.cancel;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const { params, body } = parsed.request;
+    const actor = c.get("actor");
+    type Cancelled =
+      | { ok: true; run: RunRow; changed: boolean }
+      | { ok: false; status: 404 | 409; message: string };
+    const result = await scopedDb(actor, deps.db).transaction(async (tx): Promise<Cancelled> => {
+      const row = await lockRun(tx, params.id);
+      if (!row) return { ok: false, status: 404, message: "run not found" };
+      if (row.state === "cancelled") return { ok: true, run: row, changed: false }; // idempotent
+      const t = transitionRun(row.state, {
+        type: "cancel",
+        ...(body.reason ? { reason: body.reason } : {}),
+      });
+      if (!t.ok) return { ok: false, status: 409, message: t.error.message };
+      const [updated] = await tx
+        .update(runs)
+        .set({
+          state: t.to,
+          cancelRequestedAt: sql`coalesce(${runs.cancelRequestedAt}, now())`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(runs.id, params.id))
+        .returning();
+      const { lastSeq } = await appendEvents(tx, params.id, [
+        stateChanged(params.id, actor, t.from, t.to, {
+          command: "cancel",
+          ...(body.reason ? { reason: body.reason } : {}),
+        }),
+      ]);
+      return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 }, changed: true };
+    });
+    if (!result.ok)
+      return fail(c, result.status === 404 ? "not_found" : "conflict", result.message);
+    // The worker stops live Naïve sessions and trial computers ([5.9]).
+    if (result.changed)
+      await enqueueAdvance(deps, c, { run_id: params.id, reason: "cancelled" }, "cancelled");
+    return send(c, route, { run: toRun(result.run) });
+  });
+
+  return r;
+}
