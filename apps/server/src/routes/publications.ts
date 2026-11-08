@@ -52,8 +52,8 @@ import type { AppDeps } from "../types.js";
 
 const contract = apiRoutes.publications;
 const DEFAULT_WEB_URL = "https://anybench.jaxonp.com";
-/** Public snapshots are immutable per version; the latest pointer may move, so cache briefly. */
-const PUBLIC_CACHE = "public, max-age=60, s-maxage=300, stale-while-revalidate=86400";
+/** The latest pointer moves on every publish: never cache it, or a republish shows the old version. */
+const PUBLIC_CACHE = "no-store";
 
 type Bench = typeof publishedBenchmarks.$inferSelect;
 type Version = typeof publishVersions.$inferSelect;

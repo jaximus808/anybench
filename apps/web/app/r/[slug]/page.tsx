@@ -7,7 +7,7 @@ import { questionTitle } from "../../../lib/question-title";
 
 // The public benchmark page (E12 12.3): no login, server-rendered from the signed snapshot.
 // Unlisted: the unguessable slug is the permission, so search engines are asked not to index it.
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 type Props = {
   params: Promise<{ slug: string }>;

@@ -1,5 +1,5 @@
 // Publications (E12): read a public publication from the API (GET /public/r/:slug) on the server.
-// No credentials. Cached by Next for a minute; the API's own cache headers allow the same.
+// No credentials, no cache: a republish must show at once.
 import {
   PublicPublicationSchema,
   PublicationSlugSchema,
@@ -23,7 +23,7 @@ export async function fetchPublication(
   try {
     const res = await f(`${base}/public/r/${slug}${q}`, {
       headers: { accept: "application/json" },
-      next: { revalidate: 60 },
+      cache: "no-store",
     } as RequestInit);
     if (res.status === 404) return { kind: "missing" };
     if (!res.ok) return { kind: "error", message: `the API answered ${res.status}` };

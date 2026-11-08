@@ -5,7 +5,7 @@ import { fetchPublication } from "../../../../lib/publish/fetch";
 
 // /r/<slug>/embed (E12 12.5): a compact card for an iframe (?theme=light|dark, default follows
 // the viewer's system). The site header and footer are hidden on this route.
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Benchmark card", robots: { index: false } };
 
 type Props = {
