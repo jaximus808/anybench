@@ -1,13 +1,32 @@
-// Placeholder home page (TDM-98). TDM-99 [11.2] replaces this file with the landing page.
+import type { Metadata } from "next";
+import { LandingPage } from "../../components/marketing/LandingPage";
+
+const TITLE = "Anybench: find out if what you built is actually better";
+const DESCRIPTION =
+  "Point Anybench at an agent, a harness or any other software. Agents generate an eval kit with a correctness gate for every number, cloud computers run it, and you get a score for each contender and the reasons behind it.";
+
+// The landing page is static: no API calls, no cookies, built once at deploy time.
+export const dynamic = "force-static";
+
+export const metadata: Metadata = {
+  title: { absolute: TITLE },
+  description: DESCRIPTION,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "Anybench",
+    title: TITLE,
+    description: DESCRIPTION,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+};
+
 export default function HomePage() {
-  return (
-    <section className="wrap" style={{ paddingBlock: "var(--space-9)" }}>
-      <h1 style={{ fontSize: "var(--text-3xl)", maxWidth: "13ch" }}>
-        Find out if what you built is actually better.
-      </h1>
-      <p className="lede muted" style={{ marginTop: "var(--space-5)" }}>
-        Point Anybench at any project: an agent, a harness, or any other software.
-      </p>
-    </section>
-  );
+  return <LandingPage />;
 }
