@@ -2,7 +2,7 @@
   "name": "@anybench/outreach",
   "version": "0.0.0",
   "private": true,
-  "description": "outreach (E15): Monid client (inspect/run/maxCost) + AgentMail-via-Monid wrappers + FakeAgentMail",
+  "description": "outreach (E15): Monid client, AgentMail via Monid, Context.dev + GitHub lead sourcing, opt-in CSV import",
   "type": "module",
   "exports": {
     ".": {

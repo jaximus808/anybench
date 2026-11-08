@@ -4,13 +4,18 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runKitValidate } from "./commands/kit-validate.js";
+import { runOutreach } from "./commands/outreach.js";
 
 export { runKitValidate } from "./commands/kit-validate.js";
+export { runOutreach } from "./commands/outreach.js";
 
 export async function main(argv: readonly string[]): Promise<number> {
   const [group, command, ...rest] = argv;
   if (group === "kit" && command === "validate") return runKitValidate(rest);
-  process.stderr.write("Usage: anybench kit validate [dir] [--json] [--quiet]\n");
+  if (group === "outreach") return runOutreach(argv.slice(1));
+  process.stderr.write(
+    "Usage: anybench kit validate [dir] [--json] [--quiet]\n       anybench outreach <queries|source|import> --help\n",
+  );
   return 2;
 }
 

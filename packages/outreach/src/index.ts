@@ -6,3 +6,10 @@ export * from "./money.js";
 export * from "./monid.js";
 export * from "./agentmail.js";
 export { FakeAgentMail } from "./fake.js";
+// 15.2a sourcing + opt-in import (TDM-163).
+export * from "./context-dev.js";
+export * from "./github-signals.js";
+export * from "./email-finder.js";
+export * from "./store.js";
+export * from "./source.js";
+export * from "./import.js";
