@@ -13,6 +13,72 @@ import { FAILURE_CLASSES } from "./trials.js";
 
 const Score = z.number().min(0).max(100);
 
+// TDM-175 [16.4]: every comparison with the baseline carries a verdict (plan.md 17.2 rule 2).
+// Built by @anybench/bench `decide` (Comparison); the schema re-checks the honesty rules so a
+// report that breaks them can't be stored or rendered.
+export const VERDICTS = ["better", "worse", "indistinguishable"] as const;
+export const VerdictSchema = z.enum(VERDICTS);
+export type Verdict = z.infer<typeof VerdictSchema>;
+
+const Probability = z.number().min(0).max(1);
+const Finite = z.number().finite();
+
+export const RequirementComparisonSchema = z
+  .object({
+    baseline_id: z.string().min(1),
+    verdict: VerdictSchema,
+    test: z.enum(["newcombe", "mann_whitney_exact", "mann_whitney_asymptotic", "task_paired"]),
+    p: Probability,
+    /** Holm-adjusted across the report's `family` comparisons. */
+    p_adjusted: Probability,
+    alpha: z.number().gt(0).lt(1),
+    family: z.int().min(1),
+    effect: z.object({
+      measure: z.enum(["rate_diff", "cliffs_delta"]),
+      /** Oriented: positive means the contender is better than the baseline. */
+      value: Finite,
+      hodges_lehmann: Finite.nullable(),
+    }),
+    /** CI of the difference; `level` is the coverage attained (small n may fall short). */
+    diff_ci: z.object({
+      lo: Finite,
+      hi: Finite,
+      level: z.number().gt(0).max(1),
+      requested_level: z.number().gt(0).lt(1),
+      attained: z.boolean(),
+      unit: z.enum(["rate", "metric", "cliffs_delta"]),
+    }),
+    n: z.object({ candidate: z.int().min(1), baseline: z.int().min(1), tasks: z.int().min(1) }),
+    /** Smallest detectable difference at 80% power; null when none is detectable at this n. */
+    mde: z.object({
+      value: z.number().min(0).nullable(),
+      unit: z.enum(["rate", "cliffs_delta"]),
+      metric_shift: Finite.nullable(),
+    }),
+    /** `these_tasks`: an agent result on fewer than 20 tasks speaks for those tasks only. */
+    claim: z.enum(["general", "these_tasks"]),
+    downgraded: z.enum(["survivorship", "effect_size", "multiplicity"]).nullable(),
+    statement: z.string().min(1),
+  })
+  .superRefine((c, ctx) => {
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [path], message });
+    if (c.verdict !== "indistinguishable" && !(c.p_adjusted < c.alpha))
+      issue("verdict", `'${c.verdict}' needs a Holm-adjusted p below alpha`);
+    if (c.verdict === "better" && c.effect.value <= 0)
+      issue("verdict", "'better' needs a positive effect");
+    if (c.verdict === "worse" && c.effect.value >= 0)
+      issue("verdict", "'worse' needs a negative effect");
+    if (
+      c.verdict === "indistinguishable" &&
+      !c.statement.startsWith("no detectable difference at n=")
+    )
+      issue("statement", "an indistinguishable result reads 'no detectable difference at n=…'");
+    if (c.verdict !== "indistinguishable" && c.statement.startsWith("no detectable"))
+      issue("statement", "statement contradicts the verdict");
+  });
+export type RequirementComparison = z.infer<typeof RequirementComparisonSchema>;
+
 export const RequirementResultSchema = z
   .object({
     requirement_id: z.string().min(1),
@@ -26,8 +92,23 @@ export const RequirementResultSchema = z
     /** Fraction of trials whose gate passed (measured only). */
     gate_pass_rate: z.number().min(0).max(1).nullable(),
     score: Score.nullable(),
+    /** Applicable trials behind the value (TDM-175). */
+    n: z.int().min(0).nullable().optional(),
+    /**
+     * The value is a median over solved trials only, so failures are not in it: the report warns,
+     * and it can never be `better`.
+     */
+    survivorship: z.boolean().optional(),
+    /** vs the baseline; null for the baseline itself. Optional for reports before TDM-175. */
+    comparison: RequirementComparisonSchema.nullable().optional(),
   })
   .superRefine((r, ctx) => {
+    if (r.survivorship === true && r.comparison?.verdict === "better")
+      ctx.addIssue({
+        code: "custom",
+        path: ["comparison", "verdict"],
+        message: "a median over solved trials only (survivorship) can never be 'better'",
+      });
     if (r.type !== "measured") return;
     if (r.gate_id === null)
       ctx.addIssue({

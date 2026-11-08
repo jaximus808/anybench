@@ -81,6 +81,12 @@ const VaryValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 export const KitScoringSchema = z.strictObject({
   /** requirement id → integer weight. Every requirement has one; they sum to 100. */
   weights: z.record(KitSlugSchema, z.int().min(0).max(100)),
+  /**
+   * TDM-175: the preregistered primary requirement (plan.md 17.2 rules 3 and 6). Its verdict is
+   * the report's headline and the power plan sizes repeats for it. Must have weight > 0. Omit to
+   * use the highest-weight requirement.
+   */
+  primary: KitSlugSchema.optional(),
 });
 export type KitScoring = z.infer<typeof KitScoringSchema>;
 
@@ -252,6 +258,13 @@ export const KitSpecSchema = z
       }
     });
     if (sum !== 100) issue(["scoring", "weights"], `weights must sum to 100, got ${sum}`);
+    const primary = kit.scoring.primary;
+    if (primary !== undefined) {
+      if (!requirementIds.has(primary))
+        issue(["scoring", "primary"], `requirement '${primary}' is not defined in requirements[]`);
+      else if ((kit.scoring.weights[primary] ?? 0) === 0)
+        issue(["scoring", "primary"], `primary requirement '${primary}' needs a weight above 0`);
+    }
 
     // Harness drivers run an approver sidecar, so the kit must say which one.
     kit.contenders.forEach((c, i) => {

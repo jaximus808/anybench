@@ -27,8 +27,8 @@
 // - everything else: every in-scope workload at least one contender solved (a workload nobody
 //   solved says nothing about speed or cost, so it is left out for everyone).
 // A cell is `measured` (it has a value) or `unsolved` (trials ran, none passed: fraction 0).
-// Cells keep the raw per-trial `samples` and counts so the stats layer (TDM-175) can attach CIs
-// and verdicts. `survivorship: true` marks a requirement whose value is a median over solved
+// Cells keep the raw per-trial `samples` and counts; the stats layer (TDM-175, decide.ts) puts
+// a CI on every measured cell and compares each contender with the baseline (see "Verdicts"). `survivorship: true` marks a requirement whose value is a median over solved
 // trials only (`median`, and gated reviews), so the report can warn that failures are not in it.
 //
 // Aggregates (per measured requirement; `requirement.aggregate`, or picked by metric):
@@ -55,6 +55,24 @@
 //   (median review − scale.min) / (scale.max − scale.min).
 // The requirement's fraction is the mean over the common set (0 when the set is empty), times
 // its weight. The contender total is the sum of points; weights sum to 100.
+//
+// Declared scope (TDM-175). When a requirement names its `workloads`, its gate applies on each of
+// them by declaration: a trial there that says `applicable: false` is a FAILURE, even when every
+// contender says so (otherwise a lone contender could dodge the gate by declaring it N/A).
+//
+// Verdicts (TDM-175, plan.md 17.2 rules 2 and 3; the rule itself is in decide.ts). Each scored
+// requirement of each contender is compared with the baseline's (`opts.baseline`, else the kit's
+// first `role: baseline` contender): `verdict`, `effect`, `ci` (of the difference), `n` and the
+// full `comparison`. Agent and harness kits compare once per requirement with tasks as the unit
+// (task bootstrap); software kits compare per workload cell (`byWorkload[i].comparison`) and the
+// requirement's verdict combines them. Holm runs across every comparison in the KitScore.
+// Measured cells get a CI of their own value, labelled with its method: exact Clopper–Pearson for
+// a rate under 30 trials (Wilson above), the order-statistic interval for a median (at the level
+// it can attain), a seeded bootstrap for spend ÷ solves.
+//
+// `ranking` is the order by weighted total. It is NOT a verdict (plan.md 17.2 rule 7): reports
+// lead with the per-requirement verdicts (`stats.headline`, `verdictTable`), and a composite
+// rank is shown only next to them.
 import {
   GateResultSchema,
   convertUnit,
@@ -66,7 +84,21 @@ import {
   type Requirement,
 } from "@anybench/core";
 import { z } from "zod";
-import { median } from "./stats.js";
+import {
+  combineVerdicts,
+  compareArms,
+  decide,
+  DECISION_RULE,
+  seedFor,
+  type ArmCell,
+  type Comparison,
+  type ComparisonKind,
+  type DiffInterval,
+  type Effect,
+  type RawComparison,
+  type Verdict,
+} from "./decide.js";
+import { clopperPearsonCi, median, medianCi, mulberry32, SMALL_N_RATE, wilsonCi } from "./stats.js";
 
 /** Reserved metric: fraction of a contender's trials whose gate passed. Always gated. */
 export const GATE_PASS_RATE_METRIC = "gate_pass_rate";
@@ -149,6 +181,24 @@ export interface WorkloadCell {
   solved: number;
   /** `censored` only: the value a failed trial counts as. */
   cap?: number;
+  /** CI of `value` (null when unsolved, or when it has no finite bound). */
+  ci: CellInterval | null;
+  /** Software kits: this cell vs the baseline's (null for the baseline and in agent kits). */
+  comparison: Comparison | null;
+}
+
+/** A measured cell's own interval: `level` is the coverage it attains (see `attained`). */
+export interface CellInterval {
+  lo: number;
+  hi: number;
+  level: number;
+  requestedLevel: number;
+  attained: boolean;
+  /**
+   * `clopper_pearson` (exact, pass rates under 30 trials), `wilson` (score, 30+), the
+   * distribution-free `order_statistic` interval for a median, or a seeded `bootstrap`.
+   */
+  method: "clopper_pearson" | "wilson" | "order_statistic" | "bootstrap";
 }
 
 interface RequirementScoreBase {
@@ -173,6 +223,16 @@ export interface ScoredRequirement extends RequirementScoreBase {
   points: number;
   /** One cell per workload in `workloads`, same order. */
   byWorkload: WorkloadCell[];
+  /** Applicable trials behind the requirement: Σ `byWorkload[].trials`. */
+  n: number;
+  /** vs the baseline (null for the baseline itself, or with no baseline or nothing to compare). */
+  verdict: Verdict | null;
+  /** The comparison's effect, oriented so positive is better (null as `verdict`). */
+  effect: Effect | null;
+  /** CI of the difference vs the baseline (null as `verdict`, or software with several cells). */
+  ci: DiffInterval | null;
+  /** The whole comparison, or, for software with several cells, the per-cell ones combined. */
+  comparison: Comparison | null;
 }
 export interface UnscoredRequirement extends RequirementScoreBase {
   scored: false;
@@ -223,11 +283,38 @@ export interface KitScore {
   contenders: ContenderScore[];
   /** Scored contender ids, best total first. Unscored contenders are never ranked. */
   ranking: string[];
+  /** How the verdicts were reached. */
+  stats: KitStats;
+}
+
+export interface KitStats {
+  /** The contender everyone is compared with; null when there is none (no verdicts). */
+  baseline: string | null;
+  /** Agent/harness kit: tasks are the unit (task bootstrap). */
+  clustered: boolean;
+  alpha: number;
+  /** Comparisons in the Holm family. */
+  family: number;
+  seed: number;
+  /** `scoring.primary`, else the highest-weight requirement. */
+  primary: string | null;
+  /** The primary requirement's verdict per compared contender: the report's headline. */
+  headline: { contenderId: string; verdict: Verdict; statement: string }[];
 }
 
 export interface ScoreOptions {
   /** Contenders to score, in display order. Default: contender ids in trial order. */
   contenders?: readonly string[];
+  /** Contender every other one is compared with. Default: the kit's first `role: baseline`. */
+  baseline?: string;
+  /** Bootstrap seed. Default DECISION_RULE.seed. */
+  seed?: number;
+  /** Family-wise α. Default 0.05. */
+  alpha?: number;
+  /** Bootstrap resamples. Default 2000. */
+  iterations?: number;
+  /** Force task clustering on or off. Default: on for agent and harness kits. */
+  clustered?: boolean;
 }
 
 /**
@@ -236,7 +323,10 @@ export interface ScoreOptions {
  * `median` and an explicit `censored` needs `requirement.cap`.
  */
 export type ScoreKitInput = Pick<KitSpec, "requirements" | "scoring"> &
-  Partial<Pick<KitSpec, "workloads" | "contenders">>;
+  Partial<Pick<KitSpec, "workloads" | "contenders">> & {
+    /** Agent and harness kits compare with tasks as the unit. */
+    subject?: Pick<KitSpec["subject"], "kind">;
+  };
 
 export interface TargetThreshold {
   op: "le" | "ge";
@@ -310,15 +400,25 @@ interface Plan {
 /** Where each gate applies: gate id → workloads on which any scored trial says it applies. */
 type Applicability = Map<string, Set<string>>;
 
-function applicability(trials: readonly ParsedTrial[]): Applicability {
+function applicability(
+  trials: readonly ParsedTrial[],
+  requirements: readonly Requirement[],
+): Applicability {
   const m: Applicability = new Map();
+  const add = (g: string, w: string) => {
+    const set = m.get(g);
+    if (set) set.add(w);
+    else m.set(g, new Set([w]));
+  };
   for (const t of trials) {
     for (const [g, r] of Object.entries(t.gates)) {
-      if (r.applicable === false) continue;
-      const set = m.get(g);
-      if (set) set.add(t.workloadId);
-      else m.set(g, new Set([t.workloadId]));
+      if (r.applicable !== false) add(g, t.workloadId);
     }
+  }
+  // A requirement that names its workloads declares its gate applies there: N/A is a failure.
+  for (const r of requirements) {
+    if (r.gate_id === undefined || r.workloads === undefined) continue;
+    for (const w of r.workloads) add(r.gate_id, w);
   }
   return m;
 }
@@ -382,6 +482,8 @@ interface RawCell {
   trials: number;
   solved: number;
   cap?: number;
+  /** Internal: pass/fail of each applicable trial, in trial order (not on WorkloadCell). */
+  passed: boolean[];
 }
 type RawCells =
   { ok: true; cells: Map<string, RawCell> } | { ok: false; code: NoScoreCode; workloadId?: string };
@@ -441,7 +543,7 @@ function rawCells(
   const cells = new Map<string, RawCell>();
   for (const [w, js] of groups) {
     const solvedTs = js.filter((j) => j.passed).map((j) => j.trial);
-    const base = { trials: js.length, solved: solvedTs.length };
+    const base = { trials: js.length, solved: solvedTs.length, passed: js.map((j) => j.passed) };
     const unsolved = (samples: number[], extra: { cap?: number } = {}): RawCell => ({
       status: "unsolved",
       value: null,
@@ -593,6 +695,8 @@ export function scoreKit(
   opts: ScoreOptions = {},
 ): KitScore {
   const trials = z.array(TrialResultSchema).parse(trialResults);
+  const seed = opts.seed ?? DECISION_RULE.seed;
+  const iterations = opts.iterations ?? DECISION_RULE.bootstrapIterations;
   const contenderIds = opts.contenders
     ? [...opts.contenders]
     : [...new Set(trials.map((t) => t.contenderId))];
@@ -600,7 +704,7 @@ export function scoreKit(
   for (const t of trials) trialsOf.get(t.contenderId)?.push(t);
   const scoredTrials = trials.filter((t) => trialsOf.has(t.contenderId));
   const order = workloadOrder(kit, scoredTrials);
-  const applies = applicability(scoredTrials);
+  const applies = applicability(scoredTrials, kit.requirements);
 
   // Phase 1: plan, covered workloads, raw cells per contender, and the common set.
   const perReq = kit.requirements.map((req) => {
@@ -652,10 +756,17 @@ export function scoreKit(
       }
       const cells: WorkloadCell[] = common.map((workloadId) => {
         // Every covered workload has a cell (else the requirement is incomplete).
-        const cell = mine.cells.get(workloadId)!;
+        const { passed, ...cell } = mine.cells.get(workloadId)!;
         const fraction =
           cell.status === "measured" ? cellFraction(plan, cell.value!, pools.get(workloadId)!) : 0;
-        return { workloadId, ...cell, fraction, n: cell.samples.length };
+        const ci = cellInterval(
+          plan.aggregate,
+          cell,
+          passed,
+          seedFor(seed, "cell", req.id, c, workloadId),
+          iterations,
+        );
+        return { workloadId, ...cell, fraction, n: cell.samples.length, ci, comparison: null };
       });
       const fraction =
         cells.length === 0 ? 0 : cells.reduce((s, x) => s + x.fraction, 0) / cells.length;
@@ -672,6 +783,11 @@ export function scoreKit(
         fraction,
         points: fraction * weight,
         byWorkload: cells,
+        n: cells.reduce((s, x) => s + x.trials, 0),
+        verdict: null,
+        effect: null,
+        ci: null,
+        comparison: null,
       };
     });
 
@@ -713,5 +829,232 @@ export function scoreKit(
     .filter((s): s is ScoredContender => s.scored)
     .sort((a, b) => b.total - a.total)
     .map((s) => s.contenderId);
-  return { contenders: scores, ranking };
+  const stats = attachVerdicts(kit, scores, perReq, { ...opts, seed, iterations });
+  return { contenders: scores, ranking, stats };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stats: cell intervals and verdicts vs the baseline (TDM-175).
+
+function cellInterval(
+  aggregate: RequirementAggregate,
+  cell: Omit<RawCell, "passed">,
+  passed: readonly boolean[],
+  seed: number,
+  iterations: number,
+): CellInterval | null {
+  if (cell.status !== "measured" || cell.samples.length === 0) return null;
+  const level = DECISION_RULE.level;
+  switch (aggregate) {
+    case "rate": {
+      // Small n: the exact interval, not a score approximation (Bowyer et al. 2025).
+      const exact = cell.trials < SMALL_N_RATE;
+      const w = (exact ? clopperPearsonCi : wilsonCi)(cell.solved, cell.trials, level);
+      return {
+        lo: w.lo,
+        hi: w.hi,
+        level,
+        requestedLevel: level,
+        attained: true,
+        method: exact ? "clopper_pearson" : "wilson",
+      };
+    }
+    case "median":
+    case "censored":
+    case "review": {
+      const m = medianCi(cell.samples, level);
+      return {
+        lo: m.lo,
+        hi: m.hi,
+        level: m.level,
+        requestedLevel: level,
+        attained: m.attained,
+        method: "order_statistic",
+      };
+    }
+    case "per_solved": {
+      // Spend ÷ solves over trials resampled with replacement; a resample with no solve has no
+      // finite value, and then the interval has no finite upper bound: report none.
+      const rand = mulberry32(seed);
+      const n = cell.samples.length;
+      const stats: number[] = [];
+      for (let i = 0; i < iterations; i++) {
+        let spend = 0;
+        let solved = 0;
+        for (let j = 0; j < n; j++) {
+          const k = Math.floor(rand() * n);
+          spend += cell.samples[k]!;
+          if (passed[k]) solved++;
+        }
+        stats.push(solved === 0 ? Infinity : spend / solved);
+      }
+      stats.sort((a, b) => a - b);
+      const at = (p: number) => {
+        const h = (stats.length - 1) * p;
+        const lo = stats[Math.floor(h)]!;
+        const hi = stats[Math.ceil(h)]!;
+        return lo === hi ? lo : lo + (h - Math.floor(h)) * (hi - lo);
+      };
+      const lo = at((1 - level) / 2);
+      const hi = at(1 - (1 - level) / 2);
+      if (!Number.isFinite(hi)) return null;
+      return { lo, hi, level, requestedLevel: level, attained: true, method: "bootstrap" };
+    }
+  }
+}
+
+function isClustered(kit: ScoreKitInput, opts: ScoreOptions): boolean {
+  if (opts.clustered !== undefined) return opts.clustered;
+  if (kit.subject) return kit.subject.kind === "agent" || kit.subject.kind === "harness";
+  return (kit.contenders ?? []).some(
+    (c) => c.driver.type === "coding-agent" || c.driver.type === "harness",
+  );
+}
+
+function comparisonKind(aggregate: RequirementAggregate): ComparisonKind {
+  return aggregate === "rate" ? "rate" : "continuous";
+}
+
+/**
+ * The per-trial values a comparison ranks: the cell's samples, except spend ÷ solves, where a
+ * failed trial bought nothing and counts as infinitely expensive (worse than any solved trial).
+ */
+function armCell(aggregate: RequirementAggregate, cell: WorkloadCell, passed: boolean[]): ArmCell {
+  const samples =
+    aggregate === "per_solved"
+      ? cell.samples.map((v, i) => (passed[i] ? v : Infinity))
+      : cell.samples;
+  return { workloadId: cell.workloadId, samples, trials: cell.trials, solved: cell.solved };
+}
+
+interface PendingComparison {
+  raw: RawComparison;
+  target: ScoredRequirement;
+  /** Software: the cell it belongs to. */
+  cell?: WorkloadCell;
+}
+
+function attachVerdicts(
+  kit: ScoreKitInput,
+  scores: ContenderScore[],
+  perReq: { plan: Plan; raw: Map<string, RawCells> }[],
+  opts: ScoreOptions & { seed: number; iterations: number },
+): KitStats {
+  const alpha = opts.alpha ?? DECISION_RULE.alpha;
+  const clustered = isClustered(kit, opts);
+  const ids = scores.map((s) => s.contenderId);
+  const baseline =
+    opts.baseline ??
+    (kit.contenders ?? []).find((c) => c.role === "baseline" && ids.includes(c.id))?.id ??
+    null;
+  if (opts.baseline !== undefined && !ids.includes(opts.baseline))
+    throw new RangeError(`baseline '${opts.baseline}' is not a scored contender`);
+  const primary =
+    kit.scoring.primary ??
+    [...kit.requirements].sort(
+      (a, b) => (kit.scoring.weights[b.id] ?? 0) - (kit.scoring.weights[a.id] ?? 0),
+    )[0]?.id ??
+    null;
+  const stats: KitStats = {
+    baseline,
+    clustered,
+    alpha,
+    family: 0,
+    seed: opts.seed,
+    primary,
+    headline: [],
+  };
+  if (baseline === null) return stats;
+  const base = scores.find((s) => s.contenderId === baseline)!;
+
+  const pending: PendingComparison[] = [];
+  perReq.forEach(({ plan, raw }, ri) => {
+    const baseReq = base.requirements[ri]!;
+    if (!baseReq.scored) return;
+    const baseRaw = raw.get(baseline)!;
+    if (!baseRaw.ok) return;
+    const req = plan.req;
+    const kind = comparisonKind(plan.aggregate);
+    const better = req.type === "measured" ? req.better : "higher";
+    const unit = req.type === "measured" ? (req.unit ?? metricUnit(req.metric)) : undefined;
+    for (const s of scores) {
+      if (s.contenderId === baseline) continue;
+      const mine = s.requirements[ri]!;
+      const mineRaw = raw.get(s.contenderId)!;
+      if (!mine.scored || !mineRaw.ok) continue;
+      const arms = (cells: WorkloadCell[], r: { cells: Map<string, RawCell> }) =>
+        cells.map((cell) => armCell(plan.aggregate, cell, r.cells.get(cell.workloadId)!.passed));
+      const common = {
+        kind,
+        better,
+        survivorship: mine.survivorship,
+        unit,
+        iterations: opts.iterations,
+      } as const;
+      if (clustered) {
+        const rc = compareArms({
+          ...common,
+          candidate: arms(mine.byWorkload, mineRaw),
+          baseline: arms(baseReq.byWorkload, baseRaw),
+          clustered: true,
+          seed: seedFor(opts.seed, "cmp", req.id, s.contenderId, baseline),
+        });
+        if (rc) pending.push({ raw: rc, target: mine });
+        continue;
+      }
+      mine.byWorkload.forEach((cell, wi) => {
+        const rc = compareArms({
+          ...common,
+          candidate: arms([cell], mineRaw),
+          baseline: arms([baseReq.byWorkload[wi]!], baseRaw),
+          clustered: false,
+          seed: seedFor(opts.seed, "cmp", req.id, s.contenderId, baseline, cell.workloadId),
+        });
+        if (rc) pending.push({ raw: rc, target: mine, cell });
+      });
+    }
+  });
+
+  const decided = decide(
+    pending.map((p) => p.raw),
+    { alpha, baseline },
+  );
+  stats.family = decided.length;
+  const perTarget = new Map<ScoredRequirement, Comparison[]>();
+  decided.forEach((d, i) => {
+    const p = pending[i]!;
+    if (p.cell) p.cell.comparison = d;
+    const list = perTarget.get(p.target);
+    if (list) list.push(d);
+    else perTarget.set(p.target, [d]);
+  });
+  for (const [target, list] of perTarget) {
+    if (list.length === 1) {
+      const d = list[0]!;
+      target.comparison = d;
+      target.verdict = d.verdict;
+      target.effect = d.effect;
+      target.ci = d.ci;
+    } else {
+      // Software, several workloads: the cells carry the comparisons; the requirement combines.
+      target.verdict = combineVerdicts(list.map((d) => d.verdict));
+    }
+  }
+
+  if (primary !== null) {
+    const ri = kit.requirements.findIndex((r) => r.id === primary);
+    for (const s of scores) {
+      if (s.contenderId === baseline) continue;
+      const r = s.requirements[ri];
+      if (!r?.scored || r.verdict === null) continue;
+      const statement =
+        r.comparison?.statement ??
+        r.byWorkload
+          .filter((c) => c.comparison !== null)
+          .map((c) => `${c.workloadId}: ${c.comparison!.statement}`)
+          .join("; ");
+      stats.headline.push({ contenderId: s.contenderId, verdict: r.verdict, statement });
+    }
+  }
+  return stats;
 }

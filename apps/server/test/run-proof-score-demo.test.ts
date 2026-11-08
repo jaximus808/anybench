@@ -1,7 +1,8 @@
 // Demo proof + scoring + summary (TDM-54 follow-up): the curated Tandem kit's signed-off offline
 // proof, scoreKit over fake trials, the deterministic summary (no LLM) and GET /runs/:id/report.
 // A full Tandem run with fake trials goes to delivered; a non-curated kit holds at proof; the
-// summary says "no detectable difference at n=1" at n=1 per setup. DEMO_EVIDENCE=1 prints it.
+// summary carries scoreKit's verdicts (TDM-175): "no detectable difference at n=…, smallest
+// detectable difference=…" at n=1, "better on these 8 tasks" for a planted effect. DEMO_EVIDENCE=1 prints it.
 import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -372,21 +373,54 @@ describe("demo summary wording (no DB)", () => {
     return r.analysis;
   }
 
-  it("n=1 per setup says exactly 'no detectable difference at n=1', with values and n", async () => {
+  it("n=1 per setup: no detectable difference at n=1, with its smallest detectable difference", async () => {
     const a = await summary(1);
     expect(a.md).toContain(N1);
     expect(a.md).toContain("- a: w1 10 s (n=1, solved 1/1)");
     expect(a.md).toContain("- b: w1 20 s (n=1, solved 1/1)");
-    expect(a.md).toContain(`Verdict: ${N1}.`);
-    expect(a.report.answer.startsWith(`Result: ${N1} per setup`)).toBe(true);
+    expect(a.md).toContain(
+      "Verdict, a vs b: no detectable difference at n=1 task (1 vs 1 trials), smallest detectable difference=none reachable at this n",
+    );
+    expect(a.report.answer).toMatch(
+      /^Result on wall \(the primary requirement\): a vs b: no detectable difference at n=1 task/,
+    );
+    expect(a.report.answer).toContain("No setup is ranked by a composite score.");
     expect(a.md).not.toMatch(/\b(beats|faster|cheaper|better than)\b/i);
+    const req = a.report.contenders[0]!.requirements[0]!;
+    expect(req.comparison).toMatchObject({ verdict: "indistinguishable", baseline_id: "b" });
+    expect(a.report.contenders[0]!.wins).toEqual([]);
   });
 
-  it("under the agent threshold (10) it still says no detectable difference; at 10 it gives no verdict", async () => {
-    expect((await summary(4)).md).toContain("no detectable difference at n=4");
+  it("10 repeats on one task still can't tell: tasks are the unit, and the MDE says so", async () => {
     const ten = await summary(10);
-    expect(ten.md).not.toContain("no detectable difference");
-    expect(ten.md).toContain("no verdict at n=10");
+    expect(ten.md).toContain(
+      "no detectable difference at n=1 task (10 vs 10 trials), smallest detectable difference=none reachable at this n",
+    );
+  });
+
+  it("a planted effect on 8 tasks is 'better on these 8 tasks' and becomes a win", async () => {
+    const capped = {
+      ...kit,
+      workloads: Array.from({ length: 8 }, (_, i) => ({ id: `w${i}` })),
+      requirements: [{ ...kit.requirements[0]!, cap: 600 }],
+    } as unknown as KitSpec;
+    const trials = Array.from({ length: 8 }, (_, w) =>
+      trialsFor(5).map((t) => ({ ...t, id: `${t.id}-w${w}`, workload_id: `w${w}` })),
+    ).flat();
+    const score = await kitScore()({} as StageContext, { kit_id: "k", kit: capped, trials });
+    if (!score.ok) throw new Error(score.reason);
+    const r = buildSummary({ kit: capped, score: score.value, proof: [], trials });
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.analysis.md).toMatch(
+      /Verdict, a vs b: better on these 8 tasks: Cliff's δ \+1\.00 averaged over tasks/,
+    );
+    expect(r.analysis.report.contenders[0]!.wins).toEqual(["wall"]);
+    expect(r.analysis.report.contenders[0]!.requirements[0]!.comparison).toMatchObject({
+      verdict: "better",
+      claim: "these_tasks",
+      test: "task_paired",
+    });
+    if (process.env.DEMO_EVIDENCE === "1") console.log(r.analysis.md);
   });
 
   it("proofAccepted: all six passed, or a curated basis for exactly this kit row", () => {

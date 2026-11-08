@@ -1,5 +1,5 @@
 // Proof, scoring and the factual summary for the founder's live test (TDM-54 follow-up), until the
-// proof suite ([4.12]), the stats verdicts ([16.4]) and the analyst ([6.8]) land.
+// proof suite ([4.12]) and the analyst ([6.8]) land. Verdicts come from scoreKit (TDM-175 [16.4]).
 //
 //   curatedProof    PipelinePort.prove. The curated Tandem kit (full or smoke profile) gets its
 //                   committed, signed-off offline proof (kits/<slug>/PROOF.md, pinned here by
@@ -11,9 +11,11 @@
 //                   measured trials. Warm-ups, our infra failures and cancelled trials are left
 //                   out (not the contender's), and so is runner-reported cost (plan 17.2 rule 5).
 //   summaryAnalyst  AgentStagePort.analyze without an LLM: a deterministic report from the score.
-//                   Every requirement with its values and n; "no detectable difference at n=…"
-//                   whenever n is under the plan's repeats (17.2 rule 3), and never a "better"
-//                   (no significance test runs here, rule 2); no composite (rule 7).
+//                   Every requirement with its values and n, then its VERDICT vs the baseline from
+//                   scoreKit's decision rule (TDM-175 [16.4], plan 17.2 rule 2): better / worse /
+//                   "no detectable difference at n=…, smallest detectable difference=…". The
+//                   headline is the primary requirement's verdict; nothing is ranked by the
+//                   weighted total and no composite is shown (rule 7).
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -21,6 +23,7 @@ import {
   gateResultsOf,
   scoreKit,
   TrialGateRecordSchema,
+  type Comparison,
   type ContenderScore,
   type KitScore,
   type TrialResult,
@@ -30,7 +33,9 @@ import {
   formatUsd,
   GateResultSchema,
   PROOF_CHECKS,
+  RequirementComparisonSchema,
   type ContenderResult,
+  type RequirementComparison,
   type GateResult,
   type KitSpec,
   type ProofCheckResult,
@@ -288,7 +293,10 @@ function nText(min: number, max: number): string {
   return min === max ? `n=${min}` : `n=${min}–${max}`;
 }
 
-/** The verdict wording for a comparison at this n. Never "better": no significance test here. */
+/**
+ * The wording for a score stored before the decision rule existed (no `stats`): never "better".
+ * Scores from TDM-175 on carry real verdicts and don't use this.
+ */
 export function verdictAt(min: number, max: number, kind: KitSpec["subject"]["kind"]): string {
   const need = minRepeats(kind);
   if (min < need) return `no detectable difference at ${nText(min, max)}`;
@@ -326,6 +334,69 @@ function requirementValue(r: ContenderScore["requirements"][number]): number | n
   return only && only.status === "measured" ? only.value : null;
 }
 
+/** The verdict lines for one requirement: one per compared setup (per workload in software kits). */
+function verdictLines(ks: KitScore, reqId: string): string[] {
+  const out: string[] = [];
+  for (const c of ks.contenders) {
+    if (c.contenderId === ks.stats.baseline) continue;
+    const r = c.requirements.find((x) => x.requirementId === reqId);
+    if (!r?.scored) continue;
+    if (r.comparison) {
+      out.push(`Verdict, ${c.contenderId} vs ${ks.stats.baseline}: ${r.comparison.statement}.`);
+      continue;
+    }
+    const cells = r.byWorkload.filter((cell) => cell.comparison !== null);
+    if (cells.length === 0) {
+      out.push(`Verdict, ${c.contenderId} vs ${ks.stats.baseline}: none (nothing to compare).`);
+      continue;
+    }
+    out.push(
+      `Verdict, ${c.contenderId} vs ${ks.stats.baseline}: ${r.verdict ?? "none"}, per workload:`,
+    );
+    for (const cell of cells) out.push(`- ${cell.workloadId}: ${cell.comparison!.statement}.`);
+  }
+  return out;
+}
+
+function verdictIds(c: ContenderScore, verdict: "better" | "worse"): string[] {
+  return c.requirements.flatMap((r) =>
+    r.scored && r.verdict === verdict ? [r.requirementId] : [],
+  );
+}
+
+/** bench Comparison → the report's RequirementComparison (null when absent or not representable). */
+function reportComparison(cmp: Comparison | null): RequirementComparison | null {
+  if (cmp === null) return null;
+  const parsed = RequirementComparisonSchema.safeParse({
+    baseline_id: cmp.baseline,
+    verdict: cmp.verdict,
+    test: cmp.test,
+    p: cmp.p,
+    p_adjusted: cmp.pAdjusted,
+    alpha: cmp.alpha,
+    family: cmp.family,
+    effect: {
+      measure: cmp.effect.measure,
+      value: cmp.effect.value,
+      hodges_lehmann: cmp.effect.hodgesLehmann,
+    },
+    diff_ci: {
+      lo: cmp.ci.lo,
+      hi: cmp.ci.hi,
+      level: cmp.ci.level,
+      requested_level: cmp.ci.requestedLevel,
+      attained: cmp.ci.attained,
+      unit: cmp.ci.unit,
+    },
+    n: cmp.n,
+    mde: { value: cmp.mde.value, unit: cmp.mde.unit, metric_shift: cmp.mde.metricShift },
+    claim: cmp.claim,
+    downgraded: cmp.downgraded,
+    statement: cmp.statement,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 export interface SummaryInput {
   kit: KitSpec;
   score: unknown;
@@ -353,6 +424,8 @@ export function buildSummary(
   const { kit } = input;
   const ks = score.kit_score;
   const kind = kit.subject.kind;
+  const stats = ks.stats as KitScore["stats"] | undefined;
+  const decided = stats !== undefined && stats.baseline !== null;
   const head = verdictAt(score.n_per_setup.min, score.n_per_setup.max, kind);
   const need = minRepeats(kind);
   const contenderIds = ks.contenders.map((c) => c.contenderId);
@@ -364,7 +437,15 @@ export function buildSummary(
   lines.push(proofLine);
   if (input.disclosure) lines.push(input.disclosure);
   lines.push("");
-  const sentence = `Result: ${head} per setup (${contenderIds.length} setups; ${score.trials.scored} measured trials; the plan needs at least ${need} repeats per setup). No setup is ranked and no composite score is shown.`;
+  const headline =
+    decided && stats.headline.length > 0
+      ? stats.headline
+          .map((h) => `${h.contenderId} vs ${stats.baseline}: ${h.statement}`)
+          .join("; ")
+      : null;
+  const sentence = headline
+    ? `Result on ${stats!.primary} (the primary requirement): ${headline}. (${contenderIds.length} setups; ${score.trials.scored} measured trials; Holm-corrected across ${stats!.family} comparisons.) No setup is ranked by a composite score.`
+    : `Result: ${head} per setup (${contenderIds.length} setups; ${score.trials.scored} measured trials; the plan needs at least ${need} repeats per setup). No setup is ranked and no composite score is shown.`;
   lines.push(sentence, "");
   lines.push(
     `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.cancelled} cancelled.`,
@@ -381,13 +462,15 @@ export function buildSummary(
       const r = c.requirements.find((x) => x.requirementId === req.id);
       return r?.scored ? r.byWorkload.map((cell) => cell.trials) : [];
     });
-    lines.push(
-      "",
-      ns.length
-        ? `Verdict: ${verdictAt(Math.min(...ns), Math.max(...ns), kind)}.`
-        : "Verdict: none (no scored values).",
-      "",
-    );
+    lines.push("");
+    if (decided) lines.push(...verdictLines(ks, req.id), "");
+    else
+      lines.push(
+        ns.length
+          ? `Verdict: ${verdictAt(Math.min(...ns), Math.max(...ns), kind)}.`
+          : "Verdict: none (no scored values).",
+        "",
+      );
   }
   lines.push(
     "## Proof",
@@ -427,10 +510,13 @@ export function buildSummary(
             gate_id: req.gate_id ?? null,
             gate_pass_rate: req.type === "measured" ? rate : null,
             score: null,
+            ...(r?.scored ? { n: r.n, survivorship: r.survivorship } : {}),
+            ...(decided && r?.scored ? { comparison: reportComparison(r.comparison) } : {}),
           };
         }),
-        wins: [],
-        losses: [],
+        // From the verdicts only: a requirement is a win or a loss when the decision rule says so.
+        wins: verdictIds(c, "better"),
+        losses: verdictIds(c, "worse"),
       },
     ];
   });

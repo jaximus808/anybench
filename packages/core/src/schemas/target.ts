@@ -111,32 +111,63 @@ export function convertUnit(value: number, from: string, to: string): number | u
 /** Mirrors `GATE_PASS_RATE_METRIC` in @anybench/bench (core cannot import bench). */
 export const GATE_PASS_RATE_METRIC_NAME = "gate_pass_rate";
 
-const KNOWN_METRIC_UNITS: Record<string, string> = {
+/**
+ * Units of the metrics our collectors (packages/bench/src/collectors) and the scorer emit, by
+ * name. TDM-175: a unit is inferred ONLY for these. Guessing from a suffix misread kit metrics
+ * (`throughput_ops_s` is a rate, not seconds; `bonus_us` is not microseconds), so any other
+ * metric takes the requirement's declared `unit`, or has none.
+ */
+export const KNOWN_METRIC_UNITS: Readonly<Record<string, string>> = {
   [GATE_PASS_RATE_METRIC_NAME]: "ratio",
+  // time -v
   wall_s: "s",
+  cpu_s: "s",
+  user_cpu_s: "s",
+  sys_cpu_s: "s",
+  peak_rss_bytes: "bytes",
+  cpu_percent: "%",
+  // hyperfine
+  hyperfine_mean_s: "s",
+  hyperfine_median_s: "s",
+  hyperfine_min_s: "s",
+  hyperfine_max_s: "s",
+  hyperfine_stddev_s: "s",
+  hyperfine_user_s: "s",
+  hyperfine_system_s: "s",
+  // hey / k6 (percentiles are p50_ms, p95_ms, p99_ms, p99_9_ms)
+  latency_mean_ms: "ms",
+  latency_min_ms: "ms",
+  latency_max_ms: "ms",
+  load_duration_s: "s",
+  error_rate: "ratio",
+  checks_pass_rate: "ratio",
+  http_data_bytes: "bytes",
+  http_data_sent_bytes: "bytes",
+  p50_ms: "ms",
+  p75_ms: "ms",
+  p90_ms: "ms",
+  p95_ms: "ms",
+  p99_ms: "ms",
+  p99_9_ms: "ms",
+  // stream-json / Naïve proxy
   cost_micro_usd: "micro-USD",
+  model_cost_micro_usd: "micro-USD",
+  proxy_billed_micro_usd: "micro-USD",
+  proxy_vendor_cost_micro_usd: "micro-USD",
+  agent_duration_ms: "ms",
+  agent_api_duration_ms: "ms",
+  // machine
+  mem_available_bytes: "bytes",
+  mem_total_bytes: "bytes",
+  steal_pct: "%",
 };
-const METRIC_SUFFIX_UNITS: [string, string][] = [
-  ["_micro_usd", "micro-USD"],
-  ["_ns", "ns"],
-  ["_us", "us"],
-  ["_ms", "ms"],
-  ["_s", "s"],
-  ["_bytes", "bytes"],
-  ["_pct", "%"],
-  ["_ratio", "ratio"],
-];
 
 /**
- * The unit a metric's name implies: `wall_s` → s, `cost_micro_usd` → micro-USD, `api_p95_ms` →
- * ms, `gate_pass_rate` → ratio. Undefined when the name says nothing (or is a rate, `bytes_per_s`).
+ * The unit a known collector metric is in (`wall_s` → s, `cost_micro_usd` → micro-USD,
+ * `p95_ms` → ms, `gate_pass_rate` → ratio). Undefined for any other name: declare `unit`.
  */
 export function metricUnit(metric: string): string | undefined {
-  const known = KNOWN_METRIC_UNITS[metric];
-  if (known !== undefined) return known;
-  if (metric.includes("_per_")) return undefined;
-  for (const [suffix, unit] of METRIC_SUFFIX_UNITS) if (metric.endsWith(suffix)) return unit;
-  return undefined;
+  return Object.hasOwn(KNOWN_METRIC_UNITS, metric) ? KNOWN_METRIC_UNITS[metric] : undefined;
 }
 
 const BOUND_RE = new RegExp(

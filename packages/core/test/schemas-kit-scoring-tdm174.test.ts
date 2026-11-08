@@ -206,7 +206,7 @@ describe("unit-aware targets", () => {
 
   it("a requirement without a unit takes the metric's, or rejects a unit it can't check", () => {
     expect(bound("under 2 min", undefined, "wall_s")).toEqual({ op: "le", value: 120 });
-    expect(bound("under 0.5 s", undefined, "api_p95_ms")).toEqual({ op: "le", value: 500 });
+    expect(bound("under 0.5 s", undefined, "p95_ms")).toEqual({ op: "le", value: 500 });
     expect(bound("under $2", undefined, "cost_micro_usd")).toEqual({ op: "le", value: 2e6 });
     expect(error("under 2 min", undefined, "merge_conflicts")).toMatch(/has no unit/);
     expect(error("under 2 min")).toMatch(/has no unit/);
