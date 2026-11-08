@@ -8,6 +8,7 @@ import {
   searchRun,
   stageIndex,
   tallyByContender,
+  tileTone,
 } from "../lib/live/model";
 import { createDemoRun } from "./fixtures/simulator";
 
@@ -124,6 +125,12 @@ describe("live model", () => {
     const after = applyEvents(base, [na]);
     expect(after.trials[tid]!.gate?.passed).toBe(true);
     expect(after.trials[tid]!.gate?.gate).toBe(pass.payload.gate);
+  });
+
+  it("a done trial loaded from trials.list with failure_class gate counts as failed (no gate event yet)", () => {
+    const t = Object.values(live.trials).find((x) => x.state === "done")!;
+    expect(tileTone({ ...t, gate: null, failureClass: "gate" })).toBe("failed");
+    expect(tileTone({ ...t, gate: null, failureClass: null })).toBe("passed");
   });
 
   it("ignores replayed events (Last-Event-ID overlap)", () => {

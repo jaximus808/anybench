@@ -722,7 +722,13 @@ export function applyEvents(live: LiveRun, events: AnybenchEvent[]): LiveRun {
 export type TileTone = "queued" | "active" | "passed" | "failed" | "infra" | "cancelled";
 
 export function tileTone(t: LiveTrial): TileTone {
-  if (t.state === "done") return t.gate && !t.gate.passed ? "failed" : "passed";
+  if (t.state === "done") {
+    // On a page load the trial comes from trials.list, which has no gate result but does carry
+    // failure_class "gate" for a trial that failed its correctness gate. A live gate event, when
+    // we have one, decides too.
+    const failed = (t.gate !== null && !t.gate.passed) || t.failureClass === "gate";
+    return failed ? "failed" : "passed";
+  }
   if (t.state === "failed_subject") return "failed";
   if (t.state === "failed_infra") return "infra";
   if (t.state === "cancelled") return "cancelled";
