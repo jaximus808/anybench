@@ -2,6 +2,11 @@
 // FakeProvider (the real trial.execute and a fake runner) and FakeAgentStages / FakePipeline:
 // a full run to delivered, a worker killed at every stage and recovered by the sweep (no duplicate
 // trials, Naïve sessions replayed), user cancel, kill switch, pause, holds and proof repair.
+import { cpSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadKit, validateKitDir } from "@anybench/kit";
 import { FakeNaive } from "@anybench/naive/fake";
 import { FakeProvider } from "@anybench/providers";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -32,6 +37,7 @@ import {
   CURATED_KIT_UNAVAILABLE,
   CURATED_TANDEM_KIT,
   curatedKitStages,
+  defaultKitsDir,
   isTandemRepo,
 } from "../src/orchestrator/curated.js";
 import { naiveSessionCanceller } from "../src/orchestrator/defaults.js";
@@ -59,6 +65,9 @@ import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./hel
 import { runsAppTdm67, seedUserTdm67, type RunsAppTdm67 } from "./helpers/runs-tdm67.js";
 
 const available = await pgAvailableTdm11();
+const KIT_EXAMPLE_DIR = fileURLToPath(
+  new URL("../../../packages/kit/examples/harness/", import.meta.url),
+);
 const BASE = "http://api.test";
 /** kitTdm54: 2 contenders × 1 workload × (1 warm-up + 2 measured repeats). */
 const TRIALS = 6;
@@ -524,6 +533,9 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect(isTandemRepo({ kind: "github", github: "jaximus808/tandem-x" })).toBe(false);
     expect(isTandemRepo({ kind: "github", github: "someone/tandem" })).toBe(false);
 
+    // A valid kit stands in for kits/tandem-vs-claude-code (see the next test for the real one).
+    const curatedDir = mkdtempSync(path.join(tmpdir(), "tdm54-kits-"));
+    cpSync(KIT_EXAMPLE_DIR, path.join(curatedDir, CURATED_TANDEM_KIT), { recursive: true });
     const r = rig();
     const { w } = r.worker();
     // Stop after kit design: env build is the next stage's ticket ([3.8]).
@@ -533,7 +545,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       "run.advance",
       createRunAdvanceJob({
         jobs: () => r.queue,
-        agents: () => curatedKitStages(),
+        agents: () => curatedKitStages({ kitsDir: curatedDir }),
         pipeline: () => pipeline,
         timing: { leaseRefreshMs: 50 },
       }) as never,
@@ -548,7 +560,9 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect((run.stageOutputs as { held_from?: string }).held_from).toBe("env_build");
     const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
     expect(kit!.version).toBe(1);
-    expect((kit!.spec as { subject: { name: string } }).subject.name).toBe("tandem");
+    expect((kit!.spec as { subject: { name: string } }).subject.name).toBe(
+      (await loadKit(path.join(curatedDir, CURATED_TANDEM_KIT))).spec.subject.name,
+    );
     const said = await h.db
       .select({ payload: events.payload })
       .from(events)
@@ -567,6 +581,54 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       "env_build",
       "needs_human",
     ]);
+  }, 60_000);
+
+  it("CuratedKitStage on the repo's real kit: stored when valid, else held with the reasons", async () => {
+    const r = rig();
+    const { w } = r.worker();
+    const pipeline = new FakePipeline({ digest: digestTdm54() });
+    pipeline.buildEnv = async () => stageHold("env build stops this test");
+    w.handlers.set(
+      "run.advance",
+      createRunAdvanceJob({
+        jobs: () => r.queue,
+        agents: () => curatedKitStages(),
+        pipeline: () => pipeline,
+        timing: { leaseRefreshMs: 50 },
+      }) as never,
+    );
+    const id = await createRun(r.queue, {
+      source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+    });
+    await drainTdm54(w, r.queue);
+    const run = await runRow(id);
+    const valid = await validateKitDir(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
+    expect(run.state).toBe("needs_human");
+    if (valid.ok) {
+      expect((run.stageOutputs as { held_from?: string }).held_from).toBe("env_build");
+    } else {
+      expect((run.stageOutputs as { held_from?: string }).held_from).toBe("understand");
+      expect(run.pausedReason).toMatch(/^the curated Tandem kit does not validate/);
+    }
+  }, 60_000);
+
+  it("CuratedKitStage: any other repo holds at kit design with the set-up-for-you message", async () => {
+    const r = rig();
+    const { w } = r.worker();
+    w.handlers.set(
+      "run.advance",
+      createRunAdvanceJob({
+        jobs: () => r.queue,
+        agents: () => curatedKitStages(),
+        pipeline: () => new FakePipeline({ digest: digestTdm54() }),
+        timing: { leaseRefreshMs: 50 },
+      }) as never,
+    );
+    const id = await createRun(r.queue);
+    await drainTdm54(w, r.queue);
+    const run = await runRow(id);
+    expect(run).toMatchObject({ state: "needs_human", pausedReason: CURATED_KIT_UNAVAILABLE });
+    expect((run.stageOutputs as { held_from?: string }).held_from).toBe("kit_draft");
   }, 60_000);
 
   it("the default billing hook (ledger.recordRunCharges) bills a delivered run once, our cancel nothing", async () => {
