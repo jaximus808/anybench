@@ -3,6 +3,8 @@
 //
 // Supported: node --test (TAP), vitest / jest (jest-compatible JSON), mocha (JSON), pytest (-rA
 // summary), go test -json, cargo test. Anything else is refused with a reason, never guessed.
+// Monorepos: each runner runs from the nearest manifest enclosing the changed tests (apps/api/go.mod,
+// packages/x/package.json, ...); TypeScript under node --test only with a loader the repo declares.
 import { shQuote } from "../drivers/cli/shell.js";
 import {
   MineRunnerSpecSchema,
@@ -43,14 +45,17 @@ const BASE_ENV: Record<string, string> = {
 const HELPER_DIR_RE =
   /(^|\/)(fixtures?|__fixtures__|__snapshots__|__mocks__|helpers?|support|utils?|data|testdata)\//i;
 const JS_TEST_RE = /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\/[^/]+\.[cm]?[jt]sx?$/;
+// .ts test files only reach node --test when the module declares a TypeScript loader.
 const NODE_TEST_RE =
-  /(\.test|-test|_test)\.[cm]?js$|(^|\/)test-[^/]*\.[cm]?js$|(^|\/)test\.[cm]?js$|(^|\/)tests?\/(.+\/)?[^/]+\.[cm]?js$/;
+  /(\.test|-test|_test)\.[cm]?[jt]s$|(^|\/)test-[^/]*\.[cm]?[jt]s$|(^|\/)test\.[cm]?[jt]s$|(^|\/)tests?\/(.+\/)?[^/]+\.[cm]?[jt]s$/;
 const PY_TEST_RE = /(^|\/)test_[^/]*\.py$|_test\.py$/;
+const TS_RE = /\.[cm]?tsx?$/;
+const DTS_RE = /\.d\.[cm]?ts$/;
 
 export function isRunnableTestFile(kind: TestRunnerKind, path: string): boolean {
   switch (kind) {
     case "node-test":
-      return NODE_TEST_RE.test(path) && !HELPER_DIR_RE.test(path);
+      return NODE_TEST_RE.test(path) && !HELPER_DIR_RE.test(path) && !DTS_RE.test(path);
     case "vitest":
     case "jest":
       return JS_TEST_RE.test(path) && !HELPER_DIR_RE.test(path);
@@ -68,7 +73,48 @@ export function isRunnableTestFile(kind: TestRunnerKind, path: string): boolean 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Modules: a monorepo's tests run from the nearest enclosing manifest, not the repo root.
+
+type Lang = "node" | "python" | "go" | "rust";
+const MANIFESTS: Record<Lang, readonly string[]> = {
+  node: ["package.json"],
+  python: ["pyproject.toml", "setup.cfg", "setup.py"],
+  go: ["go.mod"],
+  rust: ["Cargo.toml"],
+};
+const LANG_ORDER: readonly Lang[] = ["node", "python", "go", "rust"];
+const FORCE_LANG: Record<TestRunnerKind, Lang> = {
+  "node-test": "node",
+  vitest: "node",
+  jest: "node",
+  mocha: "node",
+  pytest: "python",
+  go: "go",
+  cargo: "rust",
+};
+
+/** The directories enclosing `path`, nearest first, ending with "." (the repo root). */
+function enclosingDirs(path: string): string[] {
+  const parts = path.split("/").slice(0, -1);
+  const out: string[] = [];
+  for (let n = parts.length; n > 0; n--) out.push(parts.slice(0, n).join("/"));
+  out.push(".");
+  return out;
+}
+const inDir = (dir: string, name: string): string => (dir === "." ? name : `${dir}/${name}`);
+const isUnder = (dir: string, path: string): boolean => dir === "." || path.startsWith(`${dir}/`);
+const relToDir = (dir: string, path: string): string =>
+  dir === "." ? path : path.slice(dir.length + 1);
+
+/** `cmd` run from `dir` (a repo-relative directory), still started in the workspace root. */
+function inModule(dir: string, cmd: string): string {
+  if (dir === ".") return cmd;
+  return `cd ${shQuote(dir)} && ${/[;&|]/.test(cmd) ? `{ ${cmd}; }` : cmd}`;
+}
+
 interface PackageJson {
+  type?: string;
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -84,41 +130,169 @@ function parsePackageJson(text: string | undefined): PackageJson | undefined {
   }
 }
 
-function nodeInstall(paths: ReadonlySet<string>, pkg: PackageJson): string | null {
+/**
+ * The module of one changed test file: the nearest enclosing manifest of `lang`. For node, the
+ * nearest package.json with its own test script or devDependencies (a workspace package), else the
+ * root package.json. Python falls back to the root (requirements-only repos); Go and Rust need one.
+ */
+async function moduleOf(
+  lang: Lang,
+  file: string,
+  pathSet: ReadonlySet<string>,
+  read: (path: string) => Promise<string | undefined>,
+): Promise<string | undefined> {
+  if (lang === "node") {
+    let nearest: string | undefined;
+    for (const dir of enclosingDirs(file)) {
+      const f = inDir(dir, "package.json");
+      if (!pathSet.has(f)) continue;
+      nearest ??= dir;
+      const pkg = parsePackageJson(await read(f));
+      if (pkg && (pkg.scripts?.test || Object.keys(pkg.devDependencies ?? {}).length > 0))
+        return dir;
+    }
+    return pathSet.has("package.json") ? "." : nearest;
+  }
+  for (const dir of enclosingDirs(file)) {
+    if (MANIFESTS[lang].some((m) => pathSet.has(inDir(dir, m)))) return dir;
+  }
+  return lang === "python" ? "." : undefined;
+}
+
+/** Only test data changed: the language of the nearest manifest enclosing it. */
+function dataLang(files: readonly string[], pathSet: ReadonlySet<string>): Lang | undefined {
+  for (const f of files.length > 0 ? files : ["x"]) {
+    for (const dir of enclosingDirs(f)) {
+      const l = LANG_ORDER.find((k) => MANIFESTS[k].some((m) => pathSet.has(inDir(dir, m))));
+      if (l) return l;
+    }
+  }
+  return undefined;
+}
+
+/** The node install, run from the dir of the nearest lockfile at or above the module. */
+function nodeInstall(
+  pathSet: ReadonlySet<string>,
+  moduleDir: string,
+  pkg: PackageJson,
+): { dir: string; command: string } | null {
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   if (Object.keys(deps).length === 0) return null;
-  if (paths.has("package-lock.json") || paths.has("npm-shrinkwrap.json"))
-    return "npm ci --no-audit --no-fund";
-  if (paths.has("pnpm-lock.yaml")) return "corepack pnpm install --frozen-lockfile";
-  if (paths.has("yarn.lock")) return "corepack yarn install";
-  return "npm install --no-audit --no-fund --no-package-lock";
+  for (const dir of enclosingDirs(inDir(moduleDir, "package.json"))) {
+    const has = (f: string) => pathSet.has(inDir(dir, f));
+    if (has("package-lock.json") || has("npm-shrinkwrap.json"))
+      return { dir, command: "npm ci --no-audit --no-fund" };
+    if (has("pnpm-lock.yaml")) {
+      // A workspace package: install it and its workspace deps only, not every app in the repo.
+      const filter =
+        dir === moduleDir ? "" : ` --filter ${shQuote(`./${relToDir(dir, moduleDir)}...`)}`;
+      return { dir, command: `corepack pnpm install --frozen-lockfile${filter}` };
+    }
+    if (has("yarn.lock"))
+      return {
+        dir,
+        command: has(".yarnrc.yml")
+          ? "corepack yarn install --immutable"
+          : "corepack yarn install --frozen-lockfile",
+      };
+  }
+  return { dir: moduleDir, command: "npm install --no-audit --no-fund --no-package-lock" };
 }
 
 const UNSUPPORTED_NODE = ["ava", "tape", "tap", "uvu", "jasmine", "lab", "karma", "qunit"];
+const NODE_TEST_SCRIPT_RE = /(^|[\s;&|(/])(node|tsx)\s+([^;&|]*\s)?--test(?=\s|$|[;&|)])/;
+const LOADER_FLAG_RE = /^(--import|--loader|--experimental-loader|--require|-r)(?:=(.+))?$/;
+const STRIP_TYPES_FLAGS: ReadonlySet<string> = new Set([
+  "--experimental-strip-types",
+  "--experimental-transform-types",
+]);
+const TS_LOADER_RE = /(^|\/)(tsx|ts-node|@swc-node\/register|esbuild-register|@esbuild-kit)\b/;
+
+/**
+ * The loader flags a test script gives `node --test` (`node --import tsx --test`, `tsx --test`,
+ * `node --experimental-strip-types --test`), exactly as written. Undefined: no node --test there.
+ */
+export function scriptNodeTestFlags(script: string): string[] | undefined {
+  for (const seg of script.split(/&&|\|\||[;|]/)) {
+    const tok = seg.trim().split(/\s+/);
+    const i = tok.findIndex((t) => t === "node" || t === "tsx" || /\/(node|tsx)$/.test(t));
+    if (i < 0 || !tok.includes("--test")) continue;
+    const flags: string[] = [];
+    if (/(^|\/)tsx$/.test(tok[i] ?? "")) flags.push("--import", "tsx");
+    for (let j = i + 1; j < tok.length && tok[j] !== "--test"; j++) {
+      const t = tok[j] ?? "";
+      const m = LOADER_FLAG_RE.exec(t);
+      if (m) {
+        const v = m[2] ?? tok[++j];
+        if (v) flags.push(m[1] ?? "", v);
+      } else if (STRIP_TYPES_FLAGS.has(t)) flags.push(t);
+    }
+    return flags;
+  }
+  return undefined;
+}
+
+const tsCapable = (flags: readonly string[]): boolean =>
+  flags.some((f) => STRIP_TYPES_FLAGS.has(f) || TS_LOADER_RE.test(f));
+
+/** A TypeScript loader the package declares as a dependency, as node flags. */
+function dependencyLoader(pkg: PackageJson): string[] | undefined {
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  const esm = pkg.type === "module";
+  if ("tsx" in deps) return ["--import", "tsx"];
+  if ("ts-node" in deps)
+    return esm ? ["--loader", "ts-node/esm"] : ["--require", "ts-node/register"];
+  if ("@swc-node/register" in deps)
+    return esm
+      ? ["--import", "@swc-node/register/esm-register"]
+      : ["--require", "@swc-node/register"];
+  if ("esbuild-register" in deps)
+    return esm
+      ? ["--loader", "esbuild-register/loader", "--require", "esbuild-register"]
+      : ["--require", "esbuild-register"];
+  return undefined;
+}
+
+interface NodeDetection {
+  kind: TestRunnerKind;
+  install: { dir: string; command: string } | null;
+  pkg: PackageJson;
+  script: string;
+}
 
 async function detectNode(
   input: DetectTestRunnerInput,
   pathSet: ReadonlySet<string>,
-): Promise<{ kind: TestRunnerKind; install: string | null } | { reason: string }> {
-  const pkg = parsePackageJson(await input.read("package.json"));
-  if (!pkg) return { reason: "no readable package.json at the repo root" };
+  moduleDir: string,
+  testFiles: readonly string[],
+): Promise<NodeDetection | { reason: string }> {
+  const pkgPath = inDir(moduleDir, "package.json");
+  const pkg = parsePackageJson(await input.read(pkgPath));
+  if (!pkg)
+    return {
+      reason:
+        moduleDir === "." ? "no readable package.json at the repo root" : `no readable ${pkgPath}`,
+    };
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-  const script = `${pkg.scripts?.test ?? ""} ${(input.testCommands ?? []).join(" ")}`;
+  // digest.test_commands are the repo root's: a hint for the root module only.
+  const hints = moduleDir === "." ? (input.testCommands ?? []) : [];
+  const script = `${pkg.scripts?.test ?? ""} ${hints.join(" ")}`;
   const has = (name: string): boolean =>
     name in deps || new RegExp(`(^|[\\s/;&|(])${name}(\\s|$|[;&|)])`).test(script);
-  const install = nodeInstall(pathSet, pkg);
-  if (has("vitest")) return { kind: "vitest", install };
-  if (has("jest")) return { kind: "jest", install };
-  if (has("mocha")) return { kind: "mocha", install };
-  if (/node\s+(--[a-z-]+\s+)*--test\b/.test(script)) return { kind: "node-test", install };
-  for (const t of input.testFiles) {
+  const install = nodeInstall(pathSet, moduleDir, pkg);
+  const found = (kind: TestRunnerKind): NodeDetection => ({ kind, install, pkg, script });
+  if (has("vitest")) return found("vitest");
+  if (has("jest")) return found("jest");
+  if (has("mocha")) return found("mocha");
+  if (NODE_TEST_SCRIPT_RE.test(script)) return found("node-test");
+  for (const t of testFiles) {
     const text = await input.readTest(t);
-    if (text && /["']node:test["']/.test(text)) return { kind: "node-test", install };
+    if (text && /["']node:test["']/.test(text)) return found("node-test");
   }
   const other = UNSUPPORTED_NODE.find(has);
   if (other) return { reason: `test runner ${other} is not supported yet` };
   return {
-    reason: "package.json names no supported test runner (node --test, vitest, jest, mocha)",
+    reason: `${pkgPath} names no supported test runner (node --test, vitest, jest, mocha)`,
   };
 }
 
@@ -148,7 +322,7 @@ function pythonInstall(paths: ReadonlySet<string>): string {
   return parts.join(" && ");
 }
 
-const langOf = (p: string): "node" | "python" | "go" | "rust" | undefined =>
+const langOf = (p: string): Lang | undefined =>
   /\.[cm]?[jt]sx?$/.test(p)
     ? "node"
     : p.endsWith(".py")
@@ -159,14 +333,34 @@ const langOf = (p: string): "node" | "python" | "go" | "rust" | undefined =>
           ? "rust"
           : undefined;
 
-function testCommand(kind: TestRunnerKind, targets: readonly string[]): string {
+/** Where and how a runner runs inside the repo. */
+export interface RunnerLayout {
+  /** The module the tests run from (repo-relative; "." = the root). Default ".". */
+  moduleDir?: string;
+  /** Where the install runs (the lockfile's dir for node workspaces). Default `moduleDir`. */
+  installDir?: string;
+  /** node --test only: the loader flags placed before `--test` (e.g. ["--import", "tsx"]). */
+  nodeFlags?: readonly string[];
+}
+
+/** The test command, run from the module dir; `targets` are relative to it. */
+function testCommand(
+  kind: TestRunnerKind,
+  targets: readonly string[],
+  moduleDir: string,
+  nodeFlags: readonly string[],
+): string {
   const files = targets.map(shQuote).join(" ");
   switch (kind) {
-    case "node-test":
-      // One process per file, so every test id carries its file (node's TAP does not).
+    case "node-test": {
+      const node = ["node", ...nodeFlags.map(shQuote), "--test", "--test-reporter=tap"].join(" ");
+      // One process per file, so every test id carries its file (node's TAP does not). The
+      // marker names the file from the repo root, the same ids as the other runners.
+      const label = moduleDir === "." ? '"$f"' : `${shQuote(`${moduleDir}/`)}"$f"`;
       return targets.length === 0
-        ? "node --test --test-reporter=tap"
-        : `rc=0; for f in ${files}; do printf '# anybench-file: %s\\n' "$f"; node --test --test-reporter=tap "$f" || rc=$?; done; exit $rc`;
+        ? node
+        : `rc=0; for f in ${files}; do printf '# anybench-file: %s\\n' ${label}; ${node} "$f" || rc=$?; done; exit $rc`;
+    }
     case "vitest":
       return `npx --no-install vitest run --reporter=json --outputFile="$AB_RESULT"${files ? ` ${files}` : ""}`;
     case "jest":
@@ -195,13 +389,19 @@ export function runnerWritesResultFile(kind: TestRunnerKind): boolean {
   return RESULT_FILE_KINDS.has(kind);
 }
 
-/** Build the runner spec for a kind, install and targets. */
+/**
+ * Build the runner spec for a kind, install and targets (repo-relative). With a `layout` whose
+ * module is not the root, both commands `cd` into their dir first, so they still run from the
+ * workspace root exactly as recorded.
+ */
 export function makeRunnerSpec(
   kind: TestRunnerKind,
   install: string | null,
   targets: readonly string[],
   extraEnv: Readonly<Record<string, string>> = {},
+  layout: RunnerLayout = {},
 ): MineRunnerSpec {
+  const moduleDir = layout.moduleDir ?? ".";
   const env: Record<string, string> = { ...BASE_ENV, ...extraEnv };
   if (kind === "pytest") {
     Object.assign(env, {
@@ -214,11 +414,13 @@ export function makeRunnerSpec(
   }
   if (kind === "go") env.GOFLAGS = "-mod=mod";
   if (install?.startsWith("corepack")) env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
+  const rel = targets.map((t) => (isUnder(moduleDir, t) ? relToDir(moduleDir, t) : t));
   return MineRunnerSpecSchema.parse({
     kind,
-    install_command: install,
-    test_command: testCommand(kind, targets),
+    install_command: install === null ? null : inModule(layout.installDir ?? moduleDir, install),
+    test_command: inModule(moduleDir, testCommand(kind, rel, moduleDir, layout.nodeFlags ?? [])),
     targets: [...targets],
+    module_dir: moduleDir,
     env,
   });
 }
@@ -228,79 +430,97 @@ export async function detectTestRunner(
   input: DetectTestRunnerInput,
 ): Promise<DetectTestRunnerResult> {
   const pathSet = new Set(input.paths);
-  const lang = input.force
-    ? (
-        {
-          "node-test": "node",
-          vitest: "node",
-          jest: "node",
-          mocha: "node",
-          pytest: "python",
-          go: "go",
-          cargo: "rust",
-        } as const
-      )[input.force]
-    : (input.testFiles.map(langOf).find((l) => l !== undefined) ??
-      (pathSet.has("package.json")
-        ? "node"
-        : pathSet.has("pyproject.toml") || pathSet.has("setup.py")
-          ? "python"
-          : pathSet.has("go.mod")
-            ? "go"
-            : pathSet.has("Cargo.toml")
-              ? "rust"
-              : undefined));
+  const refuse = (reason: string): DetectTestRunnerResult => ({
+    ok: false,
+    code: "no_runner",
+    reason,
+  });
+  const dataFiles = input.testFiles.filter((t) => langOf(t) === undefined);
+  const lang: Lang | undefined = input.force
+    ? FORCE_LANG[input.force]
+    : (input.testFiles.map(langOf).find((l) => l !== undefined) ?? dataLang(dataFiles, pathSet));
+  if (!lang)
+    return refuse(
+      "no supported language/manifest (package.json, pyproject.toml/setup.py, go.mod, Cargo.toml)",
+    );
+
+  // The module: nearest manifest of the changed test files (their code files, else their data).
+  const code = input.testFiles.filter((t) => langOf(t) === lang);
+  const anchors = code.length > 0 ? code : dataFiles;
+  const modules = new Map<string, string[]>();
+  for (const t of anchors) {
+    const m = await moduleOf(lang, t, pathSet, input.read);
+    if (m === undefined) {
+      const kindName = lang === "go" ? "Go" : "Rust";
+      return refuse(`${kindName} test file ${t} has no enclosing ${MANIFESTS[lang].join(" / ")}`);
+    }
+    (modules.get(m) ?? modules.set(m, []).get(m))?.push(t);
+  }
+  if (modules.size > 1) {
+    const list = [...modules.keys()].sort().join(", ");
+    return refuse(
+      `the changed tests span ${modules.size} modules (${list}); a mined task verifies one module`,
+    );
+  }
+  const moduleDir = [...modules.keys()][0] ?? ".";
+  const moduleCode = code.filter((t) => isUnder(moduleDir, t));
+
   let kind: TestRunnerKind;
   let install: string | null;
+  let installDir = moduleDir;
+  let nodeFlags: string[] = [];
   const extraEnv: Record<string, string> = {};
   switch (lang) {
     case "node": {
-      const d = await detectNode(input, pathSet);
-      if ("reason" in d) return { ok: false, code: "no_runner", reason: d.reason };
+      const d = await detectNode(input, pathSet, moduleDir, moduleCode);
+      if ("reason" in d) return refuse(d.reason);
       kind = input.force ?? d.kind;
-      install = d.install;
-      if (kind === "node-test" && input.testFiles.some((t) => /\.[cm]?tsx?$/.test(t))) {
-        return {
-          ok: false,
-          code: "no_runner",
-          reason: "node --test on TypeScript test files needs a loader; not supported yet",
-        };
+      install = d.install?.command ?? null;
+      installDir = d.install?.dir ?? moduleDir;
+      if (kind === "node-test") {
+        const ts = moduleCode.some((t) => TS_RE.test(t) && !DTS_RE.test(t));
+        const declared = scriptNodeTestFlags(d.script) ?? [];
+        if (tsCapable(declared)) nodeFlags = declared;
+        else if (ts) {
+          const dep = dependencyLoader(d.pkg);
+          if (!dep)
+            return refuse(
+              `node --test on TypeScript test files needs a loader, and ${inDir(moduleDir, "package.json")} declares none ` +
+                "(tsx / ts-node / @swc-node/register / esbuild-register, or --experimental-strip-types in its test script)",
+            );
+          nodeFlags = [...declared, ...dep];
+        } else nodeFlags = declared;
       }
       break;
     }
-    case "python":
+    case "python": {
       kind = "pytest";
-      install = pythonInstall(pathSet);
+      const local = new Set(
+        input.paths.filter((p) => isUnder(moduleDir, p)).map((p) => relToDir(moduleDir, p)),
+      );
+      install = pythonInstall(local);
       // src layout: importable even when the editable install fails (old build backends).
-      if (input.paths.some((p) => /^src\/[^/]+\/__init__\.py$/.test(p)))
-        extraEnv.PYTHONPATH = "src";
+      if ([...local].some((p) => /^src\/[^/]+\/__init__\.py$/.test(p))) extraEnv.PYTHONPATH = "src";
       break;
+    }
     case "go":
-      if (!pathSet.has("go.mod"))
-        return { ok: false, code: "no_runner", reason: "Go tests without a root go.mod" };
+      if (!pathSet.has(inDir(moduleDir, "go.mod")))
+        return refuse("Go tests without an enclosing go.mod");
       kind = "go";
       install = "go mod download";
       break;
     case "rust":
-      if (!pathSet.has("Cargo.toml"))
-        return { ok: false, code: "no_runner", reason: "Rust tests without a root Cargo.toml" };
+      if (!pathSet.has(inDir(moduleDir, "Cargo.toml")))
+        return refuse("Rust tests without an enclosing Cargo.toml");
       kind = "cargo";
       install = "cargo fetch";
       break;
-    default:
-      return {
-        ok: false,
-        code: "no_runner",
-        reason:
-          "no supported language/manifest (package.json, pyproject.toml/setup.py, go.mod, Cargo.toml)",
-      };
   }
-  let targets = input.testFiles.filter((t) => isRunnableTestFile(kind, t));
+  const inModuleDir = (t: string) => isUnder(moduleDir, t);
+  let targets = input.testFiles.filter((t) => inModuleDir(t) && isRunnableTestFile(kind, t));
   // Changed test DATA (fixtures, expected outputs) is read by tests the commit did not touch:
-  // run the whole suite so those tests are graded too.
-  const data = input.testFiles.filter(
-    (t) => !isRunnableTestFile(kind, t) && langOf(t) === undefined,
-  );
+  // run the whole suite (of the module) so those tests are graded too.
+  const data = dataFiles.filter((t) => inModuleDir(t) && !isRunnableTestFile(kind, t));
   if (data.length > 0 && input.suiteFallback !== false) targets = [];
   if (targets.length === 0 && input.suiteFallback === false) {
     return {
@@ -309,7 +529,17 @@ export async function detectTestRunner(
       reason: `no changed test file is a ${kind} test file (${input.testFiles.join(", ")})`,
     };
   }
-  return { ok: true, runner: makeRunnerSpec(kind, install, targets, extraEnv) };
+  if (targets.length === 0 && kind === "node-test" && tsCapable(nodeFlags)) {
+    // node's own discovery skips .ts files: list the module's test files instead.
+    const all = new Set([...input.paths, ...input.testFiles]);
+    targets = [...all]
+      .filter((t) => inModuleDir(t) && isRunnableTestFile(kind, t) && !t.includes("node_modules/"))
+      .sort();
+  }
+  return {
+    ok: true,
+    runner: makeRunnerSpec(kind, install, targets, extraEnv, { moduleDir, installDir, nodeFlags }),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

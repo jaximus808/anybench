@@ -109,7 +109,111 @@ TASK mined-c7acf8b32b 8d34a601 2021-06-28 held-out f2p=1 p2p=461 tests/test_extr
   with `parseTestRun`.
 - PASS_TO_PASS covers the targeted test files (the whole suite when test data changed), as in
   SWE-bench, not the full suite.
-- Runners: node --test (JS only), vitest, jest, mocha, pytest, go test, cargo test. ava, tape,
-  uvu, jasmine and others are refused with a reason. Only the node and pytest paths ran live.
+- Runners: node --test (JS, and TS with a declared loader), vitest, jest, mocha, pytest, go test,
+  cargo test. ava, tape, uvu, jasmine and others are refused with a reason. node, pytest and go ran
+  live; cargo has not. Monorepo support: see the follow-up below.
 - The image must carry the toolchain (the caller picks it: `node:22`, `python:3.12-slim`, ...);
   installs need network on the computer. `setup.sh` repeats the install for the contender.
+
+## Follow-up: monorepos (nested modules, TypeScript under node --test)
+
+Found by the TDM-60 worker: on github.com/jaximus808/tandem every candidate was refused
+`no_runner`. The Go module is `apps/api/go.mod`, not at the root, and the gateway's tests are
+TypeScript run by `tsx --test test/*.test.ts` in `apps/mcp-gateway`.
+
+What changed (`packages/kit/src/mine/runners.ts`, `verify.ts`, `schema.ts`):
+
+- **Nearest enclosing manifest.** Each changed test file maps to its module: the nearest
+  `go.mod`, `Cargo.toml` or `pyproject.toml` / `setup.cfg` / `setup.py`, or the nearest
+  `package.json` with its own test script or devDependencies (otherwise the root one). Both
+  commands `cd` into that module, so they still replay verbatim from the workspace root (gate,
+  setup.sh). Targets in the command are relative to the module, e.g.
+  `cd 'apps/api' && go test -count=1 -json './internal/api'`. The new runner-spec field
+  `module_dir` records it ("." = root). The field is optional, so older records still parse.
+  `targets` stays repo-relative. A node install runs where the nearest lockfile is (pnpm
+  workspace packages: `pnpm install --frozen-lockfile --filter './<pkg>...'`; yarn berry:
+  `--immutable`; classic: `--frozen-lockfile`). Test ids from node --test keep the repo-relative
+  file (`apps/mcp-gateway/test/x.test.ts > name`).
+- **Tests spanning modules are dropped, not split.** `no_runner: the changed tests span 2 modules
+  (apps/api, apps/worker); a mined task verifies one module`. Test files in another language than
+  the first changed test file are still not graded (unchanged).
+- **TypeScript under node --test only with a declared loader**: the test script's own flags
+  (`tsx --test` → `--import tsx`; `node --import X` / `--loader X` / `-r X`;
+  `--experimental-strip-types`), else a devDependency (tsx → `--import tsx`; ts-node →
+  `--loader ts-node/esm` for ESM, `--require ts-node/register` for CJS; @swc-node/register;
+  esbuild-register). Otherwise the candidate is refused: `node --test on TypeScript test files
+  needs a loader, and tools/plain/package.json declares none (...)`. A whole-suite fallback lists
+  the module's .ts test files, because node's own discovery skips them.
+- **Two verify gotchas surfaced by the real run** (each in `classifyTestRuns` / `isCommitTest`,
+  unit-tested):
+  - *Unstable test ids.* Tandem's Go subtests put a random UUID in their names
+    (`TestWebhookRoutesRejectEveryAgentCredential/..._/api/canvases/WBHKTEST/webhooks/<uuid>`),
+    so each run reports different ids. The first after-run dropped d6c81bef as `flaky` (72 tests
+    "flip"). A test that never fails but is missing from some after-runs is now set aside as a
+    bystander (`flaky_excluded`).
+  - *Bystanders in a package that does not build before the fix.* A Go package whose new test
+    references new code fails to compile before the fix, so every test in it is "missing" before.
+    A timing-flaky test in another file (`contention_test.go`:
+    `TestRepeatedFencedWritesCoalesceIntoOneEntry`, passing 1/3) then dropped 4 candidates as
+    `flaky`. Only tests declared in the commit's changed test files (Go: their `func Test*`;
+    others: the file prefix of the id) can now drop a candidate. Other flips are only excluded.
+
+Fixtures on docker-local (`packages/kit/test/tdm186-runners-docker.test.ts`): a repo with Go
+modules at apps/api + apps/worker (`golang:1.26-bookworm`) verifies 2 tasks 3/3 and drops the
+two-module commit. An npm workspace (`node:22`, root package-lock.json, tsx devDependency)
+verifies 2 TS tasks 3/3 via `node --import tsx --test`, and still refuses `tools/plain` (TS, no
+loader).
+
+```
+$ cd packages/kit && npx vitest run test/tdm186-runners-docker.test.ts
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Duration  63.45s
+```
+
+### Tandem on docker-local, before vs after
+
+Image: `golang:1.26-bookworm` plus node 22 (copied from `node:22`). One miner run uses one
+image, and Tandem needs both toolchains. Head 05b4a022, defaults (3 runs per state, target 30,
+maxVerify 60). The script calls `mineRepoTasks` with `DockerLocalProvider` (no Naïve).
+
+```
+$ git clone https://github.com/jaximus808/tandem.git
+$ node mine-real.ts <kit dist before> tandem anybench-mine-go-node:tdm186 before.json
+elapsed_s=7
+{"commits_scanned":393,"candidates":46,"verified":0,"held_out":0,"drop_counts":{... "no_runner":46}}
+VERIFY_DROP_REASONS {
+ "no_runner: Go tests without a root go.mod": 23,
+ "no_runner: node --test on TypeScript test files needs a loader; not supported yet": 23
+}
+
+$ node mine-real.ts <kit dist after> tandem anybench-mine-go-node:tdm186 after.json
+elapsed_s=1282
+{"commits_scanned":393,"candidates":46,"verified":30,"held_out":10,"drop_counts":{... "passes_before_fix":1,"fails_after_fix":1,"over_limit":14}}
+VERIFY_DROP_REASONS {
+ "passes_before_fix: every targeted test already passes before the fix": 1,
+ "fails_after_fix: no test goes from failing to passing (0 pass→fail)": 1,
+ "over_limit: target of 30 tasks reached": 14
+}
+TASK mined-0791c383fe 87ed2ffc go module=apps/api f2p=1 p2p=500 .../internal/api/TestGetCanvasByCodePrivateUngrantedIs404 | canvas_meta_gate_test.go:50: private/ungranted = 200, want 404
+TASK mined-35ce3e5383 3ddc0756 go module=apps/api f2p=2 p2p=496 .../internal/api/TestItineraryExportBlocksPrivateAnon | export_gate_test.go:57: private itinerary export = 200, want 403
+TASK mined-27fda7faad 0cb4ee48 node-test module=apps/mcp-gateway f2p=2 p2p=18 apps/mcp-gateway/test/edge-claim.test.ts > a non-JSON (HTML) 200 raises a clean error, not a SyntaxError
+TASK mined-afadb3c2ff 1b8f0a9f node-test module=apps/mcp-gateway f2p=6 p2p=7 apps/mcp-gateway/test/session-handle.test.ts > a present-but-unusable sig fails closed | Missing expected exception.
+... (30 tasks: 10 go in apps/api, 20 node --test + tsx in apps/mcp-gateway; 32 of 46 candidates verified before the target stopped it)
+```
+
+Runner specs as recorded:
+`cd 'apps/api' && go test -count=1 -json './internal/api' './internal/store/sqlite'` (install
+`cd 'apps/api' && go mod download`), and
+`corepack pnpm install --frozen-lockfile --filter './apps/mcp-gateway...'` +
+`cd 'apps/mcp-gateway' && { ... node '--import' 'tsx' --test --test-reporter=tap "$f" ... }`.
+
+Limits:
+- Go tasks whose new test does not compile before the fix get the whole package as FAIL_TO_PASS
+  (f2p 500–914, symptom `[build failed]`). That is correct: the agent must make the package
+  build. But it is a coarse oracle, and the issue writer gets a build error rather than an
+  assertion.
+- One computer image per mining run. Mixed Go+node repos need an image with both toolchains.
+- Node ≥ 22.18's unflagged type stripping is not assumed: plain `node --test` on .ts with no
+  declared loader is still refused.
+- Commits whose tests span modules are dropped, not split into one task per module.

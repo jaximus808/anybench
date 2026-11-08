@@ -91,7 +91,73 @@ interface RunRecord {
   log: string;
 }
 
-type Status = "pass" | "fail" | "skip" | "missing";
+export type MineTestStatus = "pass" | "fail" | "skip" | "missing";
+type Status = MineTestStatus;
+
+/**
+ * One test across the before-runs and after-runs of a candidate. FAIL_TO_PASS: fail or missing
+ * in every before-run, pass in every after-run. A test that flips within one state is flaky: a
+ * target (drops the candidate) when it fails/is missing before and passes after at least once,
+ * else a bystander. A test that never fails but is missing from some after-runs has an unstable
+ * id (a name with a random UUID in it, e.g. a Go subtest): it is not one test across runs, so it
+ * is kept out of grading as a bystander instead of dropping the candidate.
+ */
+export function classifyTestRuns(
+  before: readonly Status[],
+  after: readonly Status[],
+  /** Whether the test is one of the commit's (see isCommitTest); a bystander never drops it. */
+  commitTest = true,
+): "f2p" | "p2p" | "p2f" | "flaky_target" | "flaky_other" | "none" {
+  const failish = (s: Status) => s === "fail" || s === "missing";
+  const same = (xs: readonly Status[]) => xs.every((x) => x === xs[0]);
+  const aFail = before.every(failish);
+  const aPass = before.every((x) => x === "pass");
+  const bPass = after.every((x) => x === "pass");
+  const bFail = after.every(failish);
+  if (aFail && bPass) return "f2p";
+  if (aPass && bPass) return "p2p";
+  if (aPass && bFail) return "p2f";
+  if (same(before) && same(after)) return "none";
+  const unstableId =
+    ![...before, ...after].includes("fail") && after.includes("missing") && after.includes("pass");
+  if (unstableId) return "flaky_other";
+  return commitTest && before.some(failish) && after.some((x) => x === "pass")
+    ? "flaky_target"
+    : "flaky_other";
+}
+
+/**
+ * Whether a test id belongs to the commit's changed test files. Runners whose ids start with the
+ * file (node --test, vitest, jest, mocha, pytest) are matched by path, repo- or module-relative.
+ * Go ids are `<package>/<TestName>[/<subtest>]`, matched against the Test/Example/Fuzz functions the
+ * changed _test.go files declare (a package that fails to build before the fix makes every test in
+ * it "missing", including bystanders in other files). Cargo ids carry neither: every test counts.
+ */
+export function isCommitTest(
+  kind: TestRunnerKind,
+  id: string,
+  testFiles: readonly { path: string; text: string }[],
+  moduleDir = ".",
+): boolean {
+  if (kind === "cargo") return true;
+  if (kind === "go") {
+    for (const f of testFiles) {
+      if (!f.path.endsWith("_test.go")) continue;
+      for (const m of f.text.matchAll(/^func\s+((?:Test|Example|Fuzz)\w*)\s*\(/gm)) {
+        const at = id.indexOf(`/${m[1]}`);
+        if (at >= 0 && /^(\/|$)/.test(id.slice(at + 1 + (m[1] ?? "").length))) return true;
+      }
+    }
+    return false;
+  }
+  const prefix = moduleDir === "." ? "" : `${moduleDir}/`;
+  return testFiles.some((f) => {
+    const rel = prefix && f.path.startsWith(prefix) ? f.path.slice(prefix.length) : f.path;
+    return [f.path, rel].some(
+      (p) => id === p || id.startsWith(`${p} > `) || id.startsWith(`${p}::`),
+    );
+  });
+}
 
 const MANIFEST_RE =
   /(^|\/)(package\.json|pyproject\.toml|setup\.py|setup\.cfg|requirements[^/]*\.txt|go\.mod|Cargo\.toml)$/;
@@ -261,28 +327,23 @@ export async function verifyMineCandidate(
     for (const r of [...before, ...after]) for (const k of r.parsed.tests.keys()) ids.add(k);
     const statusIn = (r: RunRecord, t: string): Status =>
       r.parsed.tests.get(t)?.outcome ?? "missing";
-    const failish = (s: Status) => s === "fail" || s === "missing";
     const f2p: string[] = [];
     const p2p: string[] = [];
     const p2f: string[] = [];
     const flakyTarget: string[] = [];
     const flakyOther: string[] = [];
+    const bucket = { f2p, p2p, p2f, flaky_target: flakyTarget, flaky_other: flakyOther };
+    const changedTests = testFiles.map((f) => ({
+      path: f.path,
+      text: f.content.toString("utf8"),
+    }));
     for (const t of [...ids].sort()) {
-      const a = before.map((r) => statusIn(r, t));
-      const b = after.map((r) => statusIn(r, t));
-      const same = (xs: Status[]) => xs.every((x) => x === xs[0]);
-      const aFail = a.every(failish);
-      const aPass = a.every((x) => x === "pass");
-      const bPass = b.every((x) => x === "pass");
-      const bFail = b.every(failish);
-      if (aFail && bPass) f2p.push(t);
-      else if (aPass && bPass) p2p.push(t);
-      else if (aPass && bFail) p2f.push(t);
-      else if (!same(a) || !same(b)) {
-        // flipped within one state: is it one of the tests this commit is about?
-        if (a.some(failish) && b.some((x) => x === "pass")) flakyTarget.push(t);
-        else flakyOther.push(t);
-      }
+      const c = classifyTestRuns(
+        before.map((r) => statusIn(r, t)),
+        after.map((r) => statusIn(r, t)),
+        isCommitTest(runner.kind, t, changedTests, runner.module_dir),
+      );
+      if (c !== "none") bucket[c].push(t);
     }
     if (flakyTarget.length > 0) {
       const t = flakyTarget[0] ?? "";

@@ -96,15 +96,26 @@ export type TestRunnerKind = z.infer<typeof TestRunnerKindSchema>;
 /** How to run a task's tests, as data (the gate and the proof stage replay it verbatim). */
 export const MineRunnerSpecSchema = z.strictObject({
   kind: TestRunnerKindSchema,
-  /** Run once in the workspace root before the tests (dependency install), or null. */
+  /** Run once from the workspace root before the tests (dependency install), or null. */
   install_command: z.string().min(1).nullable(),
   /**
-   * Run in the workspace root. Writes machine-readable results to "$AB_RESULT" when the runner
+   * Run from the workspace root (it `cd`s into `module_dir` itself). Writes machine-readable results to "$AB_RESULT" when the runner
    * has a JSON reporter (vitest, jest, mocha); otherwise its stdout+stderr is the result.
    */
   test_command: z.string().min(1),
-  /** The test files passed to the runner (empty = the runner's own discovery). */
+  /**
+   * The test files passed to the runner, relative to the repo root (empty = the runner's own
+   * discovery). The command names them relative to `module_dir`.
+   */
   targets: z.array(RelPath),
+  /**
+   * The module the runner works in: the nearest manifest (go.mod, Cargo.toml, package.json with
+   * its own test script or devDependencies, pyproject.toml / setup.cfg / setup.py) enclosing the
+   * changed tests, relative to the repo root; "." = the root. Both commands already `cd` into it
+   * (or into the workspace lockfile's dir, for a node install), so replaying them from the
+   * workspace root still works. Absent in records written before monorepo support (= the root).
+   */
+  module_dir: z.union([z.literal("."), RelPath]).optional(),
   /** Extra non-secret env the commands need (CI=1, NO_COLOR=1, ...). */
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()),
 });
