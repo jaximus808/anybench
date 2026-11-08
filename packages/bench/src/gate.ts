@@ -16,6 +16,8 @@
 //      exits, every process of the sandbox uid is killed BEFORE the verdict is read, so nothing
 //      the contender left running can rewrite it. The verdict is copied by root only if it is a
 //      regular, single-link file owned by the sandbox uid and at most GATE_VERDICT_MAX_BYTES.
+//      The check's metric rows (`<gate>.metrics.jsonl` in its $1, e.g. api-load's `api_p95_ms`)
+//      come back the same way and are kept only on a passing verdict (no number without a pass).
 //   4. destroy the computer (always, also on error).
 //
 // Fail closed: a missing, unreadable, oversized or invalid gate.json, a non-zero exit, a timeout or
@@ -71,6 +73,13 @@ export const GATE_SANDBOX_USER = "abgate";
 export const GATE_RUN_USER = "abrun";
 /** gate.json larger than this is refused (fail closed). */
 export const GATE_VERDICT_MAX_BYTES = 64 * 1024;
+/** At most this many metric rows are kept per gate. */
+export const GATE_METRICS_MAX = 64;
+
+/** The file a check writes its metric rows to, in its `$1` (e.g. `api-load.metrics.jsonl`). */
+export function gateMetricsFile(gateId: string): string {
+  return `${gateId}.metrics.jsonl`;
+}
 /** More entries than this in the frozen bundle → a contender FAIL before anything is unpacked. */
 export const DEFAULT_MAX_FROZEN_ENTRIES = 200_000;
 /**
@@ -184,6 +193,12 @@ export const GateOutcomeSchema = z.object({
    * the contender's outputs (GateKitError before outputs are touched, GateInfraError) are ours.
    */
   kit_suspect: z.boolean(),
+  /**
+   * The check's metric rows (`<gate>.metrics.jsonl`), name → value. Present only on a passing
+   * verdict: a failing or not-applicable gate never vouches for a number. Absent in records
+   * written before gates returned metrics.
+   */
+  metrics: z.record(z.string(), z.number()).optional(),
 });
 export type GateOutcome = z.infer<typeof GateOutcomeSchema>;
 
@@ -207,14 +222,53 @@ export const TrialGateRecordSchema = z.object({
   /** sha256 of the frozen bundle as verified on the scoring computer (null when missing). */
   outputs_sha256: sha256Schema.nullable(),
   gates: z.record(KitSlugSchema, GateOutcomeSchema),
-  // TODO([16.5] metric plumbing): gates may emit metric rows (e.g. api_p95_ms) with collector
-  // "gate"; CollectorNameSchema has no "gate" yet, so they are not collected here.
 });
 export type TrialGateRecord = z.infer<typeof TrialGateRecordSchema>;
 
 /** gate id → gate.json, the shape `TrialResult.gates` (score.ts) reads. */
 export function gateResultsOf(record: TrialGateRecord): Record<string, GateResult> {
   return Object.fromEntries(Object.entries(record.gates).map(([id, o]) => [id, o.result]));
+}
+
+/**
+ * The metrics the trial's gates vouch for: every passing verdict's rows, in gate order (the first
+ * gate to name a metric wins). This is where `api_p95_ms` reaches `trials.metrics`.
+ */
+export function trialGateMetrics(record: TrialGateRecord): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const o of Object.values(record.gates)) {
+    if (o.status !== "verdict" || !o.result.pass || !o.metrics) continue;
+    for (const [k, v] of Object.entries(o.metrics)) if (!(k in out)) out[k] = v;
+  }
+  return out;
+}
+
+const GateMetricLineSchema = z.looseObject({
+  metric: z.string().optional(),
+  name: z.string().optional(),
+  value: z.number().refine(Number.isFinite),
+});
+const GateMetricNameSchema = z.string().regex(/^[a-z][a-z0-9_.]{0,127}$/);
+
+/**
+ * Parse a check's `<gate>.metrics.jsonl`: one `{"metric"|"name": "...", "value": <number>, ...}`
+ * per line. Lines that are not JSON, have no valid snake_case name or no finite value are dropped
+ * (a gate's verdict never depends on them); the first row of a name wins; at most
+ * GATE_METRICS_MAX rows.
+ */
+export function parseGateMetrics(text: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  let n = 0;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "" || n >= GATE_METRICS_MAX) continue;
+    const row = GateMetricLineSchema.safeParse(safeJson(line));
+    if (!row.success) continue;
+    const name = GateMetricNameSchema.safeParse(row.data.metric ?? row.data.name);
+    if (!name.success || name.data in out) continue;
+    out[name.data] = row.data.value;
+    n++;
+  }
+  return out;
 }
 
 /**
@@ -589,11 +643,13 @@ function gateScript(ctx: ScriptCtx, gate: Gate, workloadId: string, trialId: str
     `S=${sq(SCORE_ROOT)}; U=${sq(U)}; RU=${sq(RU)}; G=${sq(gate.id)}; WL=${sq(workloadId)}; TR=${sq(trialId)}`,
     `CHECK=${sq(gateCheckPath(gate))}; T=${timeoutS}; MAX=${GATE_VERDICT_MAX_BYTES}`,
     'W="$S/work/$G"; V="$S/verdict/$G"; ST="$S/status/$G"; LOG="$S/logs/$G.log"',
-    'rm -rf "$W" "$V" "$ST.json" "$ST.verdict" "$ST.log"',
+    'rm -rf "$W" "$V" "$ST.json" "$ST.verdict" "$ST.log" "$ST.metrics"',
     'mkdir -p "$W/home" "$V"',
     // The check gets a private writable copy; the pristine frozen copy stays read-only.
     'if [ -d "$S/frozen" ]; then cp -a "$S/frozen" "$W/out"; chmod -R u+w "$W/out"; else mkdir "$W/out"; fi',
     'chown -R -h "$U" "$W/out" "$W/home"; chown "$U" "$W" "$V"; chmod 711 "$W"; chmod 700 "$W/out" "$W/home" "$V"',
+    // Metric rows must be the check's own: drop one the contender shipped in its outputs.
+    'rm -rf "$W/out/$G.metrics.jsonl"',
     "RUNENV=()",
     'if [ -n "$RU" ]; then',
     '  if [ -d "$S/frozen" ]; then cp -a "$S/frozen" "$W/run"; else mkdir "$W/run"; fi',
@@ -628,6 +684,12 @@ function gateScript(ctx: ScriptCtx, gate: Gate, workloadId: string, trialId: str
     '  elif [ "$(stat -c %U "$f")" != "$U" ]; then verdict=bad_owner',
     '  elif [ "$(stat -c %s "$f")" -gt "$MAX" ]; then verdict=too_large',
     '  else cp "$f" "$ST.verdict.tmp" && mv "$ST.verdict.tmp" "$ST.verdict" && verdict=present; fi',
+    "fi",
+    // The check's metric rows, under the same rules as the verdict (regular, one link, the check's
+    // own file, small). Only read back when the verdict passes.
+    'mf="$W/out/$G.metrics.jsonl"', // gateMetricsFile(G)
+    'if [ -f "$mf" ] && [ ! -L "$mf" ] && [ "$(stat -c %h "$mf")" = 1 ] && [ "$(stat -c %U "$mf")" = "$U" ] && [ "$(stat -c %s "$mf")" -le "$MAX" ]; then',
+    '  cp "$mf" "$ST.metrics.tmp" && mv "$ST.metrics.tmp" "$ST.metrics"',
     "fi",
     `tail -c ${LOG_TAIL_MAX_CHARS} "$LOG" > "$ST.log" 2>/dev/null`,
     'printf \'{"rc":%d,"duration_ms":%d,"verdict":"%s","alive_check":%d,"alive_run":%d}\\n\' "$rc" "$(( (t1 - t0) / 1000000 ))" "$verdict" "$alive_check" "$alive_run" > "$ST.json.tmp"',
@@ -1090,13 +1152,19 @@ export async function runGates(
         verdictText = v.exitCode === 0 && !v.truncated ? v.stdout : null;
       }
       const tail = await exec(rootCat(`${SCORE_ROOT}/status/${g.id}.log`), 30_000);
-      outcomes[g.id] = normalizeVerdict({
+      const outcome = normalizeVerdict({
         gateId: g.id,
         timeoutS,
         status,
         verdictText,
         logTail: tail.exitCode === 0 ? clip(tail.stdout, LOG_TAIL_MAX_CHARS) : "",
       });
+      if (outcome.status === "verdict" && outcome.result.pass) {
+        const m = await exec(rootCat(`${SCORE_ROOT}/status/${g.id}.metrics`), 30_000);
+        const metrics = m.exitCode === 0 && !m.truncated ? parseGateMetrics(m.stdout) : {};
+        if (Object.keys(metrics).length > 0) outcome.metrics = metrics;
+      }
+      outcomes[g.id] = outcome;
       deps.logger?.info?.(
         {
           trialId: input.trialId,

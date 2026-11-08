@@ -10,6 +10,11 @@
 // `trial.gate`). The scoring computer gets gates/, reference/ and workloads/ from the kit, never
 // the contender, and it is never forked from a snapshot that held a subject.
 //
+// Metrics: the verdict's update also writes trials.metrics and trials.cost_micro_usd
+// (orchestrator/trial-metrics.ts): the worker's wall clock (running → collecting), the passing
+// gates' metric rows (api_p95_ms) and the attempt's Naïve proxy spend on top of the compute share.
+// Same transaction as `done`, so the run never scores a trial without them.
+//
 // Idempotent: a trial not in collecting/gating, or on another attempt, is left alone. The verdict,
 // the state change and the events commit in one transaction guarded by `state = 'gating'`, so a
 // retried job never writes twice.
@@ -52,6 +57,7 @@ import {
   type ComputerRegistry,
   type DownloadTicket,
 } from "@anybench/envs";
+import type { ProxySpendSource } from "@anybench/naive";
 import type { ComputeProvider } from "@anybench/providers";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { z } from "zod";
@@ -64,7 +70,12 @@ import { drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
 import { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey } from "./trial-execute.js";
-import { artifactStoreFromEnv, computeProviderFromConfig } from "../lib/compute.js";
+import {
+  artifactStoreFromEnv,
+  computeProviderFromConfig,
+  proxyDepsFromConfig,
+} from "../lib/compute.js";
+import { attemptProxySpend, trialMetrics, trialPhaseEdges } from "../orchestrator/trial-metrics.js";
 import { defineJob, type JobContext } from "./types.js";
 
 export { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey };
@@ -171,6 +182,11 @@ export interface GateTrialDeps {
   infraAttempt?: number;
   /** Default GATE_INFRA_MAX_ATTEMPTS. */
   maxInfraAttempts?: number;
+  /**
+   * The Naïve credits ledger (liveLedgerSpend) for the attempt's proxy-key spend. Without it a
+   * trial that had a proxy key records `proxy_cost_missing` and its cost stays unscored.
+   */
+  proxySpend?: ProxySpendSource | null;
 }
 
 export type GateTrialReport =
@@ -380,14 +396,33 @@ export async function gateTrial(
   if (!t.ok) throw new Error(t.error.message);
   const { failureClass, kitSuspects } = classifyGateRecord(record);
   const failedApplicable = failureClass !== null;
-  const at = now();
   const scored = record;
+  // Before the transaction: a ledger read (never throws) and the worker's own phase edges.
+  const proxy = await attemptProxySpend(deps.proxySpend, trial);
+  if (proxy.status === "missing") {
+    deps.logger?.warn(
+      { trialId: trial.id, reason: proxy.reason },
+      "trial.gate: proxy spend unknown; cost stays unscored",
+    );
+  }
+  const edges = (await trialPhaseEdges(deps.db, trial.runId, [trial.id])).get(trial.id) ?? [];
+  const measured = trialMetrics({
+    attempt: trial.attempt,
+    existing: trial.metrics,
+    costMicroUsd: trial.costMicroUsd,
+    edges,
+    gate: scored,
+    proxy,
+  });
+  const at = now();
 
   const wrote = await deps.db.transaction(async (tx) => {
     const updated = await tx
       .update(trials)
       .set({
         gate: scored,
+        metrics: measured.metrics,
+        costMicroUsd: measured.costMicroUsd,
         state: t.to,
         updatedAt: at,
         ...(failedApplicable ? { failureClass: "gate" } : {}),
@@ -465,6 +500,8 @@ export interface TrialGateJobOptions {
   sandbox?: GateSandbox;
   gateOptions?: GateTrialDeps["gateOptions"];
   runGates?: typeof runGates;
+  /** The attempt's proxy-key spend (production: the Naïve credits ledger). */
+  proxySpend?: (ctx: JobContext) => ProxySpendSource | null;
 }
 
 export function createTrialGateJob(options: TrialGateJobOptions = {}) {
@@ -496,6 +533,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
           ...(options.sandbox ? { sandbox: options.sandbox } : {}),
           ...(options.gateOptions ? { gateOptions: options.gateOptions } : {}),
           ...(options.runGates ? { runGates: options.runGates } : {}),
+          proxySpend: options.proxySpend?.(ctx) ?? null,
           logger: ctx.logger,
           workerId: ctx.workerId,
           infraAttempt: helpers.job.attempts,
@@ -513,4 +551,5 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
 export const trialGateJob = createTrialGateJob({
   provider: (ctx) => computeProviderFromConfig(ctx.config),
   artifacts: () => artifactStoreFromEnv(),
+  proxySpend: (ctx) => proxyDepsFromConfig(ctx.config)?.spend ?? null,
 });

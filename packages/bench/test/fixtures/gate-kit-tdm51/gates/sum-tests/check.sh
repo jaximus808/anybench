@@ -22,6 +22,9 @@ while read -r a b want; do
   got="$(cd "$AB_RUN_DIR/workspace" && "$AB_RUN" bash ./sum.sh "$a" "$b" </dev/null 2>/dev/null)"
   [ "$got" = "$want" ] || failed=$((failed + 1))
 done < "$cases"
+# Metric rows (kept by the runner only on a passing verdict).
+printf '{"metric":"cases_passed","value":%d,"unit":"count"}\n{"metric":"Bad Name","value":1}\n' \
+  "$((total - failed))" > "$out/sum-tests.metrics.jsonl"
 if [ "$total" -gt 0 ] && [ "$failed" -eq 0 ]; then
   printf '{"pass":true,"reason":"%d/%d hidden cases pass","evidence":["workspace/sum.sh"]}\n' "$total" "$total" > "$verdict"
 else

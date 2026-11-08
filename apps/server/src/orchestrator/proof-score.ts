@@ -240,8 +240,13 @@ export function trialResultOf(
   const metrics = numbersOf(t.metrics);
   // Plan 17.2 rule 5: cost comes from the provider side, never from a file the agent can write.
   delete metrics.cost_micro_usd;
+  // trials.cost_micro_usd is compute + the attempt's Naïve proxy spend (orchestrator/
+  // trial-metrics.ts). When the proxy spend could not be read, compute alone is not the cost: leave
+  // it out, so the scorer says "metric missing" instead of reporting a number that is too low.
   // Micro-USD stays an integer; the scorer works on numbers (exact below 2^53).
-  if (t.cost_micro_usd > 0n) metrics.cost_micro_usd = Number(t.cost_micro_usd);
+  if (t.cost_micro_usd > 0n && metrics.proxy_cost_missing !== 1) {
+    metrics.cost_micro_usd = Number(t.cost_micro_usd);
+  }
   return {
     ok: true,
     result: {
@@ -257,37 +262,39 @@ export function trialResultOf(
 
 /** PipelinePort.score: scoreKit over the run's settled, measured trials. */
 export function kitScore(): PipelinePort["score"] {
-  return async (_ctx, input) => {
-    const excluded = { warmups: 0, infra: 0, cancelled: 0 };
-    const results: TrialResult[] = [];
-    for (const t of input.trials) {
-      const r = trialResultOf(t);
-      if (r.ok) results.push(r.result);
-      else excluded[r.why]++;
-    }
-    const n = new Map<string, number>();
-    for (const r of results) {
-      const key = `${r.contenderId}\u0000${r.workloadId}`;
-      n.set(key, (n.get(key) ?? 0) + 1);
-    }
-    const counts = [...n.values()];
-    const order = input.kit.contenders.map((c) => c.id);
-    const seen = [...new Set(results.map((r) => r.contenderId))];
-    const contenders = [
-      ...order.filter((c) => seen.includes(c)),
-      ...seen.filter((c) => !order.includes(c)),
-    ];
-    const score: StoredScore = {
-      version: 1,
-      scorer: "scoreKit",
-      trials: { scored: results.length, ...excluded },
-      n_per_setup: {
-        min: counts.length ? Math.min(...counts) : 0,
-        max: counts.length ? Math.max(...counts) : 0,
-      },
-      kit_score: scoreKit(input.kit, results, { contenders }),
-    };
-    return stageOk(score);
+  return async (_ctx, input) => stageOk(storedScoreOf(input.kit, input.trials));
+}
+
+/** scoreKit over the run's settled, measured trials, as runs.stage_outputs.score stores it. */
+export function storedScoreOf(kit: KitSpec, trials: readonly StageTrial[]): StoredScore {
+  const excluded = { warmups: 0, infra: 0, cancelled: 0 };
+  const results: TrialResult[] = [];
+  for (const t of trials) {
+    const r = trialResultOf(t);
+    if (r.ok) results.push(r.result);
+    else excluded[r.why]++;
+  }
+  const n = new Map<string, number>();
+  for (const r of results) {
+    const key = `${r.contenderId}\u0000${r.workloadId}`;
+    n.set(key, (n.get(key) ?? 0) + 1);
+  }
+  const counts = [...n.values()];
+  const order = kit.contenders.map((c) => c.id);
+  const seen = [...new Set(results.map((r) => r.contenderId))];
+  const contenders = [
+    ...order.filter((c) => seen.includes(c)),
+    ...seen.filter((c) => !order.includes(c)),
+  ];
+  return {
+    version: 1,
+    scorer: "scoreKit",
+    trials: { scored: results.length, ...excluded },
+    n_per_setup: {
+      min: counts.length ? Math.min(...counts) : 0,
+      max: counts.length ? Math.max(...counts) : 0,
+    },
+    kit_score: scoreKit(kit, results, { contenders }),
   };
 }
 

@@ -285,6 +285,11 @@ describe.skipIf(!available)("gate runner on docker-local (honest vs cheaters)", 
     });
     expect(r.gates["clean-room"]!.result).toMatchObject({ pass: true, reason: "clean room" });
     expect(trialGateSummary(r)).toMatchObject({ pass: true, applicable: true });
+    // The check's metric rows come back through the real shell wrapper (bad names dropped).
+    expect(r.gates["sum-tests"]!.metrics).toEqual({ cases_passed: 3 });
+    // A failing verdict never vouches for a number, even when the check wrote one.
+    expect(results.get("do-less")!.gates["sum-tests"]!.result.pass).toBe(false);
+    expect(results.get("do-less")!.gates["sum-tests"]!.metrics).toBeUndefined();
   });
 
   it("a gate that does not apply is recorded as not applicable, never as a pass", () => {

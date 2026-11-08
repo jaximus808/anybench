@@ -50,6 +50,7 @@ import {
   type TrialSource,
 } from "@anybench/bench";
 import { createComputerRegistry, type ComputerStore } from "@anybench/envs";
+import type { ProxySpendSource } from "@anybench/naive";
 import type { ComputeProvider } from "@anybench/providers";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
@@ -69,6 +70,7 @@ import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import { kitTrialSource } from "../orchestrator/defaults.js";
+import { attemptProxySpend, recordTrialMetrics } from "../orchestrator/trial-metrics.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { defineJob, type JobContext } from "./types.js";
 
@@ -428,6 +430,20 @@ export async function enqueueFollowUp(
   }
 }
 
+/**
+ * A failed_subject trial never reaches trial.gate: record its cost (compute + proxy spend) and wall
+ * here, so "all spend ÷ solved" counts it (orchestrator/trial-metrics.ts).
+ */
+export async function recordFailedSubjectMetrics(
+  db: Database,
+  trialId: string,
+  spend: ProxySpendSource | null,
+): Promise<void> {
+  const [row] = await db.select().from(trials).where(eq(trials.id, trialId));
+  if (!row || row.state !== "failed_subject") return;
+  await recordTrialMetrics(db, row, await attemptProxySpend(spend, row));
+}
+
 export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
   return defineJob({
     name: TRIAL_EXECUTE_JOB,
@@ -472,6 +488,11 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
         signal: helpers.abortSignal,
         beforeRelease: (o) => enqueueFollowUp(helpers.addJob, o),
       });
+      if (outcome.kind === "final" && outcome.state === "failed_subject") {
+        await recordFailedSubjectMetrics(ctx.db, payload.trial_id, naiveProxy?.spend ?? null).catch(
+          (err: unknown) => log.warn({ err }, "trial.execute: could not record trial metrics"),
+        );
+      }
       const summary =
         outcome.kind === "final"
           ? { kind: outcome.kind, state: outcome.state }
