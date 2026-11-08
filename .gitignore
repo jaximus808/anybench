@@ -9,3 +9,5 @@ dist/
 .DS_Store
 coverage/
 .gstack/
+# throwaway one-off scripts (e.g. apps/server/.*.tmp.mjs)
+*.tmp.mjs

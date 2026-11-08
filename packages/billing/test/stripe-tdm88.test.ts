@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertLivemode,
+  PRODUCT_UNIT_LABEL,
   billingStripe,
   createBillingStripe,
   requireIds,
@@ -218,4 +219,10 @@ describe("pnpm billing:setup entry (TDM-88)", () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/BILLING_MODE is off/);
   }, 120_000);
+});
+
+describe("catalog strings fit Stripe's field limits", () => {
+  it("PRODUCT_UNIT_LABEL is at most 12 characters (Stripe rejects longer unit_label)", () => {
+    expect(PRODUCT_UNIT_LABEL.length).toBeLessThanOrEqual(12);
+  });
 });

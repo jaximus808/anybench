@@ -87,7 +87,7 @@ What 10.3 and 10.4 need to know:
 - The card lands on **`subscription.default_payment_method`**, while `customer.invoice_settings.default_payment_method` stays `null`. Invoices for this subscription use it. `has_payment_method` should come from `payment_method.attached` / `customers.listPaymentMethods`, not from the customer's default. If we ever bill outside this subscription, copy it to the customer default first.
 - `latest_invoice` is `null`. In `flexible` billing mode, a metered-only subscription creates **no $0 first invoice**.
 - Webhooks for the session, in order: `customer.created` (our create), then 107 s later when Subscribe was clicked: `customer.updated`, `setup_intent.created`, `payment_method.attached`, `customer.subscription.created`, `checkout.session.completed`, `setup_intent.succeeded`.
-- Cosmetic: Checkout says "$0.01 per **unit**". Set the product's `unit_label` (for example "cent of usage"), or present the price as "billed at cost of usage" on our own page.
+- Cosmetic: Checkout says "$0.01 per **unit**". Set the product's `unit_label` (for example "usage cent"; Stripe caps it at 12 characters), or present the price as "billed at cost of usage" on our own page.
 
 ## 3. Usage, dedupe, credit grant, invoice: `scenario-grant.ts` (the done condition)
 

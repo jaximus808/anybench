@@ -28,7 +28,7 @@ export const PRICE_LOOKUP_KEY = "anybench_usage_cents_v1";
 export const METER_CUSTOMER_KEY = "stripe_customer_id";
 export const METER_VALUE_KEY = "value";
 /** Checkout shows "$0.01 per <unit_label>"; without it Stripe says "per unit". */
-export const PRODUCT_UNIT_LABEL = "cent of usage";
+export const PRODUCT_UNIT_LABEL = "usage cent"; // Stripe caps unit_label at 12 chars
 
 export interface BillingCatalog {
   mode: StripeMode;

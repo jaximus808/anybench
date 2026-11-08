@@ -23,6 +23,6 @@ So `accountState` reads the card from `subscription.default_payment_method` and 
 
 ## Notes for operators
 
-- Checkout says "per **unit**" because the product has no `unit_label`. `pnpm billing:setup` (TDM-88 `ensureProduct`) sets it to "cent of usage". Run it once in test mode.
+- Checkout says "per **unit**" because the product has no `unit_label`. `pnpm billing:setup` (TDM-88 `ensureProduct`) sets it to "usage cent" (Stripe caps `unit_label` at 12 characters; "cent of usage" was rejected in live). Run it once in test mode.
 - Webhook endpoint: `POST <api>/webhooks/stripe`. The server re-reads the account from Stripe on `checkout.session.completed`, `customer.subscription.*`, `payment_method.*` and `invoice.paid|payment_failed|payment_action_required`. Every other event type is only recorded in `stripe_events`. The billing page also re-syncs while the account has a Customer but no recorded card. A late webhook therefore never strands a user.
 - The meter reporter (`billing.report`, every 60 s on the worker) treats Stripe's HTTP 400 `An event already exists with identifier` as already reported (TDM-21).
