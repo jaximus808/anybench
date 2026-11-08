@@ -12,7 +12,7 @@
 
 import { MicroUsdSchema } from "@anybench/core";
 import { z } from "zod";
-import { unmeasuredAssertions } from "./rule10.js";
+import { rule10Sentences, unmeasuredAssertions } from "./rule10.js";
 
 // ---- plan.md 17.4: metrics by subject class --------------------------------------------------
 
@@ -546,6 +546,10 @@ export interface VerifiedScoutOutput {
 
 const HTTPS_URL = z.url({ protocol: /^https$/ });
 
+/** What `why` / `fit_reason` say when every sentence asserted an unmeasured result. */
+export const UNMEASURED_PLACEHOLDER =
+  "(removed: the scout's wording asserted a result we have not measured)";
+
 /**
  * The mechanical gate between the scout's output and a stored brief. Throws
  * ScoutBriefRejectedError when `why` or `fit_reason` asserts an unmeasured result, and when no
@@ -560,9 +564,23 @@ export function verifyScoutOutput(
     dropped.push({ field, item: item.slice(0, 300), reason });
   };
 
+  // `why` and `fit_reason` are internal (never mailed; the writer re-checks every email). A
+  // sentence in them that asserts an unmeasured result is dropped and recorded (TDM-166: the live
+  // scout often summarises the README's numbers after a dash, which the filter can't attribute,
+  // and rejecting the whole brief lost good leads). If nothing honest is left, the field says so.
   for (const field of ["why", "fit_reason"] as const) {
     const bad = unmeasuredAssertions(output[field]);
-    if (bad.length) throw new ScoutBriefRejectedError(field, bad);
+    if (!bad.length) continue;
+    const kept = rule10Sentences(output[field]).filter((x) => !bad.includes(x));
+    for (const b of bad) drop(field, b, "unmeasured_assertion");
+    const honestText = kept.join(" ");
+    output = {
+      ...output,
+      [field]:
+        kept.length && !unmeasuredAssertions(honestText).length
+          ? honestText
+          : UNMEASURED_PLACEHOLDER,
+    };
   }
   const honest = (field: string, text: string): boolean => {
     const bad = unmeasuredAssertions(text);

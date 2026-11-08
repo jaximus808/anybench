@@ -22,7 +22,7 @@ import {
   materialFromIngest,
   PgScoutLeadStore,
   runScout,
-  ScoutBriefRejectedError,
+  UNMEASURED_PLACEHOLDER,
   ScoutBriefSchema,
   ScoutLeadSchema,
   ScoutMaterial,
@@ -314,13 +314,29 @@ describe("verifyScoutOutput", () => {
     expect(v.compared_against.every((c) => c.source_url.startsWith("https://"))).toBe(true);
   });
 
-  it("rejects a brief whose why or fit_reason asserts an unmeasured result, or that has no gate left", () => {
-    expect(() =>
-      verifyScoutOutput(tdm164Output({ why: "Zippy is slower than pi." }), tdm164Material()),
-    ).toThrow(ScoutBriefRejectedError);
-    expect(() =>
-      verifyScoutOutput(tdm164Output({ fit_reason: "It outperforms nothing." }), tdm164Material()),
-    ).toThrow(ScoutBriefRejectedError);
+  it("drops an unmeasured sentence from why/fit_reason when an honest one is left (TDM-166)", () => {
+    const v = verifyScoutOutput(
+      tdm164Output({
+        why: "Zippy is slower than pi. We'd check its speed claim with hidden tests.",
+      }),
+      tdm164Material(),
+    );
+    expect(v.why).toBe("We'd check its speed claim with hidden tests.");
+    expect(v.dropped).toEqual(
+      expect.arrayContaining([
+        { field: "why", item: "Zippy is slower than pi.", reason: "unmeasured_assertion" },
+      ]),
+    );
+  });
+
+  it("blanks a why or fit_reason that only asserts unmeasured results, and rejects a brief with no gate left", () => {
+    expect(
+      verifyScoutOutput(tdm164Output({ why: "Zippy is slower than pi." }), tdm164Material()).why,
+    ).toBe(UNMEASURED_PLACEHOLDER);
+    expect(
+      verifyScoutOutput(tdm164Output({ fit_reason: "It outperforms nothing." }), tdm164Material())
+        .fit_reason,
+    ).toBe(UNMEASURED_PLACEHOLDER);
     expect(() =>
       verifyScoutOutput(
         tdm164Output({ gate: ["We measured it and it passes."] }),
@@ -584,7 +600,7 @@ describe("runScout (FakeNaive)", () => {
     naive.script(
       "scout",
       { output: { fit: 900 }, costMicroUsd: 7_000n },
-      { output: tdm164Output({ why: "Zippy is slower than pi." }), costMicroUsd: 8_000n },
+      { output: tdm164Output({ gate: ["We measured it and it passes."] }), costMicroUsd: 8_000n },
       { stopReason: "budget_paused", costMicroUsd: 250_000n },
     );
     const store = new MemoryScoutLeadStore(

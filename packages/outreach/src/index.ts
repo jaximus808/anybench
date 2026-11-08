@@ -23,3 +23,5 @@ export * from "./stats.js";
 // 15.5a writer + founder review queue (TDM-165).
 export * from "./writer.js";
 export * from "./drafts.js";
+// 15.6a sending with limits and suppression (TDM-166).
+export * from "./send.js";
