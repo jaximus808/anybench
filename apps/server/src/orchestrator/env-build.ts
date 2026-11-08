@@ -246,9 +246,62 @@ export interface EnvBuildDeps {
   log?: (msg: string, data?: Record<string, unknown>) => void;
 }
 
+/** A user-facing line for an envs build log message, or null for the ones not worth showing. */
+export function envBuildProgressText(msg: string, data?: Record<string, unknown>): string | null {
+  switch (msg) {
+    case "env build computer created":
+      return "booted a Naïve computer";
+    case "env build create retry":
+      return "Naïve is at capacity; retrying";
+    case "recipes installed":
+      return "installed the base toolchain";
+    case "runner installed":
+      return "installed the Anybench runner";
+    case "subject files staged":
+      return "staged the kit files";
+    case "contender installed":
+      return `installed ${typeof data?.name === "string" ? data.name : "a contender"}`;
+    case "snapshot taken":
+      return "snapshot saved; every trial forks from it";
+    default:
+      return null;
+  }
+}
+
 /** PipelinePort.buildEnv on a real provider with the envs snapshot cache. */
 export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
   return async (ctx, input) => {
+    // Progress the live run page can show (agent card "env_builder"); never fails the build.
+    const say = async (text: string): Promise<void> => {
+      if (typeof ctx.emit !== "function") return;
+      await ctx
+        .emit([
+          {
+            type: "agent.message",
+            source: "agent_session",
+            source_id: "env_build:env_builder",
+            severity: "info",
+            actor: { kind: "system" },
+            cost_delta_micro_usd: 0n,
+            at: new Date().toISOString(),
+            payload: {
+              agent_role: "env_builder",
+              naive_seq: 0,
+              message_role: "system",
+              text,
+              truncated: false,
+            },
+          },
+        ])
+        .catch(() => undefined);
+    };
+    const progress =
+      (image: string) =>
+      (msg: string, data?: Record<string, unknown>): void => {
+        deps.log?.(image === "trial image" ? msg : `${image}: ${msg}`, data);
+        const text = envBuildProgressText(msg, data);
+        if (text) void say(`${image}: ${text}`);
+      };
     const kit = input.kit;
     const profile = kit.env?.profile ?? "base";
     const requested = recipesForProfile(profile);
@@ -346,7 +399,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         catalog,
         runId: ctx.run.id,
         signal: ctx.signal,
-        ...(deps.log ? { log: (m, d) => deps.log!(`scoring image: ${m}`, d) } : {}),
+        log: progress("scoring image"),
       });
       await saveSnapshot(scoringHash, "scoring", b.snapshotId, { recipes: SCORING_RECIPES });
       return b.snapshotId;
@@ -365,6 +418,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         );
       }
       deps.log?.("env build: cache hit", { specHash, snapshotId: cached.snapshotId });
+      void say("trial image: already built for this kit; reusing the snapshot");
       const detail: EnvBuildDetail = {
         spec_hash: specHash,
         provider: deps.provider.name,
@@ -393,7 +447,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         installs: subject.installs,
         runId: ctx.run.id,
         signal: ctx.signal,
-        ...(deps.log ? { log: deps.log } : {}),
+        log: progress("trial image"),
       }),
       scoringImage(),
     ]);
