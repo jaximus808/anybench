@@ -1,0 +1,15 @@
+{
+  "name": "playwright",
+  "version": "1.64.1-chromium",
+  "description": "Playwright 1.64.1 (npm, pinned) with its pinned Chromium headless shell and the OS libraries it needs, shared under /opt/anybench so the eval user can launch it.",
+  "deps": ["node22", "eval-user"],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "PLAYWRIGHT_VERSION": "1.64.1",
+    "PLAYWRIGHT_BROWSERS_PATH": "/opt/anybench/ms-playwright",
+    "ANYBENCH_PLAYWRIGHT_HOME": "/opt/anybench/playwright-1.64.1"
+  },
+  "path": [],
+  "downloads": {},
+  "timeouts": { "installMs": 600000, "healthcheckMs": 120000 }
+}

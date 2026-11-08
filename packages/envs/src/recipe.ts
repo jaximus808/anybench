@@ -42,6 +42,15 @@ export const BASE_RECIPES = [
   "k6",
 ] as const;
 
+/**
+ * Agent recipes (TDM-27): the non-root `eval` user, pinned Claude Code, the Tandem server binary
+ * plus its pinned MCP gateway (npx cache warmed, TANDEM_AUTOSTART=0), and Playwright + Chromium.
+ */
+export const AGENT_RECIPES = ["eval-user", "claude-code", "tandem", "playwright"] as const;
+
+/** What the `agent-cc` profile installs (plan.md P1): base + Claude Code + Tandem. */
+export const AGENT_CC_RECIPES = [...BASE_RECIPES, "claude-code", "tandem"] as const;
+
 /** Shared shell helpers, sourced by every script as `. "$RECIPE_LIB"`. */
 export const RECIPE_LIB_FILE = "_lib.sh";
 

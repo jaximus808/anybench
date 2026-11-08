@@ -79,3 +79,46 @@ link_bin() { as_root ln -sfn "$1" "/usr/local/bin/$2"; }
 
 # expect_eq <what> <want> <got>
 expect_eq() { [ "$2" = "$3" ] || die "$1: want '$2', got '$3'"; }
+
+# ---- agent recipes (TDM-27) ----
+
+# The non-root user trials run agents as (the `eval-user` recipe creates it).
+EVAL_USER=${ANYBENCH_EVAL_USER:-eval}
+
+home_of() { getent passwd "$1" | cut -d: -f6; }
+
+# as_user <user> <cmd...>: run a command as <user> from that user's home, with HOME/USER set
+# for them and the caller's PATH and exported env kept (recipe env reaches the command).
+as_user() {
+  local u=$1 h; shift
+  h=$(home_of "$u")
+  [ -n "$h" ] || die "no such user: $u"
+  if [ "$(id -un)" = "$u" ]; then
+    (cd "$h" && "$@")
+  else
+    as_root runuser -u "$u" -- env HOME="$h" USER="$u" LOGNAME="$u" PATH="$PATH" \
+      bash -c 'cd "$HOME" && exec "$@"' as_user "$@"
+  fi
+}
+
+# npm_root_install <prefix> <spec...>: `npm install -g` into a root-owned prefix. Runs from /
+# (npm runs lifecycle scripts as the owner of the cwd) with root's own npm cache, so nothing
+# root-owned lands in the exec user's home.
+npm_root_install() {
+  local prefix=$1; shift
+  [ -n "${NODE_HOME:-}" ] && [ -x "$NODE_HOME/bin/npm" ] || die "NODE_HOME/bin/npm missing (needs node22)"
+  as_root mkdir -p "$prefix"
+  (cd / && as_root env HOME=/root npm_config_cache=/root/.npm npm_config_update_notifier=false \
+    npm_config_fund=false npm_config_audit=false PATH="$NODE_HOME/bin:$PATH" \
+    "$NODE_HOME/bin/npm" install -g --no-progress --prefix "$prefix" "$@")
+}
+
+# free_port: a loopback TCP port nothing listens on (bash /dev/tcp probe).
+free_port() {
+  local p i
+  for i in $(seq 1 50); do
+    p=$(( 20000 + RANDOM % 20000 ))
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return 0; }
+  done
+  die "no free port found"
+}

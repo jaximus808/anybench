@@ -1,0 +1,13 @@
+{
+  "name": "eval-user",
+  "version": "1.0.0",
+  "description": "The non-root `eval` user (home /home/eval, bash, no sudo) that trials run coding agents as.",
+  "deps": [],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "ANYBENCH_EVAL_USER": "eval",
+    "ANYBENCH_EVAL_HOME": "/home/eval"
+  },
+  "path": [],
+  "downloads": {}
+}

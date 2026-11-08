@@ -260,6 +260,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@anybench/naive':
+        specifier: workspace:*
+        version: link:../naive
       '@types/ssh2':
         specifier: ^1.15.6
         version: 1.15.6

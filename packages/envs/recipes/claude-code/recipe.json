@@ -1,0 +1,15 @@
+{
+  "name": "claude-code",
+  "version": "2.1.310",
+  "description": "Claude Code CLI (@anthropic-ai/claude-code, pinned; native binary from npm) as /usr/local/bin/claude, runnable by the eval user, auto-updater off.",
+  "deps": ["node22", "eval-user"],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "CLAUDE_CODE_VERSION": "2.1.310",
+    "ANYBENCH_CLAUDE_CODE_HOME": "/opt/anybench/claude-code-2.1.310",
+    "DISABLE_AUTOUPDATER": "1"
+  },
+  "path": [],
+  "downloads": {},
+  "timeouts": { "installMs": 600000, "healthcheckMs": 120000 }
+}

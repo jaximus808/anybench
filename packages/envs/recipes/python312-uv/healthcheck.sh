@@ -3,6 +3,7 @@
 set -euo pipefail
 . "$RECIPE_LIB"
 
+expect_eq "python3 on PATH" "$ANYBENCH_OPT/bin/python3" "$(command -v python3)"
 expect_eq "uv --version" "uv $ANYBENCH_UV_VERSION" "$(uv --version | cut -d' ' -f1-2)"
 expect_eq "python3.12 version" "$ANYBENCH_PYTHON_VERSION" \
   "$(python3.12 -c 'import platform;print(platform.python_version())')"

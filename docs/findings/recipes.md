@@ -3,7 +3,12 @@
 What the six base recipes (`packages/envs/recipes/*`) do when the generic runner
 (`packages/envs/src/recipe.ts`) installs them on a computer, and what they rely on.
 
-**Naïve live run pending.** The Naïve key's scopes are being fixed, so the recipes have not run
+**Update 2026-11-08 (TDM-27):** all six ran live on Naïve (x86_64, Ubuntu 24.04.5) as part of the
+agent-cc build, after one fix: the Naïve image's PATH starts with `/opt/venv/bin`, whose python3.12
+(3.12.3) shadowed ours, so `python312-uv` now also links into `/opt/anybench/bin` and puts that
+first on PATH. See `agent-recipes.md`.
+
+**Naïve live run pending (superseded by the update above).** The Naïve key's scopes are being fixed, so the recipes have not run
 on a Naïve computer yet. Nothing here is Docker-specific: the runner uses only `exec` and
 `putFile`, and the scripts need bash, `uname`, `mktemp` and either root or passwordless `sudo`.
 Three recipes (`git-time`, `hey`, and `need_cmds` fetching curl/xz for the others) need

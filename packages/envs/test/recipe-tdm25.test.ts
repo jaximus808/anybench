@@ -137,7 +137,8 @@ describe("resolveRecipeOrder", () => {
 describe("base recipe catalog", () => {
   it("loads all six base recipes, each pinned, on x64 and arm64", async () => {
     const cat = await loadRecipeCatalog();
-    expect([...cat.recipes.keys()].sort()).toEqual([...BASE_RECIPES].sort());
+    // the catalog also holds later recipes (agent recipes, TDM-27); every base one must be there
+    expect([...cat.recipes.keys()]).toEqual(expect.arrayContaining([...BASE_RECIPES]));
     expect(cat.lib).toContain("fetch_verified()");
     for (const r of cat.recipes.values()) {
       expect(r.manifest.arch.sort()).toEqual(["arm64", "x64"]);

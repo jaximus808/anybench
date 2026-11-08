@@ -11,7 +11,7 @@
     "ANYBENCH_UV_VERSION": "0.13.4",
     "ANYBENCH_PYTHON_VERSION": "3.12.15"
   },
-  "path": [],
+  "path": ["/opt/anybench/bin"],
   "downloads": {
     "x64": {
       "url": "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz",

@@ -1,0 +1,29 @@
+{
+  "name": "tandem",
+  "version": "0.2.0-mcp3.2.0",
+  "description": "Tandem server binary v0.2.0 (static, GitHub release) as /usr/local/bin/tandem, its paired MCP gateway @jaximus/tandem-mcp 3.2.0 as /usr/local/bin/tandem-mcp, and the npx cache warmed for it; MCP autostart off.",
+  "deps": ["node22", "eval-user", "claude-code"],
+  "arch": ["x64", "arm64"],
+  "env": {
+    "TANDEM_VERSION": "0.2.0",
+    "TANDEM_MCP_VERSION": "3.2.0",
+    "TANDEM_BIN": "/usr/local/bin/tandem",
+    "TANDEM_AUTOSTART": "0",
+    "ANYBENCH_TANDEM_HOME": "/opt/anybench/tandem-0.2.0",
+    "ANYBENCH_TANDEM_MCP_HOME": "/opt/anybench/tandem-mcp-3.2.0"
+  },
+  "path": [],
+  "downloads": {
+    "x64": {
+      "url": "https://github.com/jaximus808/tandem/releases/download/v0.2.0/tandem_linux_amd64",
+      "sha256": "5f06c0e2a7d77424054435ea6c1ebba6b100baeec68ef0ef924b86715c9182a3",
+      "checksumSource": "upstream"
+    },
+    "arm64": {
+      "url": "https://github.com/jaximus808/tandem/releases/download/v0.2.0/tandem_linux_arm64",
+      "sha256": "2b5f2aaded3f992ba47884b81e7f1d69d28abdf8b80d0f137035f06b04f1626c",
+      "checksumSource": "upstream"
+    }
+  },
+  "timeouts": { "installMs": 600000, "healthcheckMs": 180000 }
+}

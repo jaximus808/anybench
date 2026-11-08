@@ -28,4 +28,10 @@ py=$(env UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" "$uv_dir/uv" python find
 [ -x "$py" ] || die "uv python find returned '$py'"
 link_bin "$py" python3.12
 link_bin "$py" python3
+# Also link into /opt/anybench/bin, which recipe.json puts first on PATH: the Naïve image's PATH
+# starts with /opt/venv/bin (a system venv with its own python3.12 3.12.3), which would
+# otherwise shadow /usr/local/bin (TDM-27 live run).
+as_root mkdir -p "$ANYBENCH_OPT/bin"
+for b in python3.12 python3; do as_root ln -sfn "$py" "$ANYBENCH_OPT/bin/$b"; done
+for b in uv uvx; do as_root ln -sfn "$uv_dir/$b" "$ANYBENCH_OPT/bin/$b"; done
 log "uv $ANYBENCH_UV_VERSION, python $("$py" -c 'import platform;print(platform.python_version())') at $py"
