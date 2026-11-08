@@ -64,6 +64,8 @@ export interface LiveTrial {
   costMicroUsd: bigint;
   gate: LiveGate | null;
   logBytes: number;
+  /** The Naïve computer running it now (computer.created's source_id), cleared when destroyed. */
+  computerId: string | null;
   /** Seqs of this trial's events, newest last (capped). */
   seqs: number[];
 }
@@ -167,6 +169,7 @@ export function trialFromApi(t: Trial): LiveTrial {
     costMicroUsd: t.cost_micro_usd,
     gate: null,
     logBytes: 0,
+    computerId: null,
     seqs: [],
   };
 }
@@ -313,6 +316,7 @@ function placeholderTrial(live: LiveRun, id: string, state: TrialState, at: stri
     costMicroUsd: 0n,
     gate: null,
     logBytes: 0,
+    computerId: null,
     seqs: [],
   };
 }
@@ -602,6 +606,12 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
           passed: ev.payload.passed,
           summary: ev.payload.summary ?? null,
         };
+        break;
+      case "computer.created":
+        t.computerId = ev.source_id;
+        break;
+      case "computer.destroyed":
+        if (t.computerId === ev.source_id) t.computerId = null;
         break;
       default:
         break;

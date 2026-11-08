@@ -7,9 +7,10 @@
 // the server reported; a live trial's screen flashes on each real heartbeat. Nothing here moves
 // without an event or a clock, and nothing shows progress the run didn't report.
 import type { RunState } from "@anybench/core";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import {
   cylinder,
+  extrude,
   depthOf,
   fitProjection,
   iso,
@@ -22,8 +23,9 @@ import {
 import { tileTone, type LiveRun } from "../../lib/live/model";
 import { envBuildSteps, phaseLog, runningView, type PhaseView } from "../../lib/live/phase";
 import styles from "./figure.module.css";
+import { PipelineFigure } from "./PipelineFigure";
 
-type Tone =
+export type Tone =
   | "base"
   | "body"
   | "dim"
@@ -35,9 +37,10 @@ type Tone =
   | "infra"
   | "lit"
   | "retry"
-  | "ink";
+  | "ink"
+  | "glass";
 
-interface Part {
+export interface Part {
   id: string;
   x: number;
   y: number;
@@ -51,6 +54,10 @@ interface Part {
   round?: boolean;
   /** Changes on each real event that should flash this part (a heartbeat, a new line). */
   beat?: string | null;
+  /** The trial this tile stands for. */
+  trial?: string;
+  /** A free-form footprint (world x,y ring) instead of an axis-aligned slab. */
+  ring?: [number, number][];
 }
 
 interface Scene {
@@ -64,7 +71,7 @@ const H = 300;
 
 // ---- primitives -----------------------------------------------------------------------------
 
-const box = (
+export const box = (
   id: string,
   x: number,
   y: number,
@@ -77,7 +84,7 @@ const box = (
 ): Part => ({ id, x, y, w, d, z, h, tone, ...extra });
 
 /** A workstation: plinth, body, a standing display facing the viewer, a key deck. `k` scales it. */
-function machine(
+export function machine(
   id: string,
   x: number,
   y: number,
@@ -136,6 +143,7 @@ function trialTiles(live: LiveRun, x0: number, y0: number): Part[] {
           box(`tile.${c.id}.${w}.${r}`, x, y, size, size, 0, tone === "live" ? 3.2 : 1.8, tone, {
             r: 0.8,
             beat: t && tone === "live" ? t.heartbeatAt : null,
+            ...(t ? { trial: t.id } : {}),
           }),
         );
       }
@@ -335,7 +343,21 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
         const tone: Tone = !c ? "dim" : c.stage === "booting" ? "warm" : "live";
         parts.push(...machine(`slot.${i}`, -76 + i * 40, 58, tone, c?.heartbeatAt ?? null, 0.78));
       }
-      return { parts, flows: [] };
+      // Each live computer's route to the tile of the trial it is running.
+      const flows: Point3[][] = [];
+      v.live.slice(0, slots).forEach((c, i) => {
+        const tile = parts.find((p) => p.trial === c.id);
+        if (!tile) return;
+        const mx = -76 + i * 40;
+        const ty = tile.y + tile.d / 2;
+        flows.push([
+          [mx, 58 - 16, 0],
+          [mx, ty + 14, 0],
+          [tile.x + tile.w / 2, ty + 14, 0],
+          [tile.x + tile.w / 2, ty, 0],
+        ]);
+      });
+      return { parts, flows };
     }
     case "scoring":
     case "analyzing":
@@ -356,7 +378,9 @@ function sceneFor(live: LiveRun, view: PhaseView, nowMs: number): Scene {
 
 // ---- render ---------------------------------------------------------------------------------
 
-function cornersOf(p: Part): Point3[] {
+export function cornersOf(p: Part): Point3[] {
+  if (p.ring)
+    return p.ring.flatMap(([x, y]) => [[x, y, p.z] as Point3, [x, y, p.z + p.h] as Point3]);
   return [
     [p.x, p.y, p.z],
     [p.x + p.w, p.y, p.z],
@@ -369,7 +393,8 @@ function cornersOf(p: Part): Point3[] {
   ];
 }
 
-function solidOf(p: Part, proj: Projection): SolidPaths {
+export function solidOf(p: Part, proj: Projection): SolidPaths {
+  if (p.ring) return extrude(p.ring, p.z, p.h, proj, { convex: true });
   if (p.round) return cylinder(p.x + p.w / 2, p.y + p.d / 2, p.w / 2, p.z, p.h, proj, 40);
   return slabOf({ x: p.x, y: p.y, w: p.w, d: p.d, r: p.r ?? 0.5 }, p.z, p.h, proj, 4);
 }
@@ -379,31 +404,99 @@ function layoutKey(scene: Scene) {
   return scene.parts.map((p) => `${p.id}:${p.x},${p.y},${p.w},${p.d},${p.z},${p.h}`).join("|");
 }
 
-export const PhaseFigure = memo(function PhaseFigure({
-  live,
-  view,
-  nowMs,
-  active,
+/**
+ * Painter's order for an isometric scene: a machine (parts sharing an id prefix "name.part")
+ * paints as one unit, in the order its parts were built (plinth → body → frame → screen →
+ * keys); units paint back to front by their centre's depth.
+ */
+export function paintOrder(parts: Part[], proj: Projection): Part[] {
+  const groupOf = (p: Part) => (p.id.includes(".") ? p.id.slice(0, p.id.lastIndexOf(".")) : p.id);
+  const sums = new Map<string, { d: number; n: number }>();
+  for (const p of parts) {
+    const g = groupOf(p);
+    const d = depthOf([p.x + p.w / 2, p.y + p.d / 2, 0], proj);
+    const cur = sums.get(g) ?? { d: 0, n: 0 };
+    sums.set(g, { d: cur.d + d, n: cur.n + 1 });
+  }
+  const depth = (p: Part) => {
+    const s = sums.get(groupOf(p))!;
+    return s.d / s.n;
+  };
+  return parts
+    .map((p, i) => ({ p, i, d: depth(p) }))
+    .sort((a, b) => a.d - b.d || a.i - b.i)
+    .map((x) => x.p);
+}
+
+/** One solid: fill, shaded faces, top, edges; a flash and a ripple on each real beat. */
+export function SolidG({
+  s,
+  tone,
+  beat,
+  style,
 }: {
+  s: SolidPaths;
+  tone: Tone;
+  beat?: string | null;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <g className={styles.solid} data-tone={tone} style={style}>
+      <path className={styles.fill} d={s.fill} />
+      {s.shades.map((d, i) =>
+        d ? <path key={i} className={styles.shade} data-shade={i} d={d} /> : null,
+      )}
+      <path className={styles.top} d={s.top} />
+      {s.crease ? <path className={styles.crease} d={s.crease} /> : null}
+      <path className={styles.edge} d={s.outline} />
+      {beat ? <path key={beat} className={styles.beat} d={s.top} /> : null}
+      {beat ? <path key={`ping:${beat}`} className={styles.ping} d={s.top} /> : null}
+    </g>
+  );
+}
+
+export interface FigureProps {
   live: LiveRun;
   view: PhaseView;
   nowMs: number;
   active: boolean;
-}) {
+  /** A computer, trial or station was clicked: open the inspector from that point. */
+  onFocus?: (target: FocusTarget, at: { x: number; y: number }) => void;
+}
+
+export type FocusTarget = { kind: "trial"; id: string } | { kind: "grader" };
+
+/** Phases shown as the eval pipeline (queue → sealed agent computers → grader → bins). */
+const PIPELINE: readonly RunState[] = ["awaiting_go", "running", "scoring", "analyzing"];
+
+export const PhaseFigure = memo(function PhaseFigure(props: FigureProps) {
+  return PIPELINE.includes(props.view.current.state) && !props.view.hold ? (
+    <PipelineFigure {...props} />
+  ) : (
+    <SceneFigure {...props} />
+  );
+});
+
+function SceneFigure({ live, view, nowMs, active }: FigureProps) {
   const scene = sceneFor(live, view, nowMs);
   const key = layoutKey(scene);
   const geo = useMemo(() => {
     const pts = [...scene.parts.flatMap(cornersOf), ...scene.flows.flat()];
     const proj = fitProjection(pts, W, H, { pad: 14 });
     const solids = new Map(scene.parts.map((p) => [p.id, solidOf(p, proj)]));
-    const depth = new Map(
-      scene.parts.map((p) => [p.id, depthOf([p.x + p.w / 2, p.y + p.d / 2, p.z + p.h / 2], proj)]),
-    );
+    const order = paintOrder(scene.parts, proj).map((p) => p.id);
     const flows = scene.flows.map((f) => pathOf(f.map((pt) => iso(pt, proj))));
-    return { solids, depth, flows };
+    return { solids, order, flows };
     // Geometry is keyed by layout only; `scene` is rebuilt every render.
   }, [key]);
-  const parts = [...scene.parts].sort((a, b) => geo.depth.get(a.id)! - geo.depth.get(b.id)!);
+  const byId = new Map(scene.parts.map((p) => [p.id, p]));
+  const parts = geo.order.map((id) => byId.get(id)!).filter(Boolean);
+  // The figure builds in once when its phase begins; after that, only state changes move it.
+  const fresh = useRef(true);
+  useEffect(() => {
+    const id = window.setTimeout(() => (fresh.current = false), 1200);
+    return () => window.clearTimeout(id);
+  }, []);
 
   return (
     <svg
@@ -417,21 +510,18 @@ export const PhaseFigure = memo(function PhaseFigure({
       {geo.flows.map((d, i) => (
         <path key={i} className={styles.flow} d={d} />
       ))}
-      {parts.map((p) => {
+      {parts.map((p, i) => {
         const s = geo.solids.get(p.id)!;
         return (
-          <g key={p.id} className={styles.solid} data-tone={p.tone}>
-            <path className={styles.fill} d={s.fill} />
-            {s.shades.map((d, i) =>
-              d ? <path key={i} className={styles.shade} data-shade={i} d={d} /> : null,
-            )}
-            <path className={styles.top} d={s.top} />
-            {s.crease ? <path className={styles.crease} d={s.crease} /> : null}
-            <path className={styles.edge} d={s.outline} />
-            {p.beat ? <path key={p.beat} className={styles.beat} d={s.top} /> : null}
-          </g>
+          <SolidG
+            key={`${p.id}:${p.tone}`}
+            s={s}
+            tone={p.tone}
+            beat={p.beat}
+            style={{ "--i": fresh.current ? Math.min(i, 40) : 0 } as React.CSSProperties}
+          />
         );
       })}
     </svg>
   );
-});
+}

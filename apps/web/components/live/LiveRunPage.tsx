@@ -19,11 +19,11 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
 import { Mark } from "../site/Mark";
-import { CancelRun } from "./CancelRun";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
 import { ms, span, usd } from "./format";
 import styles from "./live.module.css";
 import { PhaseRail, PhaseStage } from "./PhaseStage";
+import { RunMenu } from "./RunMenu";
 import { SearchPalette } from "./SearchPalette";
 import { TrialMatrix, type GridFilter } from "./TrialMatrix";
 
@@ -54,6 +54,30 @@ const RUN_STATE_WORD: Record<string, string> = {
   failed: "failed",
   cancelled: "cancelled",
 };
+
+/** A pane's open/closed state, remembered per viewer (a convenience; storage may be blocked). */
+function usePaneOpen(key: string): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(key) === "closed") setOpen(false);
+    } catch {
+      // storage blocked: stay open
+    }
+  }, [key]);
+  const set = useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      try {
+        window.localStorage.setItem(key, next ? "open" : "closed");
+      } catch {
+        // storage blocked: this visit only
+      }
+    },
+    [key],
+  );
+  return [open, set];
+}
 
 /**
  * The live run page. `client` defaults to the web app's API client (lib/api.ts); tests pass one
@@ -120,6 +144,8 @@ export function LiveRunView({
   const [feed, setFeed] = useState<FeedState>({ query: "", sources: [], minSeverity: "info" });
   const [acked, setAcked] = useState<string[]>([]);
   const [wall, setWall] = useState(() => Date.now());
+  const [railOpen, setRailOpen] = usePaneOpen("anybench.live.rail");
+  const [sideOpen, setSideOpen] = usePaneOpen("anybench.live.side");
 
   // Deep links: open the drawer named in the URL once.
   useEffect(() => setDrawerState(readDrawerFromUrl()), []);
@@ -216,7 +242,11 @@ export function LiveRunView({
   return (
     <div className={styles.page} data-drawer={drawer ? "open" : undefined}>
       {/* A one-screen monitor: the page never scrolls; the rail and the side pane scroll inside. */}
-      <div className={styles.monitor}>
+      <div
+        className={styles.monitor}
+        data-rail={railOpen ? undefined : "closed"}
+        data-side={sideOpen ? undefined : "closed"}
+      >
         <header className={styles.mTop}>
           <a href="/runs" className={styles.mHome} aria-label="Anybench: my runs" title="My runs">
             <Mark size={20} />
@@ -246,10 +276,19 @@ export function LiveRunView({
           <h1 className={styles.question} title={live.question}>
             {live.question}
           </h1>
-          <button type="button" className={styles.searchBtn} onClick={() => setPalette(true)}>
-            <span>Search run</span>
-            <kbd>/</kbd>
-          </button>
+          <div className={styles.mTopActions}>
+            <button type="button" className={styles.searchBtn} onClick={() => setPalette(true)}>
+              <span>Search run</span>
+              <kbd>/</kbd>
+            </button>
+            <RunMenu
+              runId={live.runId}
+              canCancel={
+                status !== "ended" && !["delivered", "failed", "cancelled"].includes(live.state)
+              }
+              onSearch={() => setPalette(true)}
+            />
+          </div>
         </header>
 
         {problem || ackProblem || openAlerts.length ? (
@@ -273,12 +312,17 @@ export function LiveRunView({
         ) : null}
 
         <aside className={styles.mRail}>
+          <button
+            type="button"
+            className={styles.paneToggle}
+            onClick={() => setRailOpen(!railOpen)}
+            aria-expanded={railOpen}
+            title={railOpen ? "Collapse phases" : "Expand phases"}
+          >
+            <span aria-hidden="true">{railOpen ? "‹" : "›"}</span>
+            <span className={styles.paneToggleWord}>phases</span>
+          </button>
           <PhaseRail live={live} nowMs={nowMs} />
-          {status !== "ended" && !["delivered", "failed", "cancelled"].includes(live.state) ? (
-            <div className={styles.mCancel}>
-              <CancelRun runId={live.runId} />
-            </div>
-          ) : null}
         </aside>
 
         <main className={styles.mCenter}>
@@ -289,7 +333,26 @@ export function LiveRunView({
         </main>
 
         <aside className={styles.mSide} aria-label="Run details">
+          <button
+            type="button"
+            className={styles.sideHandle}
+            onClick={() => setSideOpen(true)}
+            aria-expanded={false}
+            title="Show log, trials and agents"
+          >
+            ‹ details
+          </button>
           <nav className={styles.mSideNav} aria-label="Jump to">
+            <button
+              type="button"
+              className={styles.paneToggle}
+              onClick={() => setSideOpen(false)}
+              aria-expanded={true}
+              title="Hide details"
+            >
+              <span className={styles.paneToggleWord}>hide</span>
+              <span aria-hidden="true">›</span>
+            </button>
             <a href="#feed-h">Log</a>
             <a href="#matrix-h">Trials</a>
             <a href="#agents-h">Agents</a>

@@ -7,9 +7,21 @@ import { apiErrorMessage } from "../../lib/api";
 import { useLiveApi } from "../../lib/live/client";
 import styles from "./live.module.css";
 
-export function CancelRun({ runId }: { runId: string }) {
+export function CancelRun({
+  runId,
+  confirmFirst = false,
+  onKeep,
+}: {
+  runId: string;
+  /** Open straight on "Yes, cancel" (the run menu's item already asked once). */
+  confirmFirst?: boolean;
+  /** "Keep it" when opened from a menu: close the menu instead of going back to idle. */
+  onKeep?: () => void;
+}) {
   const client = useLiveApi();
-  const [phase, setPhase] = useState<"idle" | "confirm" | "busy" | "done">("idle");
+  const [phase, setPhase] = useState<"idle" | "confirm" | "busy" | "done">(
+    confirmFirst ? "confirm" : "idle",
+  );
   const [error, setError] = useState<string | null>(null);
 
   const cancel = async () => {
@@ -50,7 +62,11 @@ export function CancelRun({ runId }: { runId: string }) {
           <button type="button" onClick={() => void cancel()} disabled={phase === "busy"}>
             {phase === "busy" ? "Cancelling…" : "Yes, cancel"}
           </button>
-          <button type="button" onClick={() => setPhase("idle")} disabled={phase === "busy"}>
+          <button
+            type="button"
+            onClick={() => (onKeep ? onKeep() : setPhase("idle"))}
+            disabled={phase === "busy"}
+          >
             Keep it
           </button>
         </>

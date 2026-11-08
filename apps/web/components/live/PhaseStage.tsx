@@ -8,7 +8,7 @@
 // (`nowMs`), and nothing shows progress the run didn't report. Counts only, never a speed or
 // quality number (those come from the report, after the gate and the statistics).
 import type { RunState } from "@anybench/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { countTrials, STAGES, type LiveRun } from "../../lib/live/model";
 import {
   envBuildSteps,
@@ -23,7 +23,8 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { clock, span, usd } from "./format";
 import { GoFailureText, useGoAction } from "./GoBar";
 import styles from "./live.module.css";
-import { PhaseFigure } from "./PhaseFigure";
+import { Inspector } from "./Inspector";
+import { PhaseFigure, type FocusTarget } from "./PhaseFigure";
 import { RunningStage } from "./RunningStage";
 
 /** What is really happening in each phase, in a sentence. */
@@ -76,10 +77,27 @@ export function PhaseStage({
   const view = phaseView(live, nowMs);
   const key = view.hold ? `hold:${view.hold.state}` : view.current.state;
   const showFigure = !view.delivered;
+  const hero = useRef<HTMLElement>(null);
+  const [focus, setFocus] = useState<{
+    target: FocusTarget;
+    origin: { x: number; y: number };
+  } | null>(null);
+  // A new phase closes the inspector.
+  useEffect(() => setFocus(null), [key]);
+  const focusAt = useCallback((target: FocusTarget, at: { x: number; y: number }) => {
+    const r = hero.current?.getBoundingClientRect();
+    setFocus({ target, origin: r ? { x: at.x - r.left, y: at.y - r.top } : { x: 0, y: 0 } });
+  }, []);
+  const focusTrial = useCallback(
+    (id: string, at?: { x: number; y: number }) =>
+      at ? focusAt({ kind: "trial", id }, at) : onOpenTrial(id),
+    [focusAt, onOpenTrial],
+  );
 
   return (
     <article
       key={key}
+      ref={hero}
       className={styles.hero}
       data-phase={view.current.state}
       data-hold={view.hold?.state}
@@ -89,17 +107,36 @@ export function PhaseStage({
       <span className={styles.heroPulse} aria-hidden="true" data-on={!ended || undefined} />
       <HeroHead view={view} live={live} nowMs={nowMs} />
       {showFigure ? (
-        <div className={styles.heroFigure} aria-hidden="true">
-          <PhaseFigure live={live} view={view} nowMs={nowMs} active={!ended && !view.hold} />
+        <div className={styles.heroFigure}>
+          <PhaseFigure
+            live={live}
+            view={view}
+            nowMs={nowMs}
+            active={!ended && !view.hold}
+            onFocus={focusAt}
+          />
         </div>
       ) : null}
       <div className={styles.heroBody} data-fill={!showFigure || undefined}>
         {view.hold ? (
           <HoldBody view={view} />
         ) : (
-          <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={onOpenTrial} />
+          <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={focusTrial} />
         )}
       </div>
+      {focus ? (
+        <Inspector
+          live={live}
+          nowMs={nowMs}
+          target={focus.target}
+          origin={focus.origin}
+          onClose={() => setFocus(null)}
+          onOpenTrial={(id) => {
+            setFocus(null);
+            onOpenTrial(id);
+          }}
+        />
+      ) : null}
     </article>
   );
 }
@@ -231,7 +268,7 @@ function PhaseBody({
   live: LiveRun;
   view: PhaseView;
   nowMs: number;
-  onOpenTrial: (id: string) => void;
+  onOpenTrial: (id: string, at?: { x: number; y: number }) => void;
 }) {
   switch (view.current.state) {
     case "env_build":

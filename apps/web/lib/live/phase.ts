@@ -289,6 +289,8 @@ export interface LiveTrialCard {
   heartbeatAt: string | null;
   costMicroUsd: bigint;
   logBytes: number;
+  /** The Naïve computer it runs on, once computer.created named it. */
+  computerId: string | null;
 }
 
 export interface FinishedCard {
@@ -340,6 +342,7 @@ export function runningView(
       heartbeatAt: tr.heartbeatAt,
       costMicroUsd: tr.costMicroUsd,
       logBytes: tr.logBytes,
+      computerId: tr.computerId,
     };
   });
   const justFinished: FinishedCard[] = [];

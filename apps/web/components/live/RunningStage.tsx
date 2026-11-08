@@ -35,7 +35,7 @@ export function RunningStage({
 }: {
   live: LiveRun;
   nowMs: number;
-  onOpenTrial: (id: string) => void;
+  onOpenTrial: (id: string, at?: { x: number; y: number }) => void;
 }) {
   const v = runningView(live, nowMs);
   const c = v.counts;
@@ -45,23 +45,31 @@ export function RunningStage({
       <dl className={styles.tally} aria-label="Trials so far">
         <div data-tone="passed">
           <dt>passed</dt>
-          <dd className="num">{c.passed}</dd>
+          <dd className="num" key={c.passed}>
+            {c.passed}
+          </dd>
         </div>
         <div data-tone="failed">
           <dt>failed</dt>
-          <dd className="num">{c.failed}</dd>
+          <dd className="num" key={c.failed}>
+            {c.failed}
+          </dd>
         </div>
         <div data-tone="infra">
           <dt>ours, not billed</dt>
-          <dd className="num">{c.infra}</dd>
+          <dd className="num" key={c.infra}>
+            {c.infra}
+          </dd>
         </div>
         <div data-tone="active">
           <dt>running</dt>
-          <dd className="num">{c.running}</dd>
+          <dd className="num" key={c.running}>
+            {c.running}
+          </dd>
         </div>
         <div data-tone="queued">
           <dt>queued</dt>
-          <dd className="num" data-testid="queued-count">
+          <dd className="num" data-testid="queued-count" key={c.queued}>
             {c.queued}
           </dd>
         </div>
@@ -93,7 +101,10 @@ export function RunningStage({
         <ul className={styles.finished} aria-label="Just finished">
           {v.justFinished.slice(0, 3).map((f) => (
             <li key={f.id} data-tone={f.tone}>
-              <button type="button" onClick={() => onOpenTrial(f.id)}>
+              <button
+                type="button"
+                onClick={(e) => onOpenTrial(f.id, { x: e.clientX, y: e.clientY })}
+              >
                 <span className={styles.finishedMark} aria-hidden="true">
                   {f.tone === "passed" ? "✓" : f.tone === "failed" ? "✕" : "↻"}
                 </span>
@@ -122,7 +133,7 @@ const TrialCard = memo(function TrialCard({
   onOpen,
 }: {
   card: LiveTrialCard;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, at?: { x: number; y: number }) => void;
 }) {
   const at = STAGES.indexOf(card.stage);
   const fresh = card.heartbeatAgeMs !== null && card.heartbeatAgeMs < 15_000;
@@ -130,7 +141,7 @@ const TrialCard = memo(function TrialCard({
     <li className={styles.card} data-stage={card.stage} data-testid="trial-card">
       <button
         type="button"
-        onClick={() => onOpen(card.id)}
+        onClick={(e) => onOpen(card.id, { x: e.clientX, y: e.clientY })}
         aria-label={`${card.setup} · ${card.task} #${card.repeat + 1}: ${card.state}`}
       >
         <span className={styles.cardTop}>

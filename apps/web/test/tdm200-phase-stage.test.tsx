@@ -220,16 +220,47 @@ describe("running hero (TDM-201)", () => {
     expect(hero.textContent).not.toMatch(/faster|slower|median|p=|score|rank|%/i);
   });
 
-  it("the figure colours every trial tile from its real state", async () => {
+  it("the pipeline: every trial is a block at the station its real state puts it", async () => {
     const { live, nowMs } = at("running", 80_000);
     await show(live, nowMs);
     const fig = screen.getByTestId("phase-figure");
-    const tones = [...fig.querySelectorAll("g[data-tone]")].map((g) => g.getAttribute("data-tone"));
+    const blocks = [...fig.querySelectorAll('[data-testid="trial-token"]')];
+    expect(blocks).toHaveLength(36);
     const c = countTrials(live);
-    // Trial tiles are the only pass/fail/queued solids in the running figure.
-    expect(tones.filter((t) => t === "pass")).toHaveLength(c.passed);
-    expect(tones.filter((t) => t === "fail")).toHaveLength(c.failed);
-    expect(tones.filter((t) => t === "queued")).toHaveLength(c.queued);
+    const where = (at: string) => blocks.filter((b) => b.getAttribute("data-at") === at);
+    expect(where("queue")).toHaveLength(c.queued);
+    expect(where("bin").filter((b) => b.getAttribute("data-tone") === "pass")).toHaveLength(
+      c.passed,
+    );
+    expect(where("bin").filter((b) => b.getAttribute("data-tone") === "fail")).toHaveLength(
+      c.failed,
+    );
+    expect(where("bay").length + where("grader").length).toBe(c.running);
+    expect(where("bay").length).toBeLessThanOrEqual(5);
+    // The pillars, named: a sealed wall, a grader on its own computer, named VMs.
+    expect(fig.textContent).toContain("SEALED");
+    expect(fig.textContent).toContain("the agent never sees the hidden tests");
+    expect(fig.textContent).toContain("GRADER · SEPARATE COMPUTER");
+    expect(fig.textContent).toMatch(/VM [0-9a-f]{6}/);
+  });
+
+  it("clicking a computer opens the inspector for what it is running", async () => {
+    const { live, nowMs } = at("running", 80_000);
+    await show(live, nowMs);
+    const block = screen
+      .getByTestId("phase-figure")
+      .querySelector('[data-testid="trial-token"][data-at="bay"]')!;
+    await act(async () => {
+      fireEvent.click(block, { clientX: 100, clientY: 100 });
+    });
+    const insp = screen.getByTestId("inspector");
+    expect(insp.textContent).toMatch(/VM [0-9a-f]{6}|VM starting/);
+    expect(insp.textContent).toMatch(/Claude Code solo|Tandem ×3/);
+    expect(insp.textContent).toContain("Full trial details");
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByTestId("inspector")).toBeNull();
   });
 });
 
@@ -243,5 +274,24 @@ describe("monitor layout", () => {
     expect(within(side).getByRole("region", { name: "Trials" })).toBeTruthy();
     expect(within(side).getByRole("region", { name: "Agents" })).toBeTruthy();
     expect(within(side).getByText("Activity")).toBeTruthy();
+  });
+});
+
+describe("run settings menu", () => {
+  it("cancel lives behind ⋯ with a confirm, not as a bar on the page", async () => {
+    const { live, nowMs } = at("running", 10_000);
+    await show(live, nowMs);
+    expect(screen.queryByText("Want to stop this run?")).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "Cancel run…" }));
+    });
+    expect(screen.getByText(/Cancel this run\?/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Yes, cancel" }));
+    });
+    expect(calls).toContain(`POST /runs/${live.runId}/cancel`);
   });
 });

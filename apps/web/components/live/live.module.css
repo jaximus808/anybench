@@ -1521,6 +1521,21 @@ button.feedText:hover {
   letter-spacing: -0.04em;
   overflow-wrap: anywhere;
 }
+.heroTitle {
+  animation: titleIn 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes titleIn {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(0 0 -20% 0);
+  }
+}
 .heroWhat {
   grid-area: what;
   margin: 0;
@@ -1861,7 +1876,7 @@ button.feedText:hover {
 }
 @keyframes ring {
   50% {
-    outline-offset: 10px;
+    outline-offset: 7px;
     outline-color: transparent;
   }
 }
@@ -1901,6 +1916,19 @@ button.feedText:hover {
   font-size: clamp(1.75rem, 1rem + 2.6vw, 3.25rem);
   line-height: 1.05;
   letter-spacing: -0.03em;
+}
+.tally dd {
+  animation: tick 0.5s cubic-bezier(0.2, 0.9, 0.25, 1.2);
+}
+@keyframes tick {
+  from {
+    opacity: 0;
+    transform: translateY(40%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .tally [data-tone="passed"] dd {
   color: var(--pass);
@@ -2230,16 +2258,6 @@ button.feedText:hover {
   flex-direction: column;
   gap: var(--space-4);
 }
-.mCancel {
-  margin-top: auto;
-}
-.mCancel > div,
-.mCancel > p {
-  flex-wrap: wrap;
-  font-size: var(--text-xs);
-  background: transparent;
-  border-color: var(--line-strong);
-}
 .mSideNav {
   display: flex;
   gap: var(--space-4);
@@ -2401,7 +2419,15 @@ button.feedText:hover {
   .mRail {
     grid-area: rail;
     overflow-y: auto;
-    scrollbar-width: thin;
+  }
+  /* A monitor shows no scrollbars; panes still scroll with a wheel or trackpad. */
+  .page,
+  .page * {
+    scrollbar-width: none;
+  }
+  .page::-webkit-scrollbar,
+  .page *::-webkit-scrollbar {
+    display: none;
   }
   .mCenter {
     grid-area: center;
@@ -2410,14 +2436,12 @@ button.feedText:hover {
   .mSide {
     grid-area: side;
     overflow-y: auto;
-    scrollbar-width: thin;
-    padding-right: 2px;
   }
   .mCenter .hero {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(120px, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     padding: clamp(16px, 2vw, 32px);
     animation-name: heroIn;
   }
@@ -2427,13 +2451,12 @@ button.feedText:hover {
   .heroFigure {
     height: auto;
   }
+  /* The body takes what it needs; the figure gives way. Only the delivered report scrolls. */
   .heroBody {
-    max-height: 46vh;
-    overflow-y: auto;
-    scrollbar-width: thin;
+    overflow: visible;
   }
   .heroBody[data-fill] {
-    max-height: none;
+    overflow-y: auto;
   }
   .mSide .feed {
     height: min(46vh, 520px);
@@ -2466,6 +2489,10 @@ button.feedText:hover {
   .goWho {
     font-size: var(--text-sm);
   }
+  .goAction {
+    padding: 8px;
+    margin: -8px;
+  }
   .goButton {
     min-width: 160px;
     padding: 12px 44px;
@@ -2478,7 +2505,7 @@ button.feedText:hover {
     padding: var(--space-2) var(--space-2) var(--space-2) 0;
   }
   .tally dd {
-    font-size: clamp(1.4rem, 0.9rem + 1.3vw, 2.4rem);
+    font-size: clamp(1.2rem, 0.8rem + 1vw, 1.9rem);
   }
   .cards {
     grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
@@ -2488,8 +2515,44 @@ button.feedText:hover {
     padding: var(--space-3);
     gap: 6px;
   }
+  .cardSetup,
+  .cardTask,
+  .cardMeta {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
   .cardSetup {
     font-size: var(--text-sm);
+  }
+  .cardMeta {
+    flex-wrap: nowrap;
+  }
+  .cardMeta {
+    display: none;
+  }
+  .card > button {
+    padding: var(--space-2) var(--space-3);
+  }
+  .cardTask {
+    font-size: var(--text-2xs);
+  }
+  .cardTrack span {
+    font-size: 9px;
+    padding-top: 4px;
+  }
+  .tally dt {
+    font-size: 9px;
+  }
+  .tally {
+    border-top: 0;
+  }
+  .runSpend {
+    display: none;
+  }
+  .finished li:nth-child(n + 2) {
+    display: none;
   }
   .cardClock {
     font-size: clamp(1.25rem, 0.9rem + 0.9vw, 1.75rem);
@@ -2527,8 +2590,373 @@ button.feedText:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .tally dd,
+  .heroTitle,
   .rail li[data-landed],
   .rail li[data-state="now"] .railMark::before {
+    animation: none;
+  }
+}
+
+/* ---- collapsible panes ---- */
+.paneToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.paneToggle:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.mSideNav .paneToggle {
+  margin-left: auto;
+  order: 9;
+}
+.sideHandle {
+  display: none;
+}
+@media (min-width: 1000px) {
+  .monitor {
+    transition: grid-template-columns 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .monitor[data-rail="closed"] {
+    grid-template-columns: 52px minmax(0, 1fr) clamp(320px, 25vw, 440px);
+  }
+  .monitor[data-side="closed"] {
+    grid-template-columns: clamp(220px, 17vw, 290px) minmax(0, 1fr) 30px;
+  }
+  .monitor[data-rail="closed"][data-side="closed"] {
+    grid-template-columns: 52px minmax(0, 1fr) 30px;
+  }
+  .monitor[data-rail="closed"] .paneToggleWord,
+  .monitor[data-rail="closed"] .railLabel,
+  .monitor[data-rail="closed"] .railTime,
+  .monitor[data-rail="closed"] .railSummary {
+    display: none;
+  }
+  .monitor[data-rail="closed"] .rail li {
+    grid-template-columns: 1.1em 1.9em;
+    padding-inline: 4px;
+  }
+  .monitor[data-side="closed"] .mSide > :not(.sideHandle) {
+    display: none;
+  }
+  .monitor[data-side="closed"] .sideHandle {
+    display: block;
+    height: 100%;
+    width: 100%;
+    padding: var(--space-3) 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    writing-mode: vertical-rl;
+    cursor: pointer;
+  }
+  .monitor[data-side="closed"] .sideHandle:hover {
+    color: var(--fg);
+    border-color: var(--line-strong);
+  }
+}
+@media (max-width: 999px) {
+  .paneToggle {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monitor {
+    transition: none;
+  }
+}
+
+/* ---- run settings menu ---- */
+.mTopActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.runMenu {
+  position: relative;
+}
+.runMenuBtn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+.runMenuBtn:hover,
+.runMenuBtn[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.runMenuPop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 75;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  animation: menuIn 0.18s ease-out;
+}
+.runMenuPop > button,
+.runMenuPop > a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.runMenuPop > button:hover,
+.runMenuPop > a:hover {
+  background: var(--surface-2);
+}
+.runMenuPop > button[data-danger] {
+  color: var(--fail);
+}
+.runMenuPop .alert {
+  flex-wrap: wrap;
+  border: 0;
+  background: transparent;
+  font-size: var(--text-xs);
+}
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .runMenuPop {
+    animation: none;
+  }
+}
+
+/* ---- inspector: opens out of the clicked computer ---- */
+.hero {
+  position: relative;
+}
+.inspector {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: clamp(18px, 2.4vw, 36px);
+  background: var(--surface);
+  border-radius: inherit;
+  overflow-y: auto;
+  animation: inspectorOpen 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes inspectorOpen {
+  from {
+    clip-path: circle(0 at var(--ox) var(--oy));
+  }
+  to {
+    clip-path: circle(150% at var(--ox) var(--oy));
+  }
+}
+.inspectorClose {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1;
+  cursor: pointer;
+}
+.inspectorClose:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.inspectorBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 760px;
+}
+.inspectorBody > * {
+  animation: inspectorItem 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.inspectorBody > :nth-child(2) {
+  animation-delay: 0.08s;
+}
+.inspectorBody > :nth-child(3) {
+  animation-delay: 0.14s;
+}
+.inspectorBody > :nth-child(4) {
+  animation-delay: 0.2s;
+}
+.inspectorBody > :nth-child(n + 5) {
+  animation-delay: 0.26s;
+}
+@keyframes inspectorItem {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.inspectorKicker {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.inspectorKicker span:first-child {
+  color: var(--accent-ink);
+}
+.inspectorTitle {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(1.75rem, 1.1rem + 2vw, 3rem);
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.inspectorTitle span {
+  color: var(--dim);
+}
+.inspectorWhat {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--muted);
+}
+.inspectorSteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+.inspectorSteps li {
+  padding-top: 8px;
+  border-top: 4px solid var(--queued);
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.inspectorSteps li[data-on] {
+  border-top-color: var(--muted);
+  color: var(--muted);
+}
+.inspectorSteps li[data-now] {
+  border-top-color: var(--accent);
+  color: var(--accent-ink);
+}
+.inspectorSteps li[data-tone="passed"] {
+  border-top-color: var(--pass);
+  color: var(--pass);
+}
+.inspectorSteps li[data-tone="failed"] {
+  border-top-color: var(--fail);
+  color: var(--fail);
+}
+.inspectorFacts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  border-top: 1px solid var(--line);
+}
+.inspectorFacts div {
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.inspectorFacts dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.inspectorFacts dd {
+  margin: 2px 0 0;
+  font-family: var(--mono);
+  font-size: var(--text-md);
+}
+.inspectorFacts dd[data-tone="pass"] {
+  color: var(--pass);
+}
+.inspectorFacts dd[data-tone="fail"] {
+  color: var(--fail);
+}
+.inspectorEvents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.inspectorEvents li span {
+  color: var(--dim);
+  margin-right: var(--space-2);
+}
+.inspectorMore {
+  align-self: flex-start;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--bg);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.inspectorMore:hover {
+  background: var(--accent);
+  color: #0a0c09;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspector,
+  .inspectorBody > * {
     animation: none;
   }
 }
