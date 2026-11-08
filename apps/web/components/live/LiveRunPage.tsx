@@ -18,6 +18,8 @@ import {
 import { ResultsPanel } from "../report/ResultsPanel";
 import { ActivityFeed, type FeedState } from "./ActivityFeed";
 import { AgentsPanel } from "./AgentsPanel";
+import { Mark } from "../site/Mark";
+import { CancelRun } from "./CancelRun";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
 import { ms, span, usd } from "./format";
 import styles from "./live.module.css";
@@ -216,6 +218,9 @@ export function LiveRunView({
       {/* A one-screen monitor: the page never scrolls; the rail and the side pane scroll inside. */}
       <div className={styles.monitor}>
         <header className={styles.mTop}>
+          <a href="/runs" className={styles.mHome} aria-label="Anybench: my runs" title="My runs">
+            <Mark size={20} />
+          </a>
           <p className={styles.topMeta}>
             <span className={styles.livePill} data-live={!ended || undefined}>
               <span className={styles.liveDot} aria-hidden="true" />
@@ -269,6 +274,11 @@ export function LiveRunView({
 
         <aside className={styles.mRail}>
           <PhaseRail live={live} nowMs={nowMs} />
+          {status !== "ended" && !["delivered", "failed", "cancelled"].includes(live.state) ? (
+            <div className={styles.mCancel}>
+              <CancelRun runId={live.runId} />
+            </div>
+          ) : null}
         </aside>
 
         <main className={styles.mCenter}>

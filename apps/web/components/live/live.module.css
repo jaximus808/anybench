@@ -2184,9 +2184,13 @@ button.feedText:hover {
   gap: var(--space-3);
   padding: var(--space-3) var(--gutter) var(--space-6);
 }
+.mHome {
+  display: inline-flex;
+  color: var(--fg);
+}
 .mTop {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2) var(--space-5);
 }
@@ -2220,6 +2224,21 @@ button.feedText:hover {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+.mRail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.mCancel {
+  margin-top: auto;
+}
+.mCancel > div,
+.mCancel > p {
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  background: transparent;
+  border-color: var(--line-strong);
 }
 .mSideNav {
   display: flex;
@@ -2482,6 +2501,9 @@ button.feedText:hover {
 @media (max-width: 999px) {
   .mTop {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .mHome {
+    display: none;
   }
   .mTop .topMeta {
     grid-column: 1 / -1;
