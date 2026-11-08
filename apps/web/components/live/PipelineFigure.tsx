@@ -166,7 +166,7 @@ function tokenParts(shape: number): Part[] {
 interface Label {
   id: string;
   at: [number, number];
-  anchor: "start" | "middle" | "end" | "above";
+  anchor: "start" | "middle" | "end" | "above" | "badge";
   title: string;
   sub?: string;
   tone?: "live" | "pass" | "fail" | "muted";
@@ -194,8 +194,8 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus, slots }: Fi
   const geo = useMemo(() => {
     const stations = stationParts();
     const extent: Point3[] = [...stations.flatMap(cornersOf), P(QU, QV, 22), P(BU, 0, 24)];
-    const fit = fitProjection(extent, W - 260, H - 48, { pad: 4 });
-    const proj: Projection = { ...fit, origin: [fit.origin[0] + 110, fit.origin[1] + 40] };
+    const fit = fitProjection(extent, W - 230, H - 34, { pad: 2 });
+    const proj: Projection = { ...fit, origin: [fit.origin[0] + 100, fit.origin[1] + 28] };
     const solids = new Map(stations.map((p) => [p.id, solidOf(p, proj)]));
     const order = paintOrder(stations, proj);
     const tokens = [1, 2, 3].map((n) =>
@@ -291,15 +291,15 @@ export function PipelineFigure({ live, view, nowMs, active, onFocus, slots }: Fi
     title: "QUEUE",
     sub: `${queued} waiting`,
   });
-  // Each computer's name sits right on top of it; its card below says what it's running.
+  // A small numbered badge on each computer; its card below says "BAY n · VM …" and what it runs.
   BAY_VS.forEach((bv, i) => {
     const c = bays[i];
     const [x0, y0] = geo.abs(P(BAY_U, bv - 13 * BAY_K, 36 * BAY_K));
     labels.push({
       id: `bay.${i}`,
       at: [x0, y0],
-      anchor: "above",
-      title: c ? `VM ${c.computerId ? c.computerId.slice(-6) : "…"}` : `BAY ${i + 1}`,
+      anchor: "badge",
+      title: String(i + 1),
       tone: c ? "live" : "muted",
     });
   });

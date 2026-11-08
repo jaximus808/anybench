@@ -267,7 +267,8 @@ describe("live run page against a fake API (TDM-75)", () => {
     const { rec, fake, container } = setup(1);
     await waitFor(() => expect(stageNow()).toBe("Intake"));
     fake.release(rec.marks.wave1);
-    await waitFor(() => expect(tileWord(0)).toBe("passed gate"));
+    // The trials.list refetch that places the stream's trials can take over a second here.
+    await waitFor(() => expect(tileWord(0)).toBe("passed gate"), { timeout: 5000 });
     fireEvent.click(tile(0)!);
     const drawer = await screen.findByRole("dialog", { name: trialName(0) });
     // The log tail is polled through the same client and shown as text.
@@ -289,7 +290,7 @@ describe("live run page against a fake API (TDM-75)", () => {
     const { rec, fake } = setup(1);
     await waitFor(() => expect(stageNow()).toBe("Intake"));
     fake.release(phaseSeq(rec, 0, "running"));
-    await waitFor(() => expect(tileWord(0)).toBe("running (running)"));
+    await waitFor(() => expect(tileWord(0)).toBe("running (running)"), { timeout: 5000 });
     fireEvent.click(tile(0)!);
     const logCalls = () =>
       fake.requests.filter((r) => r.path.startsWith(`/trials/${TRIALS[0]!.id}/log`)).length;

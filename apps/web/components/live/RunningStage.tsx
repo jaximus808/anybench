@@ -90,12 +90,14 @@ export function RunningStage({
       <ul className={styles.cards} aria-label="Trials running now">
         {cardsInSlots.map((t, i) =>
           t ? (
-            <TrialCard key={t.id} card={t} onOpen={onOpenTrial} />
+            <TrialCard key={t.id} card={t} bay={i + 1} onOpen={onOpenTrial} />
           ) : (
             <li key={`idle-${i}`} className={styles.card} data-idle>
               <span className={styles.cardIdle}>
-                <span className={styles.cardVm}>bay {i + 1}</span>
-                {c.queued ? "starting the next trial" : "idle"}
+                <span className={styles.cardVm}>
+                  <b className={styles.cardBay}>{i + 1}</b>idle
+                </span>
+                {c.queued ? "starting the next trial" : "no trial"}
               </span>
             </li>
           ),
@@ -142,9 +144,11 @@ export function RunningStage({
 
 const TrialCard = memo(function TrialCard({
   card,
+  bay,
   onOpen,
 }: {
   card: LiveTrialCard;
+  bay: number;
   onOpen: (id: string, at?: { x: number; y: number }) => void;
 }) {
   const at = STAGES.indexOf(card.stage);
@@ -157,6 +161,7 @@ const TrialCard = memo(function TrialCard({
         aria-label={`${card.setup} · ${card.task} #${card.repeat + 1}: ${card.state}`}
       >
         <span className={styles.cardVm}>
+          <b className={styles.cardBay}>{bay}</b>
           {card.computerId ? `VM ${card.computerId.slice(-6)}` : "VM starting"}
         </span>
         <span className={styles.cardTop}>
@@ -169,7 +174,7 @@ const TrialCard = memo(function TrialCard({
             aria-hidden="true"
           />
         </span>
-        <span className={styles.cardTask}>
+        <span className={styles.cardTask} data-setup={card.setup}>
           {card.task} <span className="num">#{card.repeat + 1}</span>
           {card.attempt > 1 ? (
             <span className={styles.cardRetry}>attempt {card.attempt}</span>

@@ -71,14 +71,36 @@ export function PhaseStage({
   nowMs,
   ended,
   onOpenTrial,
+  viewing = null,
+  onBackToLive,
 }: {
   live: LiveRun;
   nowMs: number;
   ended: boolean;
   onOpenTrial: (id: string) => void;
+  /** A finished phase the viewer picked in the rail; null watches the run live. */
+  viewing?: RunState | null;
+  onBackToLive?: () => void;
 }) {
-  const view = phaseView(live, nowMs);
-  const key = view.hold ? `hold:${view.hold.state}` : view.current.state;
+  const liveView = phaseView(live, nowMs);
+  const past = viewing ? liveView.done.find((d) => d.state === viewing) : undefined;
+  const reviewing = !!past && viewing !== liveView.current.state;
+  // Looking back: the picked phase as it ended (its duration, not a running clock).
+  const view: PhaseView =
+    reviewing && past
+      ? {
+          current: { ...past, startedAt: null, elapsedMs: past.durationMs },
+          done: liveView.done,
+          next: null,
+          hold: null,
+          delivered: false,
+        }
+      : liveView;
+  const key = reviewing
+    ? `past:${viewing}`
+    : view.hold
+      ? `hold:${view.hold.state}`
+      : view.current.state;
   const showFigure = !view.delivered;
   // One stable trial → bay assignment, shared by the figure's computers and the cards.
   const slots = useStableSlots(
@@ -113,14 +135,21 @@ export function PhaseStage({
       data-testid="phase-hero"
     >
       <span className={styles.heroPulse} aria-hidden="true" data-on={!ended || undefined} />
-      <HeroHead view={view} live={live} nowMs={nowMs} />
+      <HeroHead
+        view={view}
+        live={live}
+        nowMs={nowMs}
+        reviewing={reviewing}
+        liveLabel={liveView.hold ? HOLD_WORD[liveView.hold.state] : liveView.current.label}
+        onBackToLive={onBackToLive}
+      />
       {showFigure ? (
         <div className={styles.heroFigure}>
           <PhaseFigure
             live={live}
             view={view}
             nowMs={nowMs}
-            active={!ended && !view.hold}
+            active={!ended && !view.hold && !reviewing}
             onFocus={focusAt}
             slots={slots}
           />
@@ -170,7 +199,19 @@ function useLanded(view: PhaseView): RunState | null {
  * Every phase as one line: finished ones with ✓, how long they took and what they produced; the
  * current one live with its clock; later ones dim. Held runs mark where they stopped.
  */
-export function PhaseRail({ live, nowMs }: { live: LiveRun; nowMs: number }) {
+export function PhaseRail({
+  live,
+  nowMs,
+  viewing = null,
+  onSelect,
+}: {
+  live: LiveRun;
+  nowMs: number;
+  /** The finished phase being looked at, or null when watching live. */
+  viewing?: RunState | null;
+  /** Pick a phase: a finished one to look back at, the current one to watch live again. */
+  onSelect?: (state: RunState, isCurrent: boolean) => void;
+}) {
   const view = phaseView(live, nowMs);
   const landed = useLanded(view);
   const done = new Map(view.done.map((d) => [d.state, d]));
@@ -185,7 +226,22 @@ export function PhaseRail({ live, nowMs }: { live: LiveRun; nowMs: number }) {
             key={st.state}
             data-state={state}
             data-landed={st.state === landed || undefined}
+            data-viewing={(viewing ? viewing === st.state : now) || undefined}
             aria-current={now ? "step" : undefined}
+            onClick={d || now ? () => onSelect?.(st.state, now) : undefined}
+            onKeyDown={
+              d || now
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelect?.(st.state, now);
+                    }
+                  }
+                : undefined
+            }
+            role={onSelect && (d || now) ? "button" : undefined}
+            tabIndex={onSelect && (d || now) ? 0 : undefined}
+            title={d ? `Look back at ${st.label}` : now ? "Watch live" : undefined}
           >
             <span className={styles.railMark} aria-hidden="true">
               {d ? "✓" : now ? (view.hold ? "!" : "") : ""}
@@ -209,7 +265,21 @@ export function PhaseRail({ live, nowMs }: { live: LiveRun; nowMs: number }) {
   );
 }
 
-function HeroHead({ view, live, nowMs }: { view: PhaseView; live: LiveRun; nowMs: number }) {
+function HeroHead({
+  view,
+  live,
+  nowMs,
+  reviewing = false,
+  liveLabel,
+  onBackToLive,
+}: {
+  view: PhaseView;
+  live: LiveRun;
+  nowMs: number;
+  reviewing?: boolean;
+  liveLabel?: string;
+  onBackToLive?: () => void;
+}) {
   const c = view.current;
   const runMs = nowMs - Date.parse(live.createdAt);
   const timer = c.elapsedMs ?? runMs;
@@ -218,7 +288,17 @@ function HeroHead({ view, live, nowMs }: { view: PhaseView; live: LiveRun; nowMs
       <p className={styles.heroKicker}>
         <span className="num">§ {two(c.n)}</span>
         <span className={styles.heroOf}>of {two(11)}</span>
-        {view.hold ? (
+        {reviewing ? (
+          <>
+            <span className={styles.heroDoneTag}>done · looking back</span>
+            {onBackToLive ? (
+              <button type="button" className={styles.backToLive} onClick={onBackToLive}>
+                <i aria-hidden="true" />
+                Back to live{liveLabel ? `: ${liveLabel}` : ""}
+              </button>
+            ) : null}
+          </>
+        ) : view.hold ? (
           <span className={styles.heroHoldTag}>{HOLD_WORD[view.hold.state]}</span>
         ) : view.delivered ? (
           <span className={styles.heroDoneTag}>done</span>
@@ -236,10 +316,16 @@ function HeroHead({ view, live, nowMs }: { view: PhaseView; live: LiveRun; nowMs
       {view.delivered ? null : (
         <p className={styles.heroClock}>
           <span className="num" data-testid="phase-clock">
-            {clock(timer)}
+            {reviewing && c.elapsedMs === null ? "–" : clock(timer)}
           </span>
           <small>
-            {view.hold ? "before it stopped" : c.elapsedMs === null ? "run time" : "in this phase"}
+            {reviewing
+              ? "it took"
+              : view.hold
+                ? "before it stopped"
+                : c.elapsedMs === null
+                  ? "run time"
+                  : "in this phase"}
           </small>
         </p>
       )}
@@ -274,18 +360,20 @@ function PhaseBody({
   nowMs,
   onOpenTrial,
   slots,
+  reviewing = false,
 }: {
   live: LiveRun;
   view: PhaseView;
   nowMs: number;
   onOpenTrial: (id: string, at?: { x: number; y: number }) => void;
   slots: (string | null)[];
+  reviewing?: boolean;
 }) {
   switch (view.current.state) {
     case "env_build":
       return <EnvBuildBody live={live} nowMs={nowMs} />;
     case "awaiting_go":
-      return <GoBody live={live} />;
+      return <GoBody live={live} reviewing={reviewing} />;
     case "running":
       return <RunningStage live={live} nowMs={nowMs} onOpenTrial={onOpenTrial} slots={slots} />;
     case "delivered":
@@ -431,7 +519,7 @@ function plannedTrials(live: LiveRun): number | null {
   return null;
 }
 
-function GoBody({ live }: { live: LiveRun }) {
+function GoBody({ live, reviewing = false }: { live: LiveRun; reviewing?: boolean }) {
   const { busy, started, failure, go } = useGoAction(live.runId);
   const trials = plannedTrials(live);
   const setups = live.contenders.filter((c) => c.id !== "unplaced");
@@ -476,29 +564,33 @@ function GoBody({ live }: { live: LiveRun }) {
           ) : null}
         </div>
       ) : null}
-      <div className={styles.goAction}>
-        <button
-          type="button"
-          className={styles.goButton}
-          onClick={() => void go()}
-          disabled={busy || started}
-          data-testid="go-button"
-        >
-          {started ? "Starting…" : busy ? "Starting…" : "Go"}
-        </button>
-        <p className={styles.goNote} role="status">
-          {started ? (
-            "Starting the run…"
-          ) : failure ? (
-            <GoFailureText failure={failure} />
-          ) : (
-            <>
-              Cap <span className="num">{usd(live.budgetMicroUsd, 0)}</span>. Failures that are ours
-              are never billed.
-            </>
-          )}
-        </p>
-      </div>
+      {reviewing ? (
+        <p className={styles.goNote}>Go was pressed and the run started.</p>
+      ) : (
+        <div className={styles.goAction}>
+          <button
+            type="button"
+            className={styles.goButton}
+            onClick={() => void go()}
+            disabled={busy || started}
+            data-testid="go-button"
+          >
+            {started ? "Starting…" : busy ? "Starting…" : "Go"}
+          </button>
+          <p className={styles.goNote} role="status">
+            {started ? (
+              "Starting the run…"
+            ) : failure ? (
+              <GoFailureText failure={failure} />
+            ) : (
+              <>
+                Cap <span className="num">{usd(live.budgetMicroUsd, 0)}</span>. Failures that are
+                ours are never billed.
+              </>
+            )}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

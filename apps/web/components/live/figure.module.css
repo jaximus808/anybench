@@ -397,6 +397,29 @@
 .callout[data-anchor="above"][data-tone="pass"] {
   border-color: color-mix(in srgb, var(--pass) 55%, var(--line));
 }
+.callout[data-anchor="badge"] {
+  transform: translate(-50%, -100%);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+.callout[data-anchor="badge"] .calloutTitle {
+  font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1;
+}
+.callout[data-anchor="badge"][data-tone="live"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.callout[data-anchor="badge"][data-tone="live"] .calloutTitle {
+  color: #0a0c09;
+  font-weight: 600;
+}
 .callout[data-anchor="middle"] {
   transform: translate(-50%, -0.8em);
   align-items: center;

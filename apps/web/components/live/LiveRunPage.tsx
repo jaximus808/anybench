@@ -5,7 +5,7 @@
 //
 // It shows counts and gate results only. Speed and quality numbers come from the report, after
 // the correctness gate and the statistics (no number without a gate).
-import { apiRoutes, type AlertId, type ApiClient } from "@anybench/core";
+import { apiRoutes, type AlertId, type ApiClient, type RunState } from "@anybench/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LiveApiContext, useLiveApi } from "../../lib/live/client";
 import { countTrials, type FeedItem, type LiveRun, type SearchHit } from "../../lib/live/model";
@@ -147,6 +147,8 @@ export function LiveRunView({
   const [railOpen, setRailOpen] = usePaneOpen("anybench.live.rail");
   const [sideOpen, setSideOpen] = usePaneOpen("anybench.live.side");
   const [sideTab, setSideTab] = useState<"log" | "trials" | "agents">("log");
+  // A finished phase picked in the rail; null = watching live.
+  const [viewing, setViewing] = useState<RunState | null>(null);
 
   // Deep links: open the drawer named in the URL once.
   useEffect(() => setDrawerState(readDrawerFromUrl()), []);
@@ -324,11 +326,23 @@ export function LiveRunView({
             <span aria-hidden="true">{railOpen ? "‹" : "›"}</span>
             <span className={styles.paneToggleWord}>phases</span>
           </button>
-          <PhaseRail live={live} nowMs={nowMs} />
+          <PhaseRail
+            live={live}
+            nowMs={nowMs}
+            viewing={viewing}
+            onSelect={(state, isCurrent) => setViewing(isCurrent ? null : state)}
+          />
         </aside>
 
         <main className={styles.mCenter}>
-          <PhaseStage live={live} nowMs={nowMs} ended={ended} onOpenTrial={openTrial} />
+          <PhaseStage
+            live={live}
+            nowMs={nowMs}
+            ended={ended}
+            onOpenTrial={openTrial}
+            viewing={viewing}
+            onBackToLive={() => setViewing(null)}
+          />
           {live.state === "failed" || live.state === "cancelled" ? (
             <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
           ) : null}

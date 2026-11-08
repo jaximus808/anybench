@@ -87,7 +87,8 @@ describe("phase stage (TDM-200)", () => {
     const { live, nowMs } = at("proof", 500);
     await show(live, nowMs);
     const rail = screen.getByRole("list", { name: "Run phases" });
-    expect(within(rail).getAllByRole("listitem")).toHaveLength(11);
+    // Finished and current phases are buttons (click to look back); every phase is a row.
+    expect(rail.querySelectorAll("li")).toHaveLength(11);
     const rows = [...rail.querySelectorAll('li[data-state="done"]')];
     expect(rows.map((r) => r.querySelector("span:nth-child(3)")?.textContent)).toEqual([
       "Intake",
@@ -241,7 +242,11 @@ describe("running hero (TDM-201)", () => {
     expect(fig.textContent).toContain("SEALED");
     expect(fig.textContent).toContain("the agent never sees the hidden tests");
     expect(fig.textContent).toContain("GRADER · SEPARATE COMPUTER");
-    expect(fig.textContent).toMatch(/VM [0-9a-f]{6}/);
+    // Each computer carries its bay number; the matching card names its VM.
+    expect(fig.textContent).toMatch(/12345/);
+    expect(
+      screen.getAllByTestId("trial-card").some((c) => /VM [0-9a-f]{6}/.test(c.textContent ?? "")),
+    ).toBe(true);
   });
 
   it("clicking a computer opens the inspector for what it is running", async () => {
@@ -293,5 +298,41 @@ describe("run settings menu", () => {
       fireEvent.click(screen.getByRole("button", { name: "Yes, cancel" }));
     });
     expect(calls).toContain(`POST /runs/${live.runId}/cancel`);
+  });
+});
+
+describe("looking back at a finished phase", () => {
+  it("clicking a done phase in the rail shows it; Back to live (or the current phase) resumes", async () => {
+    const { live, nowMs } = at("running", 20_000);
+    await show(live, nowMs);
+    const rail = screen.getByTestId("phase-rail");
+    const kit = [...rail.querySelectorAll("li")].find((l) => l.textContent?.includes("Kit"))!;
+    await act(async () => {
+      fireEvent.click(kit);
+    });
+    let hero = screen.getByTestId("phase-hero");
+    expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Kit");
+    expect(hero.textContent).toContain("looking back");
+    expect(screen.getByTestId("phase-clock").textContent).toBe("0:03");
+    await act(async () => {
+      fireEvent.click(within(hero).getByRole("button", { name: /Back to live/ }));
+    });
+    hero = screen.getByTestId("phase-hero");
+    expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Running");
+    // The current phase in the rail also returns to live.
+    const go = [...rail.querySelectorAll("li")].find((l) => l.textContent?.includes("Go"))!;
+    await act(async () => {
+      fireEvent.click(go);
+    });
+    const running = [...screen.getByTestId("phase-rail").querySelectorAll("li")].find(
+      (l) => l.getAttribute("aria-current") === "step",
+    )!;
+    await act(async () => {
+      fireEvent.click(running);
+    });
+    expect(
+      within(screen.getByTestId("phase-hero")).getAllByRole("heading", { level: 2 })[0]!
+        .textContent,
+    ).toBe("Running");
   });
 });
