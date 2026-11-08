@@ -1,0 +1,181 @@
+/* Phase figures (Anatomy solids). Flat shaded faces, hairline edges, colour = state only. */
+
+.fig {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.fig path {
+  vector-effect: non-scaling-stroke;
+}
+
+/* faces */
+.fill {
+  fill: var(--surface);
+}
+.top {
+  fill: var(--surface-2);
+}
+.shade[data-shade="0"] {
+  fill: #0b0d0a;
+}
+.shade[data-shade="1"] {
+  fill: #0e110c;
+}
+.shade[data-shade="2"] {
+  fill: #12150f;
+}
+.shade[data-shade="3"] {
+  fill: #171b13;
+}
+.edge,
+.crease {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 0.8px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.crease {
+  stroke: var(--line);
+}
+
+/* tones */
+.solid[data-tone="base"] .top {
+  fill: var(--surface);
+}
+.solid[data-tone="body"] .edge {
+  stroke: var(--muted);
+}
+.solid[data-tone="ink"] .top {
+  fill: #20251b;
+}
+.solid[data-tone="queued"] .top,
+.solid[data-tone="dim"] .top {
+  fill: var(--queued);
+}
+.solid[data-tone="dim"] .edge {
+  stroke: var(--line);
+}
+.solid[data-tone="lit"] .top {
+  fill: var(--fg);
+}
+.solid[data-tone="lit"] .edge {
+  stroke: var(--fg);
+}
+.solid[data-tone="live"] .top,
+.solid[data-tone="live"] .fill {
+  fill: var(--accent);
+}
+.solid[data-tone="live"] .shade {
+  fill: color-mix(in srgb, var(--accent) 62%, #000);
+}
+.solid[data-tone="live"] .edge {
+  stroke: var(--accent-ink);
+}
+.solid[data-tone="warm"] .top,
+.solid[data-tone="warm"] .fill {
+  fill: color-mix(in srgb, var(--accent) 30%, var(--surface));
+}
+.solid[data-tone="warm"] .edge {
+  stroke: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.solid[data-tone="pass"] .top,
+.solid[data-tone="pass"] .fill {
+  fill: var(--pass);
+}
+.solid[data-tone="pass"] .shade {
+  fill: color-mix(in srgb, var(--pass) 55%, #000);
+}
+.solid[data-tone="pass"] .edge {
+  stroke: var(--pass);
+}
+.solid[data-tone="fail"] .top,
+.solid[data-tone="fail"] .fill {
+  fill: var(--fail);
+}
+.solid[data-tone="fail"] .shade {
+  fill: color-mix(in srgb, var(--fail) 55%, #000);
+}
+.solid[data-tone="fail"] .edge {
+  stroke: var(--fail);
+}
+.solid[data-tone="infra"] .top {
+  fill: var(--infra);
+}
+.solid[data-tone="infra"] .edge {
+  stroke: var(--infra);
+  stroke-dasharray: 2 2;
+}
+/* Waiting on Naïve capacity: the screen flickers on the retry rhythm. */
+.solid[data-tone="retry"] .top,
+.solid[data-tone="retry"] .fill {
+  fill: color-mix(in srgb, var(--accent) 45%, var(--surface));
+}
+.solid[data-tone="retry"] .edge {
+  stroke: var(--accent);
+  stroke-dasharray: 3 2;
+}
+.fig[data-active] .solid[data-tone="retry"] .top {
+  animation: flicker 1.1s steps(2, jump-none) infinite;
+}
+.fig[data-active] .solid[data-tone="live"] .top {
+  animation: hum 2.4s ease-in-out infinite;
+}
+
+/* One flash per real event (a heartbeat, a new agent line). */
+.beat {
+  fill: var(--fg);
+  pointer-events: none;
+  animation: beat 0.9s ease-out forwards;
+}
+
+/* Ground routes: dashed, flowing only while the phase is live. */
+.flow {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1px;
+  stroke-dasharray: 2 6;
+  opacity: 0.45;
+}
+.fig[data-active] .flow {
+  opacity: 0.9;
+  animation: flow 1.6s linear infinite;
+}
+
+@keyframes flow {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+@keyframes beat {
+  from {
+    opacity: 0.85;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes flicker {
+  50% {
+    fill: var(--surface);
+  }
+}
+@keyframes hum {
+  50% {
+    fill: color-mix(in srgb, var(--accent) 78%, var(--fg));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beat,
+  .fig[data-active] .flow,
+  .fig[data-active] .solid[data-tone="retry"] .top,
+  .fig[data-active] .solid[data-tone="live"] .top {
+    animation: none;
+  }
+  .beat {
+    display: none;
+  }
+}

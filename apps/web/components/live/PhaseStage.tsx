@@ -9,7 +9,7 @@
 // quality number (those come from the report, after the gate and the statistics).
 import type { RunState } from "@anybench/core";
 import { useEffect, useRef, useState } from "react";
-import { countTrials, type LiveRun } from "../../lib/live/model";
+import { countTrials, STAGES, type LiveRun } from "../../lib/live/model";
 import {
   envBuildSteps,
   phaseLog,
@@ -23,6 +23,7 @@ import { ResultsPanel } from "../report/ResultsPanel";
 import { clock, span, usd } from "./format";
 import { GoFailureText, useGoAction } from "./GoBar";
 import styles from "./live.module.css";
+import { PhaseFigure } from "./PhaseFigure";
 import { RunningStage } from "./RunningStage";
 
 /** What is really happening in each phase, in a sentence. */
@@ -74,41 +75,36 @@ export function PhaseStage({
 }) {
   const view = phaseView(live, nowMs);
   const key = view.hold ? `hold:${view.hold.state}` : view.current.state;
-  const landed = useLanded(view);
+  const showFigure = !view.delivered;
 
   return (
-    <section className={styles.stage} aria-label="Run progress" data-testid="phase-stage">
-      {view.done.length ? <DoneLines view={view} landed={landed} /> : null}
-
-      <article
-        key={key}
-        className={styles.hero}
-        data-phase={view.current.state}
-        data-hold={view.hold?.state}
-        aria-live="polite"
-        data-testid="phase-hero"
-      >
-        <span className={styles.heroPulse} aria-hidden="true" data-on={!ended || undefined} />
-        <HeroHead view={view} live={live} nowMs={nowMs} />
-        <div className={styles.heroBody}>
-          {view.hold ? (
-            <HoldBody view={view} />
-          ) : (
-            <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={onOpenTrial} />
-          )}
+    <article
+      key={key}
+      className={styles.hero}
+      data-phase={view.current.state}
+      data-hold={view.hold?.state}
+      aria-live="polite"
+      data-testid="phase-hero"
+    >
+      <span className={styles.heroPulse} aria-hidden="true" data-on={!ended || undefined} />
+      <HeroHead view={view} live={live} nowMs={nowMs} />
+      {showFigure ? (
+        <div className={styles.heroFigure} aria-hidden="true">
+          <PhaseFigure live={live} view={view} nowMs={nowMs} active={!ended && !view.hold} />
         </div>
-      </article>
-
-      {view.next ? (
-        <p className={styles.nextHint} data-testid="phase-next">
-          <span>next</span> {two(view.next.n)} {view.next.label}
-        </p>
       ) : null}
-    </section>
+      <div className={styles.heroBody} data-fill={!showFigure || undefined}>
+        {view.hold ? (
+          <HoldBody view={view} />
+        ) : (
+          <PhaseBody live={live} view={view} nowMs={nowMs} onOpenTrial={onOpenTrial} />
+        )}
+      </div>
+    </article>
   );
 }
 
-/** The phase that just finished, for one beat of highlight in the done list. */
+/** The phase that just finished, for one beat of highlight in the rail. */
 function useLanded(view: PhaseView): RunState | null {
   const prev = useRef<RunState | null>(null);
   const [landed, setLanded] = useState<RunState | null>(null);
@@ -124,22 +120,45 @@ function useLanded(view: PhaseView): RunState | null {
   return landed;
 }
 
-function DoneLines({ view, landed }: { view: PhaseView; landed: RunState | null }) {
+/**
+ * Every phase as one line: finished ones with ✓, how long they took and what they produced; the
+ * current one live with its clock; later ones dim. Held runs mark where they stopped.
+ */
+export function PhaseRail({ live, nowMs }: { live: LiveRun; nowMs: number }) {
+  const view = phaseView(live, nowMs);
+  const landed = useLanded(view);
+  const done = new Map(view.done.map((d) => [d.state, d]));
   return (
-    <ol className={styles.doneList} aria-label="Finished phases">
-      {view.done.map((d) => (
-        <li key={d.state} data-landed={d.state === landed || undefined}>
-          <span className={styles.doneTick} aria-hidden="true">
-            ✓
-          </span>
-          <span className={styles.doneN}>{two(d.n)}</span>
-          <span className={styles.doneLabel}>{d.label}</span>
-          <span className={`num ${styles.doneTime}`}>
-            {d.durationMs === null ? "" : span(d.durationMs)}
-          </span>
-          {d.summary ? <span className={styles.doneSummary}>{d.summary}</span> : null}
-        </li>
-      ))}
+    <ol className={styles.rail} aria-label="Run phases" data-testid="phase-rail">
+      {STAGES.map((st, i) => {
+        const d = done.get(st.state);
+        const now = !d && i + 1 === view.current.n;
+        const state = d ? "done" : now ? (view.hold ? "held" : "now") : "todo";
+        return (
+          <li
+            key={st.state}
+            data-state={state}
+            data-landed={st.state === landed || undefined}
+            aria-current={now ? "step" : undefined}
+          >
+            <span className={styles.railMark} aria-hidden="true">
+              {d ? "✓" : now ? (view.hold ? "!" : "") : ""}
+            </span>
+            <span className={styles.railN}>{two(i + 1)}</span>
+            <span className={styles.railLabel}>{st.label}</span>
+            <span className={`num ${styles.railTime}`}>
+              {d
+                ? d.durationMs === null
+                  ? ""
+                  : span(d.durationMs)
+                : now && view.current.elapsedMs !== null
+                  ? clock(view.current.elapsedMs)
+                  : ""}
+            </span>
+            {d?.summary ? <span className={styles.railSummary}>{d.summary}</span> : null}
+          </li>
+        );
+      })}
     </ol>
   );
 }

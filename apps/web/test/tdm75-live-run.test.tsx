@@ -55,7 +55,7 @@ const stageNow = () =>
 
 /** The finished phases' labels, in order. */
 const donePhases = () =>
-  [...(screen.queryByRole("list", { name: "Finished phases" })?.querySelectorAll("li") ?? [])].map(
+  [...(screen.queryByTestId("phase-rail")?.querySelectorAll('li[data-state="done"]') ?? [])].map(
     (li) => li.querySelector("span:nth-child(3)")?.textContent ?? "",
   );
 

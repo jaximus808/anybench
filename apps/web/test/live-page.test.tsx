@@ -37,8 +37,9 @@ describe("live run page", () => {
     await renderRun();
     const hero = screen.getByTestId("phase-hero");
     expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Running");
-    const done = screen.getByRole("list", { name: "Finished phases" });
-    expect(within(done).getAllByRole("listitem")).toHaveLength(7);
+    const rail = screen.getByRole("list", { name: "Run phases" });
+    expect(rail.querySelectorAll('li[data-state="done"]')).toHaveLength(7);
+    expect(rail.querySelector('[aria-current="step"]')?.textContent).toContain("Running");
     expect(screen.queryByRole("list", { name: "Run stages" })).toBeNull();
   });
 

@@ -17,6 +17,11 @@ import { bytes, clock, pctOf, usd, usdSmall } from "./format";
 import styles from "./live.module.css";
 
 const STAGES: TrialStage[] = ["booting", "running", "grading"];
+const STAGE_WORD: Record<TrialStage, string> = {
+  booting: "boot",
+  running: "run",
+  grading: "grade",
+};
 const TONE_WORD: Record<FinishedCard["tone"], string> = {
   passed: "passed its gate",
   failed: "failed its gate",
@@ -150,7 +155,7 @@ const TrialCard = memo(function TrialCard({
         <span className={styles.cardTrack} aria-label={`stage ${card.stage}`}>
           {STAGES.map((s, i) => (
             <span key={s} data-on={i < at || undefined} data-now={i === at || undefined}>
-              {s}
+              {STAGE_WORD[s]}
             </span>
           ))}
         </span>

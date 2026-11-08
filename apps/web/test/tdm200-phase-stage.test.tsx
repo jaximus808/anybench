@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveRunView } from "../components/live/LiveRunPage";
 import { createWebApiClient } from "../lib/api";
 import { LiveApiContext } from "../lib/live/client";
-import { applyEvent, applyEvents, initLive, type LiveRun } from "../lib/live/model";
+import { applyEvent, applyEvents, countTrials, initLive, type LiveRun } from "../lib/live/model";
 import { createDemoRun } from "./fixtures/simulator";
 import { tdm103Report } from "./fixtures/tdm103-report";
 
@@ -38,7 +38,10 @@ function client() {
       calls.push(`${(init?.method ?? "GET").toUpperCase()} ${path}`);
       if (path.endsWith("/report")) return json(200, { report: tdm103Report() });
       if (path.endsWith("/go"))
-        return json(402, { reason: "no_payment_method", link_card_url: "https://anybench.test/billing" });
+        return json(402, {
+          reason: "no_payment_method",
+          link_card_url: "https://anybench.test/billing",
+        });
       return json(404, { error: { code: "not_found", message: "nope" } });
     },
   });
@@ -72,17 +75,20 @@ describe("phase stage (TDM-200)", () => {
     expect(within(hero).getByRole("heading", { level: 2 }).textContent).toBe("Understand");
     expect(within(hero).getByText("§ 02")).toBeTruthy();
     expect(screen.getByTestId("phase-clock").textContent).toBe("0:01");
-    expect(screen.getByTestId("phase-next").textContent).toContain("03 Research");
+    const rail = screen.getByTestId("phase-rail");
+    expect(rail.querySelector('[aria-current="step"]')?.textContent).toContain("Understand");
+    expect(rail.querySelector('li[data-state="todo"]')?.textContent).toContain("03Research");
     // The old stage rail and the 0/0 counter grid are gone from the top of the page.
     expect(screen.queryByRole("list", { name: "Run stages" })).toBeNull();
     expect(hero.textContent).not.toMatch(/0\/0/);
   });
 
-  it("collapses finished phases to one ✓ line each, with duration and summary", async () => {
+  it("the rail: finished phases as ✓ lines with duration and summary, then now, then later", async () => {
     const { live, nowMs } = at("proof", 500);
     await show(live, nowMs);
-    const done = screen.getByRole("list", { name: "Finished phases" });
-    const rows = within(done).getAllByRole("listitem");
+    const rail = screen.getByRole("list", { name: "Run phases" });
+    expect(within(rail).getAllByRole("listitem")).toHaveLength(11);
+    const rows = [...rail.querySelectorAll('li[data-state="done"]')];
     expect(rows.map((r) => r.querySelector("span:nth-child(3)")?.textContent)).toEqual([
       "Intake",
       "Understand",
@@ -159,7 +165,9 @@ describe("phase stage (TDM-200)", () => {
     const hero = await show(live, T0 + demo.durationMs, "ended");
     expect(within(hero).getAllByRole("heading", { level: 2 })[0]!.textContent).toBe("Delivered");
     expect(await within(hero).findByTestId("results")).toBeTruthy();
-    expect(screen.queryByTestId("phase-next")).toBeNull();
+    expect(screen.getByTestId("phase-rail").querySelectorAll('li[data-state="done"]')).toHaveLength(
+      11,
+    );
   });
 
   it.each([
@@ -186,5 +194,54 @@ describe("phase stage (TDM-200)", () => {
     expect(hero.textContent).toContain("Stopped at 05 Computers.");
     // The clock stopped when the run did.
     expect(screen.getByTestId("phase-clock").textContent).toBe("0:04");
+  });
+});
+
+describe("running hero (TDM-201)", () => {
+  it("shows at most 5 live trial cards with setup, task, timer and stage; queued is one number", async () => {
+    const { live, nowMs } = at("running", 40_000);
+    const hero = await show(live, nowMs);
+    const cards = within(hero).getAllByTestId("trial-card");
+    expect(cards.length).toBeGreaterThan(0);
+    expect(cards.length).toBeLessThanOrEqual(5);
+    for (const c of cards) {
+      expect(c.textContent).toMatch(/Claude Code solo|Tandem ×3/);
+      expect(c.textContent).toMatch(/todo-api|auth-refactor|bug-hunt/);
+      expect(within(c).getByTestId("trial-clock").textContent).toMatch(/^\d+:\d\d$/);
+      expect(c.querySelector('[data-now="true"]')).not.toBeNull();
+    }
+    const c = countTrials(live);
+    expect(within(hero).getByTestId("queued-count").textContent).toBe(String(c.queued));
+  });
+
+  it("counts only: no speed or quality number, no ranking", async () => {
+    const { live, nowMs } = at("running", 80_000);
+    const hero = await show(live, nowMs);
+    expect(hero.textContent).not.toMatch(/faster|slower|median|p=|score|rank|%/i);
+  });
+
+  it("the figure colours every trial tile from its real state", async () => {
+    const { live, nowMs } = at("running", 80_000);
+    await show(live, nowMs);
+    const fig = screen.getByTestId("phase-figure");
+    const tones = [...fig.querySelectorAll("g[data-tone]")].map((g) => g.getAttribute("data-tone"));
+    const c = countTrials(live);
+    // Trial tiles are the only pass/fail/queued solids in the running figure.
+    expect(tones.filter((t) => t === "pass")).toHaveLength(c.passed);
+    expect(tones.filter((t) => t === "fail")).toHaveLength(c.failed);
+    expect(tones.filter((t) => t === "queued")).toHaveLength(c.queued);
+  });
+});
+
+describe("monitor layout", () => {
+  it("rail, hero and the details pane (log, trials, agents) are all on one screen", async () => {
+    const { live, nowMs } = at("env_build", 3_000);
+    await show(live, nowMs);
+    expect(screen.getByTestId("phase-rail")).toBeTruthy();
+    expect(screen.getByTestId("phase-hero")).toBeTruthy();
+    const side = screen.getByRole("complementary", { name: "Run details" });
+    expect(within(side).getByRole("region", { name: "Trials" })).toBeTruthy();
+    expect(within(side).getByRole("region", { name: "Agents" })).toBeTruthy();
+    expect(within(side).getByText("Activity")).toBeTruthy();
   });
 });

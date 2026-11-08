@@ -197,20 +197,25 @@ export function LiveSim() {
 
   return (
     <LiveApiContext.Provider value={client}>
+      {/* The live page leaves room for this bar at the bottom of its monitor layout. */}
+      <style>{":root{--sim-bar:44px}"}</style>
       <div
         role="toolbar"
         aria-label="Simulator controls"
         style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 90,
+          opacity: 0.92,
           display: "flex",
           flexWrap: "wrap",
           gap: 8,
           alignItems: "center",
           padding: "8px 16px",
           background: "var(--surface-2)",
-          borderBottom: "1px solid var(--line)",
+          borderTop: "1px solid var(--line)",
           font: "12px var(--font-mono, ui-monospace)",
           color: "var(--muted)",
         }}

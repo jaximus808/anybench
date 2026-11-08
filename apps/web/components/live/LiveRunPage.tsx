@@ -21,9 +21,9 @@ import { AgentsPanel } from "./AgentsPanel";
 import { AgentDrawer, TrialDrawer } from "./Drawers";
 import { ms, span, usd } from "./format";
 import styles from "./live.module.css";
-import { PhaseStage } from "./PhaseStage";
+import { PhaseRail, PhaseStage } from "./PhaseStage";
 import { SearchPalette } from "./SearchPalette";
-import { NowRunning, TrialMatrix, type GridFilter } from "./TrialMatrix";
+import { TrialMatrix, type GridFilter } from "./TrialMatrix";
 
 type DrawerRef = { kind: "trial" | "agent"; id: string } | null;
 
@@ -213,117 +213,126 @@ export function LiveRunView({
 
   return (
     <div className={styles.page} data-drawer={drawer ? "open" : undefined}>
-      <div className={styles.shell}>
-        <header className={styles.top}>
-          <div className={styles.topMain}>
-            <p className={styles.topMeta}>
-              <span className={styles.livePill} data-live={!ended || undefined}>
-                <span className={styles.liveDot} aria-hidden="true" />
-                {ended ? (RUN_STATE_WORD[live.state] ?? "ended") : "live"}
+      {/* A one-screen monitor: the page never scrolls; the rail and the side pane scroll inside. */}
+      <div className={styles.monitor}>
+        <header className={styles.mTop}>
+          <p className={styles.topMeta}>
+            <span className={styles.livePill} data-live={!ended || undefined}>
+              <span className={styles.liveDot} aria-hidden="true" />
+              {ended ? (RUN_STATE_WORD[live.state] ?? "ended") : "live"}
+            </span>
+            <span className="num">{span(elapsed)}</span>
+            <span className={styles.sep}>·</span>
+            <span className="num" data-testid="run-spend">
+              {usd(live.spentMicroUsd)} spent of {usd(live.budgetMicroUsd, 0)}
+              {live.estimateMicroUsd !== null ? ` · estimate ${usd(live.estimateMicroUsd)}` : ""}
+            </span>
+            <span className={styles.sep}>·</span>
+            <span className="num">seq {live.lastSeq.toLocaleString("en-US")}</span>
+            {RUN_STATE_WORD[live.state] && !ended ? (
+              <span className={styles.holdPill}>{RUN_STATE_WORD[live.state]}</span>
+            ) : null}
+            {status === "reconnecting" || status === "error" ? (
+              <span className={styles.holdPill} data-testid="stream-status">
+                {status === "reconnecting" ? "reconnecting" : "offline"}
               </span>
-              <span className="num">{span(elapsed)}</span>
-              <span className={styles.sep}>·</span>
-              <span className="num" data-testid="run-spend">
-                {usd(live.spentMicroUsd)} spent of {usd(live.budgetMicroUsd, 0)}
-                {live.estimateMicroUsd !== null ? ` · estimate ${usd(live.estimateMicroUsd)}` : ""}
-              </span>
-              <span className={styles.sep}>·</span>
-              <span className="num">seq {live.lastSeq.toLocaleString("en-US")}</span>
-              {RUN_STATE_WORD[live.state] && !ended ? (
-                <span className={styles.holdPill}>{RUN_STATE_WORD[live.state]}</span>
-              ) : null}
-              {status === "reconnecting" || status === "error" ? (
-                <span className={styles.holdPill} data-testid="stream-status">
-                  {status === "reconnecting" ? "reconnecting" : "offline"}
-                </span>
-              ) : null}
-            </p>
-            <h1 className={styles.question}>{live.question}</h1>
-          </div>
+            ) : null}
+          </p>
+          <h1 className={styles.question} title={live.question}>
+            {live.question}
+          </h1>
           <button type="button" className={styles.searchBtn} onClick={() => setPalette(true)}>
             <span>Search run</span>
             <kbd>/</kbd>
           </button>
         </header>
 
-        {problem || ackProblem ? (
-          <p className={styles.alert} data-sev="warn" role="status">
-            <span className={styles.alertMsg}>{ackProblem ?? problem}</span>
-          </p>
-        ) : null}
-
-        {openAlerts.map((a) => (
-          <div key={a.ruleKey} className={styles.alert} data-sev={a.severity} role="alert">
-            <span className={styles.alertSev}>{a.severity}</span>
-            <span className={styles.alertMsg}>{a.message}</span>
-            {a.count > 1 ? <span className="num">×{a.count}</span> : null}
-            <button type="button" onClick={() => ack(a.ruleKey, a.id)}>
-              Acknowledge
-            </button>
-          </div>
-        ))}
-
-        <PhaseStage live={live} nowMs={nowMs} ended={ended} onOpenTrial={openTrial} />
-
-        {live.state === "failed" || live.state === "cancelled" ? (
-          <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
-        ) : null}
-
-        <div className={styles.grid}>
-          <div className={styles.left}>
-            <section className={styles.panel} aria-labelledby="matrix-h">
-              <header className={styles.panelHead}>
-                <h2 id="matrix-h" className={styles.panelTitle}>
-                  Trials
-                </h2>
-                <span className={styles.panelMeta}>
-                  {live.contenders.length} setups × {live.workloads.length} tasks × {live.repeats}{" "}
-                  runs, each on its own computer
-                </span>
-              </header>
-              <div className={styles.counters}>
-                {chip("all", "trials done", counts.done, `/${counts.total}`)}
-                {chip("active", "running now", counts.running)}
-                {chip("passed", "passed gate", counts.passed)}
-                {chip("failed", "failed", counts.failed)}
-                {chip("infra", "our failures, not billed", counts.infra)}
+        {problem || ackProblem || openAlerts.length ? (
+          <div className={styles.mAlerts}>
+            {problem || ackProblem ? (
+              <p className={styles.alert} data-sev="warn" role="status">
+                <span className={styles.alertMsg}>{ackProblem ?? problem}</span>
+              </p>
+            ) : null}
+            {openAlerts.map((a) => (
+              <div key={a.ruleKey} className={styles.alert} data-sev={a.severity} role="alert">
+                <span className={styles.alertSev}>{a.severity}</span>
+                <span className={styles.alertMsg}>{a.message}</span>
+                {a.count > 1 ? <span className="num">×{a.count}</span> : null}
+                <button type="button" onClick={() => ack(a.ruleKey, a.id)}>
+                  Acknowledge
+                </button>
               </div>
-              <TrialMatrix
-                live={live}
-                filter={filter}
-                selectedId={drawer?.kind === "trial" ? drawer.id : null}
-                onOpen={openTrial}
-              />
-              <ul className={styles.legend} aria-label="Legend">
-                <li data-tone="queued">queued</li>
-                <li data-tone="active">running</li>
-                <li data-tone="passed">passed gate</li>
-                <li data-tone="failed">failed</li>
-                <li data-tone="infra">our failure, not billed</li>
-              </ul>
-            </section>
-            <NowRunning live={live} nowMs={nowMs} onOpen={openTrial} />
+            ))}
           </div>
-          <div className={styles.right}>
-            <AgentsPanel
+        ) : null}
+
+        <aside className={styles.mRail}>
+          <PhaseRail live={live} nowMs={nowMs} />
+        </aside>
+
+        <main className={styles.mCenter}>
+          <PhaseStage live={live} nowMs={nowMs} ended={ended} onOpenTrial={openTrial} />
+          {live.state === "failed" || live.state === "cancelled" ? (
+            <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
+          ) : null}
+        </main>
+
+        <aside className={styles.mSide} aria-label="Run details">
+          <nav className={styles.mSideNav} aria-label="Jump to">
+            <a href="#feed-h">Log</a>
+            <a href="#matrix-h">Trials</a>
+            <a href="#agents-h">Agents</a>
+          </nav>
+          <ActivityFeed
+            live={live}
+            state={feed}
+            onState={(s) => {
+              setFocusSeq(null);
+              setFeed(s);
+            }}
+            focusSeq={focusSeq}
+            onOpenSource={openSource}
+            onClearFocus={() => setFocusSeq(null)}
+          />
+          <section className={styles.panel} aria-labelledby="matrix-h">
+            <header className={styles.panelHead}>
+              <h2 id="matrix-h" className={styles.panelTitle}>
+                Trials
+              </h2>
+              <span className={styles.panelMeta}>
+                {live.contenders.length} setups × {live.workloads.length} tasks × {live.repeats}{" "}
+                runs
+              </span>
+            </header>
+            <div className={styles.counters}>
+              {chip("all", "trials done", counts.done, `/${counts.total}`)}
+              {chip("active", "running now", counts.running)}
+              {chip("passed", "passed gate", counts.passed)}
+              {chip("failed", "failed", counts.failed)}
+              {chip("infra", "our failures, not billed", counts.infra)}
+            </div>
+            <TrialMatrix
               live={live}
-              nowMs={nowMs}
-              selectedId={drawer?.kind === "agent" ? drawer.id : null}
-              onOpen={openAgent}
+              filter={filter}
+              selectedId={drawer?.kind === "trial" ? drawer.id : null}
+              onOpen={openTrial}
             />
-            <ActivityFeed
-              live={live}
-              state={feed}
-              onState={(s) => {
-                setFocusSeq(null);
-                setFeed(s);
-              }}
-              focusSeq={focusSeq}
-              onOpenSource={openSource}
-              onClearFocus={() => setFocusSeq(null)}
-            />
-          </div>
-        </div>
+            <ul className={styles.legend} aria-label="Legend">
+              <li data-tone="queued">queued</li>
+              <li data-tone="active">running</li>
+              <li data-tone="passed">passed gate</li>
+              <li data-tone="failed">failed</li>
+              <li data-tone="infra">our failure, not billed</li>
+            </ul>
+          </section>
+          <AgentsPanel
+            live={live}
+            nowMs={nowMs}
+            selectedId={drawer?.kind === "agent" ? drawer.id : null}
+            onOpen={openAgent}
+          />
+        </aside>
       </div>
 
       {drawerTrial ? (
