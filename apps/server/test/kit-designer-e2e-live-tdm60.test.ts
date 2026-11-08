@@ -92,6 +92,9 @@ describe.skipIf(!available)(`kit designer end to end on Naïve: ${REPO} (TDM-60)
       const concurrency = Number(process.env.TDM60_E2E_PROOF_CONCURRENCY ?? "3");
       const job = createRunAdvanceJob({
         jobs: () => queue,
+        // No run.notify: the fresh test DB has no graphile_worker schema, so enqueueing the
+        // needs_human email threw, rolled the hold back and re-ran env build in a loop.
+        onStateChange: () => null,
         pipeline: (c) => ({
           ...defaultPipeline(c),
           prove: proofStage({
