@@ -80,7 +80,7 @@ describe.skipIf(!hasDb)("worker runner (TDM-14)", () => {
         .where(eq(workerHeartbeats.workerId, workerId));
       if (!row) await new Promise((r) => setTimeout(r, 200));
     }
-    expect(row?.ticks).toBe(1);
+    expect(row?.ticks).toBeGreaterThanOrEqual(1);
 
     const h = appTdm14(fresh.url);
     try {

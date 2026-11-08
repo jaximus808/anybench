@@ -596,7 +596,8 @@ describe("a trial on the host with a fake claude", () => {
     const noHome = await runTrial(kit, await fakeClaude(), { evalHome: false });
     expect(noHome.code).toBe(1);
     expect(await readOut(noHome, P.error)).toMatch(/set ANYBENCH_EVAL_HOME to a scratch HOME/);
-  });
+    // eight trials in one test: ~3 s alone, past the 30 s default under parallel CI load
+  }, 120_000);
 });
 
 describe("kits/tandem-vs-claude-code contenders A and B through the stub", () => {

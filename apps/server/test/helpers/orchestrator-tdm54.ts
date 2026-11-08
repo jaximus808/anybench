@@ -172,7 +172,9 @@ export function workerTdm54(
     provider: () => fake,
     source: (c) => kitTrialSource(c.db),
     naiveProxy: () => proxy,
-    timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 2_000, startTimeoutMs: 2_000 },
+    // Generous windows: under CI load a 2 s start window let a slow first poll look like a dead
+    // runner, retrying the trial (attempt 2) and failing the "each trial ran once" checks.
+    timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 5_000, startTimeoutMs: 10_000 },
   });
   for (const j of [runAdvance, trialExecute, testGateJobTdm54()]) handlers.set(j.name, j as JobDef);
   return { id, ctx, handlers, abort: new AbortController() };
