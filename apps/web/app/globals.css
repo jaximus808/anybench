@@ -1,45 +1,60 @@
-/* Anybench design tokens (TDM-98), copied from docs/design/anybench-product-page.html.
-   Every page and component styles itself with these CSS variables. The three font
-   variables (--font-display / --font-body / --font-mono) come from next/font in
-   app/layout.tsx; --display / --body / --mono add the fallback stacks. */
+/* Anybench design tokens: the "instrument" system (docs/design/design-system.md).
+   Dark-first: near-black graphite, one amber "phosphor" accent, and colour that only ever means
+   state (pass, fail, running, queued, infra). Light is a warm paper variant for reading pages.
+   Fonts come from next/font in app/layout.tsx: --font-display (Newsreader),
+   --font-body (Geist), --font-mono (Geist Mono). */
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --fg: #161a24;
-  --muted: #586074;
-  --line: #dde1ea;
-  --line-strong: #c4cad8;
-  --on-accent: #ffffff;
-  --bad: #b4232f;
-  --accent: #2443b0;
-  --accent-soft: #e7ecfb;
-  --ok: #1d7a4a;
-  --ok-soft: #e3f3ea;
-  --warn: #9a5b00;
-  --warn-soft: #fbf0dc;
-  --code-bg: #11151f;
-  --code-fg: #dfe5f2;
-  --code-dim: #8892a8;
-  --code-acc: #9db4ff;
-  --code-ok: #7fd6a4;
-  --display: var(--font-display, "Bricolage Grotesque"), ui-sans-serif, system-ui, sans-serif;
-  --body: var(--font-body, "Source Serif 4"), Georgia, serif;
-  --mono: var(--font-mono, "JetBrains Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Dark (default) */
+  --bg: #0a0c09;
+  --surface: #10130e;
+  --surface-2: #161a13;
+  --fg: #eceee4;
+  --muted: #8b9282;
+  --dim: #5e6557;
+  --line: #23281f;
+  --line-strong: #353c2e;
+  --accent: #ff7a1a;
+  --accent-ink: #ff9447;
+  --accent-soft: rgba(255, 122, 26, 0.12);
+  --on-accent: #1a1206;
+  --pass: #7bd88f;
+  --pass-soft: rgba(123, 216, 143, 0.13);
+  --fail: #ff6b5a;
+  --fail-soft: rgba(255, 107, 90, 0.13);
+  --queued: #262b22;
+  --infra: #4a5143;
+  /* No glows anywhere: kept as a no-op for components that still reference it. */
+  --glow: none;
+  /* Aliases kept for older components */
+  --ok: var(--pass);
+  --ok-soft: var(--pass-soft);
+  --bad: var(--fail);
+  --warn: var(--accent-ink);
+  --warn-soft: var(--accent-soft);
+  --code-bg: #060705;
+  --code-fg: #dfe3d6;
+  --code-dim: #6f7767;
+  --code-acc: #ff9447;
+  --code-ok: #7bd88f;
 
-  /* Type scale: a major third (1.25) on a 17px body. The top steps are fluid so
-     display type shrinks on phones without media queries. */
+  --display: var(--font-display, "Newsreader"), Georgia, "Times New Roman", serif;
+  --body: var(--font-body, "Geist"), ui-sans-serif, system-ui, sans-serif;
+  --mono: var(--font-mono, "Geist Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type scale on a 16px body; the top steps are fluid. */
+  --text-2xs: 0.6875rem; /* 11px: tile labels, axis */
   --text-xs: 0.8125rem; /* 13px: captions, legal */
-  --text-sm: 0.9375rem; /* 15px: UI, nav, secondary */
-  --text-base: 1.0625rem; /* 17px: body */
-  --text-md: 1.3125rem; /* 21px: lede */
-  --text-lg: 1.625rem; /* 26px: h3 */
-  --text-xl: clamp(1.625rem, 1.2rem + 1.8vw, 2.0625rem); /* 26 → 33px: h2 */
-  --text-2xl: clamp(2.125rem, 1.4rem + 3.2vw, 3.25rem); /* 34 → 52px: h1 */
-  --text-3xl: clamp(2.5rem, 1.3rem + 5.6vw, 4.875rem); /* 40 → 78px: hero */
-  --leading-tight: 1.08;
-  --leading-snug: 1.25;
-  --leading-body: 1.62;
-  --tracking-display: -0.025em;
+  --text-sm: 0.9375rem; /* 15px: UI, nav */
+  --text-base: 1rem; /* 16px: body */
+  --text-md: 1.25rem; /* 20px: lede */
+  --text-lg: 1.5rem; /* 24px: h3 */
+  --text-xl: clamp(1.75rem, 1.2rem + 2.2vw, 2.75rem); /* 28 → 44px: h2 */
+  --text-2xl: clamp(2.25rem, 1.3rem + 4vw, 4rem); /* 36 → 64px: h1 */
+  --text-3xl: clamp(2.75rem, 0.9rem + 8.2vw, 8.25rem); /* 44 → 132px: hero */
+  --leading-tight: 0.92;
+  --leading-snug: 1.15;
+  --leading-body: 1.6;
+  --tracking-display: -0.03em;
 
   /* Spacing scale (4px base). */
   --space-1: 0.25rem;
@@ -54,65 +69,97 @@
   --space-10: 8rem;
 
   /* Layout */
-  --wrap: 1080px;
+  --wrap: 1240px;
   --column: 860px;
-  --measure: 66ch;
+  --measure: 64ch;
   --gutter: max(16px, env(safe-area-inset-left, 0px));
-  --header-h: 64px;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  --header-h: 60px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
   --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
 
+  color-scheme: dark;
+}
+
+/* Light: warm paper, for people who ask for it. The landing page and the live run page stay
+   dark (.instrument), because they are screens, not documents. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f1ea;
+    --surface: #fbfaf6;
+    --surface-2: #ebe8de;
+    --fg: #16170f;
+    --muted: #5d6052;
+    --dim: #8a8c7e;
+    --line: #dad5c8;
+    --line-strong: #c2bcac;
+    --accent: #ff7a1a;
+    --accent-ink: #b84d00;
+    --accent-soft: rgba(255, 122, 26, 0.12);
+    --on-accent: #1a1206;
+    --pass: #1e7a43;
+    --pass-soft: rgba(30, 122, 67, 0.1);
+    --fail: #c2321f;
+    --fail-soft: rgba(194, 50, 31, 0.09);
+    --queued: #e3dfd3;
+    --infra: #b2ad9e;
+    --code-bg: #12140f;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f1ea;
+  --surface: #fbfaf6;
+  --surface-2: #ebe8de;
+  --fg: #16170f;
+  --muted: #5d6052;
+  --dim: #8a8c7e;
+  --line: #dad5c8;
+  --line-strong: #c2bcac;
+  --accent: #ff7a1a;
+  --accent-ink: #b84d00;
+  --accent-soft: rgba(255, 122, 26, 0.12);
+  --on-accent: #1a1206;
+  --pass: #1e7a43;
+  --pass-soft: rgba(30, 122, 67, 0.1);
+  --fail: #c2321f;
+  --fail-soft: rgba(194, 50, 31, 0.09);
+  --queued: #e3dfd3;
+  --infra: #b2ad9e;
+  --code-bg: #12140f;
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f121a;
-    --surface: #161b26;
-    --fg: #e6e9f1;
-    --muted: #9aa3b8;
-    --line: #2a3142;
-    --line-strong: #3b4459;
-    --on-accent: #0f121a;
-    --bad: #ff8a8a;
-    --accent: #8ea6ff;
-    --accent-soft: #1c2440;
-    --ok: #6fd19b;
-    --ok-soft: #14291f;
-    --warn: #f0b357;
-    --warn-soft: #2e2412;
-    --code-bg: #0a0d14;
-    --code-fg: #dfe5f2;
-    --code-dim: #7d879c;
-    --code-acc: #9db4ff;
-    --code-ok: #7fd6a4;
-    color-scheme: dark;
-  }
+/* Force the dark instrument palette on a subtree, whatever the system theme. A page whose main
+   content is an instrument (landing, live runs) darkens the whole body, header and footer too. */
+.instrument,
+body:has(main .instrument) {
+  --bg: #0a0c09;
+  --surface: #10130e;
+  --surface-2: #161a13;
+  --fg: #eceee4;
+  --muted: #8b9282;
+  --dim: #5e6557;
+  --line: #23281f;
+  --line-strong: #353c2e;
+  --accent-ink: #ff9447;
+  --accent-soft: rgba(255, 122, 26, 0.12);
+  --pass: #7bd88f;
+  --pass-soft: rgba(123, 216, 143, 0.13);
+  --fail: #ff6b5a;
+  --fail-soft: rgba(255, 107, 90, 0.13);
+  --queued: #262b22;
+  --infra: #4a5143;
+  --code-bg: #060705;
+  color-scheme: dark;
+  color: var(--fg);
 }
 
-:root[data-theme="dark"] {
-  --bg: #0f121a;
-  --surface: #161b26;
-  --fg: #e6e9f1;
-  --muted: #9aa3b8;
-  --line: #2a3142;
-  --line-strong: #3b4459;
-  --on-accent: #0f121a;
-  --bad: #ff8a8a;
-  --accent: #8ea6ff;
-  --accent-soft: #1c2440;
-  --ok: #6fd19b;
-  --ok-soft: #14291f;
-  --warn: #f0b357;
-  --warn-soft: #2e2412;
-  --code-bg: #0a0d14;
-  --code-fg: #dfe5f2;
-  --code-dim: #7d879c;
-  --code-acc: #9db4ff;
-  --code-ok: #7fd6a4;
-  color-scheme: dark;
+/* Pages that are screens (landing, live runs) paint the whole canvas dark, so the sticky
+   header's translucency never shows the light body behind it. */
+body:has(main .instrument) {
+  background: var(--bg);
 }
 
 /* Base */
@@ -122,11 +169,16 @@
   box-sizing: border-box;
 }
 html {
+  /* Animated, off-canvas decoration must never create sideways scroll; and reserve the
+     scrollbar's gutter so live pages don't shift when their height changes. */
+  overflow-x: clip;
+  scrollbar-gutter: stable;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   scroll-padding-top: calc(var(--header-h) + var(--space-4));
 }
 body {
+  overflow-x: clip;
   margin: 0;
   min-height: 100dvh;
   display: flex;
@@ -154,18 +206,21 @@ h4 {
 }
 h1 {
   font-size: var(--text-2xl);
-  font-weight: 700;
+  font-weight: 400;
   line-height: var(--leading-tight);
   letter-spacing: var(--tracking-display);
 }
 h2 {
   font-size: var(--text-xl);
-  font-weight: 700;
-  letter-spacing: -0.015em;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
 }
 h3 {
+  font-family: var(--body);
   font-size: var(--text-md);
-  font-weight: 700;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 p {
   margin: 0;
@@ -173,7 +228,7 @@ p {
   text-wrap: pretty;
 }
 a {
-  color: var(--accent);
+  color: var(--accent-ink);
   text-underline-offset: 0.18em;
   text-decoration-thickness: 1px;
 }
@@ -184,7 +239,7 @@ pre {
 }
 code {
   font-size: 0.86em;
-  background: var(--accent-soft);
+  background: var(--surface-2);
   padding: 0.08em 0.35em;
   border-radius: 4px;
 }
@@ -194,8 +249,8 @@ svg {
   max-width: 100%;
 }
 ::selection {
-  background: var(--accent-soft);
-  color: var(--fg);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -242,8 +297,8 @@ svg {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-5);
-  font-family: var(--display);
-  font-weight: 700;
+  font-family: var(--body);
+  font-weight: 500;
   font-size: var(--text-sm);
   line-height: 1;
   white-space: nowrap;
@@ -258,6 +313,21 @@ svg {
   background: transparent;
   color: var(--fg);
   border-color: var(--line-strong);
+}
+.btn-quiet:hover {
+  box-shadow: none;
+  border-color: var(--fg);
+}
+.eyebrow {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
 }
 .visually-hidden {
   position: absolute;

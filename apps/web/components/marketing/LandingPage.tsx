@@ -8,22 +8,30 @@ import { ProductTour } from "./ProductTour";
 import { ProjectKinds } from "./ProjectKinds";
 import { ScanExample } from "./ScanExample";
 import { Velocitty } from "./Velocitty";
+import { WatchLive } from "./WatchLive";
 import { WhyDifferent } from "./WhyDifferent";
 
-/** The marketing landing page at `/` (TDM-99). Static: no API calls. */
+/**
+ * The marketing landing page at `/` (TDM-99, redesigned). Always dark (.instrument): the hero
+ * is a live screen, not a document. Static except the hero's simulated run, which plays in
+ * the browser with no network calls.
+ */
 export function LandingPage() {
   return (
-    <div className={styles.page}>
+    <div className={`instrument ${styles.landing}`}>
       <Hero />
-      <HowItWorks />
-      <ProjectKinds />
-      <ProductTour />
-      <Velocitty />
-      <ClaudeCodeSession />
-      <ScanExample />
-      <WhyDifferent />
-      <Pricing />
-      <Company />
+      <div className={styles.page}>
+        <HowItWorks />
+        <Velocitty />
+        <WatchLive />
+        <ProductTour />
+        <ProjectKinds />
+        <ClaudeCodeSession />
+        <ScanExample />
+        <WhyDifferent />
+        <Pricing />
+        <Company />
+      </div>
     </div>
   );
 }

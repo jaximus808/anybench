@@ -2,6 +2,7 @@
 // Sticky, translucent site header with a mobile menu (TDM-98). Signed-out state only;
 // the signed-in variant arrives with the auth UI.
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useId, useState } from "react";
 import { Mark } from "./Mark";
 import { NAV_LINKS, SIGN_IN_LINK } from "./nav";
@@ -12,6 +13,9 @@ export { NAV_LINKS } from "./nav";
 export function Header() {
   const [open, setOpen] = useState(false);
   const menuId = useId();
+  const pathname = usePathname() ?? "/";
+  // The landing page and live runs are always dark (screens, not documents); match them.
+  const instrument = pathname === "/" || pathname.startsWith("/runs");
 
   useEffect(() => {
     if (!open) return;
@@ -31,7 +35,10 @@ export function Header() {
   const close = () => setOpen(false);
 
   return (
-    <header className={styles.header} data-open={open || undefined}>
+    <header
+      className={`${styles.header}${instrument ? " instrument" : ""}`}
+      data-open={open || undefined}
+    >
       <nav className={`wrap ${styles.bar}`} aria-label="Main">
         <Link href="/" className={styles.brand} onClick={close}>
           <Mark />

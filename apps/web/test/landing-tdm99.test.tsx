@@ -16,9 +16,10 @@ afterEach(() => {
 
 const SECTION_HEADINGS = [
   "Five steps from your repo to an answer",
-  "Three kinds of project, one way in",
-  "What using it looks like",
   "A faster number only counts if the screen is right",
+  "Watch every agent work, on one page",
+  "What using it looks like",
+  "Three kinds of project, one way in",
   "Or type /anybench in Claude Code",
   "Connect GitHub, and it proposes a benchmark for every repo",
   "It knows what to compare against, and it can't be gamed",
@@ -69,31 +70,27 @@ describe("landing page (TDM-99)", () => {
       expect(container.querySelector(`#${id}`)?.tagName).toBe("SECTION");
   });
 
-  it("states the founder's cost-plus pricing, with the cancel and pipeline-failure rules", () => {
+  it("states the founder's pricing simply, with the cancel and pipeline-failure rules", () => {
     render(<HomePage />);
     const pricing = screen.getByRole("region", { name: "Pay for what runs" });
     const text = pricing.textContent ?? "";
     expect(text).toContain("$2per benchmark run");
-    expect(text).toContain(
-      "Plus computer time at Naïve's cost + 50%, plus model tokens on your own key.",
-    );
-    expect(text).toContain(
-      "Naïve's cost + 50%: about $0.0756 per vCPU-hour + $0.0243 per GiB-hour, billed in 10-minute blocks.",
-    );
+    expect(text).toContain("Plus computer time and model tokens on your own key.");
     expect(text).toContain("If our infrastructure or pipeline fails the run, nothing is billed.");
     expect(text).toContain("If you cancel mid-run, you pay for the compute used, but no run fee.");
     expect(text).toContain("$5 free credit when you sign up");
     expect(text).toContain("Billed monthly by usage, to the card on file.");
-    expect(text).toContain(
-      "estimate60 trials × ~30 min on 4 vCPU / 8 GiB ≈ $15 compute + $2 run fee ≈ $17, plus your tokens.",
-    );
+    expect(text).toContain("about $17, plus your tokens");
+    // No provider cost or per-unit rates on the page.
+    expect(text).not.toMatch(/Naïve's cost|per vCPU-hour|per GiB-hour|\+ 50%/);
   });
 
   it("uses one cost and duration model everywhere ($17 for 60 trials, about 2 h)", () => {
     const { container } = render(<HomePage />);
     const text = container.textContent ?? "";
-    // Pricing estimate, the Test plan screen and the /anybench transcript.
-    expect(text.match(/≈ \$15 compute \+ \$2 run fee ≈ \$17/g)).toHaveLength(3);
+    // The Test plan screen and the /anybench transcript.
+    expect(text.match(/≈ \$15 compute \+ \$2 run fee ≈ \$17/g)).toHaveLength(2);
+    expect(text).toContain("about $17, plus your");
     expect(text).toContain("about 2 h, 14 at a time");
     expect(text).not.toMatch(/\$19|40 min|\$40–120|\$0\.08 per vCPU/);
     expect(text).toContain("$1.58 tokens");
@@ -141,7 +138,7 @@ describe("landing page (TDM-99)", () => {
     const text = container.textContent ?? "";
     expect(text).not.toMatch(/points above|% faster|Human minutes/);
     expect(text).not.toMatch(/score for each contender/i);
-    expect(text).toContain("a verdict on each comparison and the reasons behind it");
+    expect(text.toLowerCase()).toContain("a verdict on each comparison and the reasons behind it");
     expect(metadata.description).toContain(
       "a verdict on each comparison and the reasons behind it",
     );

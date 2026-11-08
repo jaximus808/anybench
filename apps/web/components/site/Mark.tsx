@@ -1,9 +1,24 @@
-/** The Anybench mark: two bars, the taller one in the accent colour. */
-export function Mark({ size = 26 }: { size?: number }) {
+/**
+ * The Anybench mark: a 3×3 trial grid. Seven cells passed, one failed its gate, one is still
+ * running (the amber one). It is the product in nine pixels.
+ */
+const CELLS = ["p", "p", "f", "p", "r", "p", "p", "p", "p"] as const;
+const FILL = { p: "var(--fg)", f: "var(--line-strong)", r: "var(--accent)" } as const;
+
+export function Mark({ size = 22 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 26 26" aria-hidden="true">
-      <rect x="3" y="9" width="8" height="14" rx="2" fill="var(--line-strong)" />
-      <rect x="15" y="3" width="8" height="20" rx="2" fill="var(--accent)" />
+    <svg width={size} height={size} viewBox="0 0 22 22" aria-hidden="true">
+      {CELLS.map((c, i) => (
+        <rect
+          key={i}
+          x={(i % 3) * 7 + 1}
+          y={Math.floor(i / 3) * 7 + 1}
+          width="6"
+          height="6"
+          rx="1"
+          fill={FILL[c]}
+        />
+      ))}
     </svg>
   );
 }
