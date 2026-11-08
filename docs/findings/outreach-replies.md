@@ -2,7 +2,7 @@
 
 What shipped: `anybench outreach poll` (alias `replies`) and `anybench outreach stats`.
 Code: `packages/outreach/src/{replies,stats}.ts`, the account manager role in
-`packages/agents/account-manager/`, migration `0007_outreach_replies`.
+`packages/agents/account-manager/`, migration `0008_outreach_replies`.
 
 **The poller never sends or answers anything.** Interested, question and unclear replies get
 `needs_founder = true`, and the founder answers them by hand. The only outbound call is the
@@ -11,7 +11,7 @@ turns it off).
 
 ## Live check (read-only, our own inbox)
 
-The DB was a scratch copy: `anybench_tdm167_evidence` on the local dev Postgres, migrated to 0007,
+The DB was a scratch copy: `anybench_tdm167_evidence` on the local dev Postgres, migrated with this branch's migrations (outreach_replies was 0007 then; it is 0008 after rebasing on main's 0007_trial_proxy_key),
 with the dev DB's `leads`/`outreach_messages`/`suppressions` rows copied in via `pg_dump --data-only`.
 `.env` was loaded with `node --env-file`, which prints nothing.
 

@@ -1,4 +1,4 @@
-// TDM-167 [15.8a]: reply polling against real Postgres (migration 0007 outreach_replies):
+// TDM-167 [15.8a]: reply polling against real Postgres (migration 0008 outreach_replies):
 // suppression lands in the same statement as the reply, PgLeadStore then reports the address as
 // suppressed, re-polls are idempotent, `unsubscribed` is sticky, and the funnel counts rows.
 import {
