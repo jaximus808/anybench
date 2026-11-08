@@ -1,0 +1,4 @@
+{
+  "functions": { "api/app.ts": { "maxDuration": 800 } },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/app?__path=/$1" }]
+}
