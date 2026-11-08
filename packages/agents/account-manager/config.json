@@ -1,5 +1,5 @@
 {
-  "role": "account_manager",
+  "role": "account-manager",
   "model": "deepseek/deepseek-v4-flash-0731",
   "harness": "pi",
   "window": "immediate",

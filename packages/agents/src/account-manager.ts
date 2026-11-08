@@ -19,7 +19,7 @@ import {
 } from "@anybench/naive";
 import { z } from "zod";
 
-export const ACCOUNT_MANAGER_ROLE = "account_manager";
+export const ACCOUNT_MANAGER_ROLE = "account-manager";
 
 export const ACCOUNT_MANAGER_CATEGORIES = [
   "interested",
