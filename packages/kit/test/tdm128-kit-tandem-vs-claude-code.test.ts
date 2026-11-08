@@ -1,5 +1,7 @@
 // TDM-128 [14.2]: kits/tandem-vs-claude-code validates against KitSpecSchema, every path it
 // names exists, and its hidden tests (42) stay outside the starting repos.
+// TDM-184 [16.13] phase 1: it passes the comparability rules (TDM-178 [16.7]) and its gates use the
+// gate runner's calling convention (TDM-51 [5.6]); see tdm184-kit-v2.test.ts.
 // The executable proof (oracle 100%, do-nothing 0%) is kits/tandem-vs-claude-code/scripts/verify-proof.sh.
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -40,25 +42,14 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
     expect(loadKitTdm128().schema_version).toBe(2);
   });
 
-  // TDM-178 [16.7]: the schema accepts the kit, but the setups are not comparable yet (unpinned
-  // model, claude-code@latest, ref main, 8M vs 5M token caps, reviewer only for Tandem, A still
-  // has the `Agent` tool). TDM-184 [16.13] fixes the kit; then this flips to ok.
-  it("fails the comparability rules until TDM-184 [16.13] pins it", async () => {
+  // TDM-178 [16.7] refused the kit until TDM-184 [16.13] pinned it: now it validates cleanly.
+  it("passes validateKitDir with no errors (comparable setups)", async () => {
     const r = await validateKitDir(KIT_DIR_TDM128);
-    expect(r.ok).toBe(false);
-    expect([...new Set(r.errors.map((e) => e.code))].sort()).toEqual([
-      "assist_unequal",
-      "caps_unequal",
-      "model_unpinned",
-      "ref_unpinned",
-      "subagents_not_disabled",
-      "version_unpinned",
-    ]);
-    // Every error is a comparability error: the files and the schema are fine.
-    expect(r.errors.filter((e) => e.code === "schema" || e.code === "missing_file")).toEqual([]);
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
   });
 
-  it("declares A solo, B subagents, and Tandem varied to ×3 (C) and ×5 (D)", () => {
+  it("declares A solo, B subagents, and Tandem varied to ×1 (C), ×3 (D) and ×5 (E)", () => {
     const kit = loadKitTdm128();
     expect(kit.subject.kind).toBe("harness");
     expect(kit.contenders.map((c) => [c.id, c.role, c.driver.type])).toEqual([
@@ -66,18 +57,19 @@ describe("kits/tandem-vs-claude-code anybench.yaml", () => {
       ["claude-code-subagents", "competitor", "coding-agent"],
       ["tandem", "subject", "harness"],
     ]);
-    expect(kit.vary).toEqual({ TANDEM_WORKERS: [3, 5] });
+    expect(kit.vary).toEqual({ TANDEM_WORKERS: [1, 3, 5] });
     const tandem = kit.contenders.find((c) => c.id === "tandem")!;
     expect(tandem.driver.env).toHaveProperty("TANDEM_WORKERS");
-    // A has subagents disabled; B ships its subagent definitions.
-    expect(kit.contenders[0]!.driver.env).toMatchObject({ CC_DISALLOWED_TOOLS: "Task" });
+    // A has subagents disabled under both of Claude Code's names; B ships its subagent definitions.
+    expect(kit.contenders[0]!.driver.env).toMatchObject({ CC_DISALLOWED_TOOLS: "Task Agent" });
     expect(kit.contenders[1]!.source).toEqual({
       upload: [
         "adapters/claude-code-subagents/CLAUDE.md",
         "adapters/claude-code-subagents/.claude/",
       ],
     });
-    expect(kit.human_in_loop).toEqual({ kind: "tandem", policy: "llm-reviewer" });
+    // No assist only Tandem gets: approvals are automatic.
+    expect(kit.human_in_loop).toEqual({ kind: "tandem", policy: "auto" });
   });
 
   it("has the three workloads, gated measured requirements and a reviewed rubric, weights 100", () => {
@@ -208,10 +200,11 @@ describe("kits/tandem-vs-claude-code hidden tests and oracles", () => {
     },
   );
 
-  it("bug-hunt documents where its grader came from", () => {
+  it("bug-hunt documents where its grader came from: a planted bug, synthetic history", () => {
     const prov = readFileSync(join(KIT_DIR_TDM128, "workloads/bug-hunt/PROVENANCE.md"), "utf8");
-    expect(prov).toMatch(/reverted/);
+    expect(prov).toMatch(/planted bug with synthetic history/);
     expect(prov).toMatch(/csv-quoting\.test\.ts/);
+    expect(loadKitTdm128().workloads.find((w) => w.id === "bug-hunt")!.title).toMatch(/planted/);
   });
 
   it("carries no secret values", () => {

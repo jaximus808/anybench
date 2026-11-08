@@ -1,4 +1,4 @@
-# Kit: does Tandem with 3 or 5 workers beat plain Claude Code, solo or with subagents?
+# Kit: does Tandem with 1, 3 or 5 workers beat plain Claude Code, solo or with subagents?
 # The acceptance kit for Anybench (plan.md E14, ticket 14.2). Validated by KitSpecSchema
 # (packages/core) in packages/kit/test/tdm128-kit-tandem-vs-claude-code.test.ts.
 # Proof: scripts/verify-proof.sh, results in PROOF.md.
@@ -9,7 +9,7 @@ subject:
   name: tandem
   summary: >-
     Tandem is a shared task board where a planner splits work into tickets and N Claude Code
-    workers claim them, with approvals. This kit compares Tandem with 3 and 5 workers against plain
+    workers claim them, with approvals. This kit compares Tandem with 1, 3 and 5 workers against plain
     Claude Code working alone and Claude Code with subagents, on three coding tasks graded by
     hidden tests.
   better_means:
@@ -19,7 +19,13 @@ subject:
     - the API it builds is faster under load
     - the code it leaves is easier to maintain
 
-# Interleave order: A B C D (C and D are the two `vary` setups of `tandem`).
+# Setups: A B C D E (C, D and E are the three `vary` setups of `tandem`). The order rotates per
+# round from schedule.order_seed.
+#
+# Comparable setups (plan.md 17.2 rule 4, enforced by validateKitDir): every contender runs the
+# same pinned model (driver.model, passed to Claude Code as CC_MODEL), the same pinned Claude Code
+# (versions.CLAUDE_CODE_VERSION, also the install scripts' default), the same caps, and no assist
+# that only one of them gets (approvals are automatic: human_in_loop.policy auto).
 contenders:
   - id: claude-code-solo
     name: "A · Claude Code solo"
@@ -35,10 +41,14 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      token_cap: 5000000
+      model: claude-opus-4-5-20251101
+      token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-solo
-        CC_DISALLOWED_TOOLS: Task
+        CC_MODEL: claude-opus-4-5-20251101
+        # Claude Code calls its subagent tool Task in older versions and Agent in newer ones.
+        CC_DISALLOWED_TOOLS: "Task Agent"
+    versions: { CLAUDE_CODE_VERSION: "2.1.311" }
     found_by: "researcher: the plain default (subagents removed)"
 
   - id: claude-code-subagents
@@ -57,17 +67,21 @@ contenders:
       verbs:
         run: adapters/claude-code/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      token_cap: 5000000
+      model: claude-opus-4-5-20251101
+      token_cap_tokens: 8000000
       env:
         CC_SETUP: claude-code-subagents
+        CC_MODEL: claude-opus-4-5-20251101
+    versions: { CLAUDE_CODE_VERSION: "2.1.311" }
     found_by: "user: the setup Tandem has to beat"
 
   - id: tandem
-    name: "Tandem (C ×3, D ×5)"
+    name: "Tandem (C ×1, D ×3, E ×5)"
     role: subject
+    # v0.2.0 = mcp-v3.2.0 = main on 2026-11-07 (git ls-remote https://github.com/jaximus808/tandem).
     source:
       github: jaximus808/tandem
-      ref: main
+      ref: 05b4a022651f4823dbe00e2748df5862d9c32164
     install:
       script: adapters/tandem/install.sh
       healthcheck: adapters/tandem/healthcheck.sh
@@ -77,10 +91,14 @@ contenders:
       verbs:
         run: adapters/tandem/driver.sh run {task} {workspace}
       wall_clock_cap_s: 3600
-      token_cap: 8000000
+      model: claude-opus-4-5-20251101
+      token_cap_tokens: 8000000
       env:
         # Default for the key `vary` sets; only drivers that declare a vary key are expanded by it.
         TANDEM_WORKERS: "3"
+        CC_MODEL: claude-opus-4-5-20251101
+    version: tandem@0.2.0
+    versions: { CLAUDE_CODE_VERSION: "2.1.311", TANDEM_MCP_VERSION: "3.2.0" }
 
 workloads:
   - id: todo-api
@@ -91,7 +109,6 @@ workloads:
     timeout_s: 3600
     params:
       shape: splits-cleanly
-      suggested_tickets: 5
       hidden_tests: 16
       api_rps: 50
   - id: auth-refactor
@@ -105,13 +122,14 @@ workloads:
       coupled_files: 9
       hidden_tests: 14
   - id: bug-hunt
-    title: Fix the CSV bug from the reverted RFC 4180 commit
+    # A planted bug with synthetic history (workloads/bug-hunt/PROVENANCE.md), not mined history.
+    title: Fix a planted CSV quoting bug (RFC 4180)
     input: workloads/bug-hunt/input/
     instruction: workloads/bug-hunt/instruction.md
     setup: workloads/bug-hunt/setup.sh
     timeout_s: 2400
     params:
-      shape: from-a-reverted-commit
+      shape: planted-bug
       hidden_tests: 12
 
 # Collectors are omitted on purpose: each driver type gets its defaults (DRIVER_DEFAULT_COLLECTORS),
@@ -201,14 +219,16 @@ proof:
       CLAUDE_MD_OVERLAY: proof/regression/skip-tests/CLAUDE.md
     description: A CLAUDE.md that says "skip the tests"; must score lower than setup A.
 
-# Each value is one setup: C = TANDEM_WORKERS=3, D = TANDEM_WORKERS=5.
+# Each value is one setup: C = TANDEM_WORKERS=1, D = TANDEM_WORKERS=3, E = TANDEM_WORKERS=5.
+# ×1 separates what the board itself adds from what parallel workers add.
 vary:
-  TANDEM_WORKERS: [3, 5]
+  TANDEM_WORKERS: [1, 3, 5]
 
 human_in_loop:
   kind: tandem
-  # A reviewer agent on a different model plays the human; it sees the task, not the hidden tests.
-  policy: llm-reviewer
+  # Approvals are automatic. An llm-reviewer would be help only Tandem gets (A and B have no
+  # approval step), which the comparability rules refuse unless every contender gets it.
+  policy: auto
 
 secrets: [ANTHROPIC_API_KEY]
 
@@ -229,6 +249,10 @@ scoring:
     quality: 20
 
 repeats: 5
+
+schedule:
+  # Rotates the contender order per round (repeat × workload).
+  order_seed: 184
 
 env:
   profile: agent-cc

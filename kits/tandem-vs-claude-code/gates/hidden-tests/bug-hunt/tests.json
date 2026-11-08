@@ -1,6 +1,6 @@
 {
   "workload": "bug-hunt",
-  "source": "tests added by the reverted fix commit (see workloads/bug-hunt/PROVENANCE.md)",
+  "source": "the RFC 4180 tests removed when the bug was planted (synthetic history, see workloads/bug-hunt/PROVENANCE.md)",
   "tests": [
     {
       "file": "csv-quoting.test.ts",

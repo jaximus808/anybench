@@ -57,14 +57,6 @@ again and list their todos). Without `dataFile`, keep everything in memory.
 `GET /todos` and `POST /todos` should stay fast under load: we measure p95 latency at 50 requests/s.
 Avoid work per request that grows with the total number of todos in the store.
 
-## Suggested tickets
-
-The work splits into five mostly independent pieces:
-
-1. **Accounts**: `POST /auth/register`, `POST /auth/login`, scrypt hashing, token issue and lookup, a `requireUser` helper.
-2. **Todo CRUD**: `POST`, `GET /:id`, `PATCH`, `DELETE`, with per-user ownership.
-3. **Listing**: `GET /todos` with the `done` filter and cursor pagination.
-4. **Persistence**: the `dataFile` JSON store (atomic writes), loaded on startup.
-5. **Tests and validation**: the error body everywhere, input validation, and a test suite under `test/`.
+## Done
 
 Done means every route above behaves as written and `npm test` passes.

@@ -1,135 +1,253 @@
 #!/usr/bin/env node
-// Hidden-tests gate (L5) for tandem-vs-claude-code. Runs on the scoring computer only.
+// Hidden-tests gate (L5) for tandem-vs-claude-code. Runs on the scoring computer only, under the
+// gate runner's calling convention (packages/bench gate.ts, TDM-51):
 //
-//   node grade.mjs --workload <id> --workspace <frozen EVAL_WS> --out <dir>
+//   check.sh <frozen-out> <workload-id> <gate.json>
+//   → node grade.mjs --workload <id> --run-dir "$AB_RUN_DIR" --out <frozen-out> --verdict <gate.json>
 //
-// 1. Copies the frozen workspace to a fresh sandbox (the original is never modified) and drops
-//    any `.hidden-tests/` the contender may have planted.
-// 2. Copies gates/hidden-tests/<workload>/*.ts into <sandbox>/.hidden-tests/ and runs them with
-//    `node --test`, offline, with a scrubbed env (no secrets reach contender code).
-// 3. Scores every test listed in <workload>/tests.json. A test that never reported (crash,
-//    timeout, missing module) counts as failed, so a broken workspace can't shrink the total.
-// 4. Writes <out>/gate.json {pass, reason, evidence[]}, <out>/metrics.jsonl,
-//    <out>/hidden-tests.json (per-test results) and <out>/hidden-tests.log (spec output).
+// The check runs as its own uid. Contender code runs ONLY through "$AB_RUN" (another uid, clean
+// env), in "$AB_RUN_DIR", the contender's own writable copy of the outputs. So:
+// 1. BEFORE any contender code runs, replace <run-dir>/workspace/.hidden-tests/ (the contender may
+//    have planted a file, a symlink or decoy tests there) with gates/hidden-tests/<workload>/*.ts
+//    and the reporter, readable by the contender uid. Nothing is written into <run-dir> after that
+//    (contender code could plant symlinks there).
+// 2. Run `node --test` on them through "$AB_RUN", offline. The reporter's lines go to stdout, which
+//    this process redirects into <frozen-out>/ (its own private copy): the contender uid can't
+//    write there.
+// 3. Score every test listed in <workload>/tests.json. A test that never reported (crash, timeout,
+//    missing module) counts as failed, so a broken workspace can't shrink the total.
+// 4. Write the verdict {pass, reason, evidence[]} to <gate.json>, and <frozen-out>/hidden-tests.json
+//    (per-test results), hidden-tests.log (spec output) and hidden-tests.metrics.jsonl.
 //
-// The gate passes only when every hidden test passes. Exit 0 whenever a verdict was written;
-// exit 2 means the grader itself is broken (a kit failure, not a contender failure).
+// The gate passes only when every hidden test passes. Exit 0 whenever a verdict was written: once
+// the outputs are involved, whatever goes wrong is a FAIL verdict, never a verdict-less exit.
+// Exit 2 means the kit itself is broken (no tests for the workload, bad arguments).
+//
+// Known limit: the tests run in the same process as contender code, so that code could patch
+// node:assert or print fake reporter lines. Out-of-process hidden tests are [16.1] (TDM-172).
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  chmodSync,
+  closeSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export function gradeHiddenTests({ workload, workspace, out, timeoutS = 600 }) {
-  const testsDir = join(here, workload);
-  const manifestPath = join(testsDir, "tests.json");
-  if (!existsSync(manifestPath)) throw new Error(`no hidden tests for workload '${workload}'`);
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  if (!existsSync(workspace)) throw new Error(`workspace ${workspace} does not exist`);
-  mkdirSync(out, { recursive: true });
+/** A kit problem (exit 2), as opposed to a contender failure (a FAIL verdict). */
+export class KitError extends Error {}
 
-  const sandbox = mkdtempSync(join(tmpdir(), `hidden-${workload}-`));
+/** The tests.json manifest of a workload, or a KitError. */
+export function manifestOf(workload) {
+  const manifestPath = join(here, workload, "tests.json");
+  if (!existsSync(manifestPath)) throw new KitError(`no hidden tests for workload '${workload}'`);
+  return JSON.parse(readFileSync(manifestPath, "utf8"));
+}
+
+/** `<run-dir>/workspace`, or null when the outputs have none (or it is a symlink). */
+export function workspaceOf(runDir) {
+  const ws = join(runDir, "workspace");
   try {
-    cpSync(workspace, sandbox, {
-      recursive: true,
-      filter: (src) => !/(^|\/)(\.git|node_modules)(\/|$)/.test(src.slice(workspace.length)),
-    });
-    const hiddenDir = join(sandbox, ".hidden-tests");
-    rmSync(hiddenDir, { recursive: true, force: true });
-    mkdirSync(hiddenDir);
-    for (const f of readdirSync(testsDir)) {
-      if (f.endsWith(".ts")) cpSync(join(testsDir, f), join(hiddenDir, f));
-    }
+    const st = lstatSync(ws);
+    return st.isDirectory() && !st.isSymbolicLink() ? ws : null;
+  } catch {
+    return null;
+  }
+}
 
-    const files = [...new Set(manifest.tests.map((t) => t.file))].map((f) => join(".hidden-tests", f));
-    const rawPath = join(out, "hidden-tests.raw.jsonl");
-    const logPath = join(out, "hidden-tests.log");
-    const started = Date.now();
-    const proc = spawnSync(
-      process.execPath,
+function chmodReadable(p) {
+  const st = lstatSync(p);
+  if (st.isDirectory()) {
+    chmodSync(p, 0o755);
+    for (const f of readdirSync(p)) chmodReadable(join(p, f));
+  } else if (st.isFile()) {
+    chmodSync(p, 0o644);
+  }
+}
+
+/**
+ * Step 1: put the hidden tests, the reporter and `extra` kit files ({from, as}) into
+ * <ws>/.hidden-tests/. Call it before any contender code runs in <ws>.
+ */
+export function prepareHiddenTests({ workload, ws, extra = [] }) {
+  const testsDir = join(here, workload);
+  const hiddenDir = join(ws, ".hidden-tests");
+  // rmSync never follows a symlink: a planted link is removed, not its target.
+  rmSync(hiddenDir, { recursive: true, force: true });
+  mkdirSync(hiddenDir);
+  for (const f of readdirSync(testsDir)) {
+    if (f.endsWith(".ts")) cpSync(join(testsDir, f), join(hiddenDir, f));
+  }
+  cpSync(join(here, "reporter.mjs"), join(hiddenDir, "reporter.mjs"));
+  for (const { from, as } of extra) cpSync(from, join(hiddenDir, as));
+  // Kit files are readable by the check uid only; the contender uid must read the copies.
+  chmodReadable(hiddenDir);
+}
+
+/**
+ * Step 2 and 3: run the prepared hidden tests through `abRun` in <ws> and score them. Writes
+ * <out>/hidden-tests.json, hidden-tests.log and hidden-tests.metrics.jsonl. Returns the summary.
+ */
+export function runHiddenTests({ workload, ws, out, abRun, timeoutS = 600 }) {
+  const manifest = manifestOf(workload);
+  mkdirSync(out, { recursive: true });
+  const files = [...new Set(manifest.tests.map((t) => t.file))].map((f) => join(".hidden-tests", f));
+  const rawPath = join(out, "hidden-tests.raw.jsonl");
+  const logPath = join(out, "hidden-tests.log");
+  const rawFd = openSync(rawPath, "w");
+  const logFd = openSync(logPath, "w");
+  const started = Date.now();
+  let proc;
+  try {
+    proc = spawnSync(
+      abRun,
       [
+        "env",
+        "NODE_ENV=test",
+        "NO_COLOR=1",
+        // `timeout` runs as the contender uid too, so it can kill what the tests leave behind.
+        "timeout",
+        "-k",
+        "5",
+        String(timeoutS),
+        "node",
         "--test",
         "--test-timeout=30000",
-        `--test-reporter=${join(here, "reporter.mjs")}`,
-        `--test-reporter-destination=${rawPath}`,
+        `--test-reporter=${join(ws, ".hidden-tests", "reporter.mjs")}`,
+        "--test-reporter-destination=stdout",
         "--test-reporter=spec",
-        `--test-reporter-destination=${logPath}`,
+        "--test-reporter-destination=stderr",
         ...files,
       ],
       {
-        cwd: sandbox,
-        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: sandbox, TMPDIR: tmpdir(), NODE_ENV: "test", NO_COLOR: "1" },
-        encoding: "utf8",
-        timeout: timeoutS * 1000,
-        killSignal: "SIGKILL",
-        maxBuffer: 16 * 1024 * 1024,
+        cwd: ws,
+        stdio: ["ignore", rawFd, logFd],
+        // Backstop only: SIGTERM reaches `su`, which passes it on to the contender's processes.
+        timeout: (timeoutS + 30) * 1000,
+        killSignal: "SIGTERM",
       },
     );
-    const durationS = (Date.now() - started) / 1000;
-
-    const reported = new Map();
-    if (existsSync(rawPath)) {
-      for (const line of readFileSync(rawPath, "utf8").split("\n")) {
-        if (line.trim() === "") continue;
-        const r = JSON.parse(line);
-        const key = `${r.file === null ? "" : basename(r.file)}::${r.name}`;
-        // A failure wins over a pass for the same name (e.g. a retried or duplicated test).
-        if (reported.get(key)?.status !== "fail") reported.set(key, r);
-      }
-    }
-    const timedOut = proc.error?.code === "ETIMEDOUT" || proc.signal === "SIGKILL";
-    const tests = manifest.tests.map((t) => {
-      const r = reported.get(`${t.file}::${t.name}`);
-      if (r === undefined) {
-        return { file: t.file, name: t.name, status: "fail", error: timedOut ? "timed out" : "did not report (crashed or missing)" };
-      }
-      return { file: t.file, name: t.name, status: r.status, ...(r.error ? { error: r.error } : {}) };
-    });
-    const passed = tests.filter((t) => t.status === "pass").length;
-    const total = tests.length;
-    const summary = { workload, total, passed, failed: total - passed, duration_s: durationS, timed_out: timedOut, exit_code: proc.status, tests };
-    writeFileSync(join(out, "hidden-tests.json"), `${JSON.stringify(summary, null, 2)}\n`);
-
-    const failures = tests.filter((t) => t.status !== "pass");
-    const pass = passed === total && total > 0;
-    const reason = pass
-      ? `${passed}/${total} hidden tests passed`
-      : `${passed}/${total} hidden tests passed; first failure: ${failures[0].file} › ${failures[0].name}: ${failures[0].error ?? "failed"}`.slice(0, 1000);
-    const gate = { pass, reason, evidence: ["hidden-tests.json", "hidden-tests.log"] };
-    writeFileSync(join(out, "gate.json"), `${JSON.stringify(gate, null, 2)}\n`);
-    const metrics = [
-      { metric: "hidden_tests_passed", value: passed, unit: "count" },
-      { metric: "hidden_tests_total", value: total, unit: "count" },
-      { metric: "hidden_tests_passed_ratio", value: total === 0 ? 0 : passed / total, unit: "ratio" },
-    ];
-    writeFileSync(join(out, "metrics.jsonl"), metrics.map((m) => `${JSON.stringify({ ...m, source: "gate:hidden-tests" })}\n`).join(""));
-    return summary;
   } finally {
-    rmSync(sandbox, { recursive: true, force: true });
+    closeSync(rawFd);
+    closeSync(logFd);
   }
+  const durationS = (Date.now() - started) / 1000;
+
+  const reported = new Map();
+  for (const line of readFileSync(rawPath, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    let r;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue; // contender output on stdout: not a reporter line
+    }
+    if (typeof r?.name !== "string" || (r.status !== "pass" && r.status !== "fail")) continue;
+    const key = `${typeof r.file === "string" ? basename(r.file) : ""}::${r.name}`;
+    // A failure wins over a pass for the same name (e.g. a retried or duplicated test).
+    if (reported.get(key)?.status !== "fail") reported.set(key, r);
+  }
+  const timedOut = proc.status === 124 || proc.status === 137 || proc.error?.code === "ETIMEDOUT";
+  const tests = manifest.tests.map((t) => {
+    const r = reported.get(`${t.file}::${t.name}`);
+    if (r === undefined) {
+      return { file: t.file, name: t.name, status: "fail", error: timedOut ? "timed out" : "did not report (crashed or missing)" };
+    }
+    return { file: t.file, name: t.name, status: r.status, ...(r.error ? { error: String(r.error).slice(0, 2000) } : {}) };
+  });
+  const passed = tests.filter((t) => t.status === "pass").length;
+  const total = tests.length;
+  const summary = { workload, total, passed, failed: total - passed, duration_s: durationS, timed_out: timedOut, exit_code: proc.status, tests };
+  writeFileSync(join(out, "hidden-tests.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  const metrics = [
+    { metric: "hidden_tests_passed", value: passed, unit: "count" },
+    { metric: "hidden_tests_total", value: total, unit: "count" },
+    { metric: "hidden_tests_passed_ratio", value: total === 0 ? 0 : passed / total, unit: "ratio" },
+  ];
+  writeFileSync(
+    join(out, "hidden-tests.metrics.jsonl"),
+    metrics.map((m) => `${JSON.stringify({ ...m, source: "gate:hidden-tests" })}\n`).join(""),
+  );
+  return summary;
+}
+
+/** The verdict for a summary from runHiddenTests. `prefix` is where its files sit under <out>. */
+export function hiddenTestsVerdict(summary, prefix = "") {
+  const failures = summary.tests.filter((t) => t.status !== "pass");
+  const pass = summary.passed === summary.total && summary.total > 0;
+  const reason = pass
+    ? `${summary.passed}/${summary.total} hidden tests passed`
+    : `${summary.passed}/${summary.total} hidden tests passed; first failure: ${failures[0].file} › ${failures[0].name}: ${failures[0].error ?? "failed"}`.slice(0, 1000);
+  return { pass, reason, evidence: [`${prefix}hidden-tests.json`, `${prefix}hidden-tests.log`] };
+}
+
+export function writeVerdict(verdict, gate) {
+  writeFileSync(verdict, `${JSON.stringify(gate, null, 2)}\n`);
+}
+
+/** The whole gate: prepare, run, score, write the verdict. Returns {gate, summary?}. */
+export function gradeHiddenTests({ workload, runDir, out, verdict, abRun, timeoutS = 600 }) {
+  manifestOf(workload); // a KitError before the outputs are touched
+  const ws = workspaceOf(runDir);
+  if (ws === null) {
+    const gate = { pass: false, reason: "the outputs have no workspace/", evidence: [] };
+    writeVerdict(verdict, gate);
+    return { gate };
+  }
+  prepareHiddenTests({ workload, ws });
+  const summary = runHiddenTests({ workload, ws, out, abRun, timeoutS });
+  const gate = hiddenTestsVerdict(summary);
+  writeVerdict(verdict, gate);
+  return { gate, summary };
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
-    options: { workload: { type: "string" }, workspace: { type: "string" }, out: { type: "string" }, "timeout-s": { type: "string" } },
+    options: {
+      workload: { type: "string" },
+      "run-dir": { type: "string" },
+      out: { type: "string" },
+      verdict: { type: "string" },
+      "timeout-s": { type: "string" },
+    },
   });
-  if (!values.workload || !values.workspace || !values.out) {
-    console.error("usage: grade.mjs --workload <id> --workspace <dir> --out <dir> [--timeout-s 600]");
+  const abRun = process.env.AB_RUN;
+  if (!values.workload || !values["run-dir"] || !values.out || !values.verdict || !abRun) {
+    console.error("usage: AB_RUN=<cmd> grade.mjs --workload <id> --run-dir <AB_RUN_DIR> --out <frozen-out> --verdict <gate.json>");
     process.exit(2);
   }
+  const verdict = resolve(values.verdict);
   try {
-    const s = gradeHiddenTests({
-      workload: values.workload,
-      workspace: resolve(values.workspace),
-      out: resolve(values.out),
-      timeoutS: Number(values["timeout-s"] ?? 600),
-    });
-    console.log(`hidden-tests ${s.workload}: ${s.passed}/${s.total} passed (${s.duration_s.toFixed(1)}s)`);
+    manifestOf(values.workload);
   } catch (err) {
     console.error(`hidden-tests grader error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);
+  }
+  try {
+    const { gate } = gradeHiddenTests({
+      workload: values.workload,
+      runDir: resolve(values["run-dir"]),
+      out: resolve(values.out),
+      verdict,
+      abRun,
+      timeoutS: Number(values["timeout-s"] ?? 600),
+    });
+    console.log(`hidden-tests ${values.workload}: ${gate.pass ? "pass" : "fail"}: ${gate.reason}`);
+  } catch (err) {
+    // The outputs are involved: a FAIL verdict, not a broken check.
+    const msg = err instanceof Error ? err.message : String(err);
+    writeVerdict(verdict, { pass: false, reason: `hidden tests could not run on these outputs: ${msg}`.slice(0, 1000), evidence: [] });
+    console.log(`hidden-tests ${values.workload}: fail: ${msg}`);
   }
 }

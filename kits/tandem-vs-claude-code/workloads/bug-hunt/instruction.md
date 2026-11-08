@@ -1,9 +1,9 @@
 # Task: fix the broken CSV export (support ticket #231)
 
 The repository in your working directory is `report-export` (read its `README.md`). Finance
-reported this after the 1.4.0 release:
+reported this:
 
-> Since the last release the order export is broken for some customers.
+> The order export is broken for some customers.
 >
 > 1. Any customer whose name has a comma in it (`Acme, Inc.`) shows up with the columns shifted
 >    one to the right when we open the export in Excel.
@@ -12,8 +12,6 @@ reported this after the 1.4.0 release:
 > 3. Notes with quotes in them (`said "rush it"`) or with line breaks come back mangled, and a
 >    multi-line note turns into extra rows.
 > 4. Files we saved from Excel (Windows line endings) don't import at all.
->
-> This all worked in 1.3.x.
 
 Find the cause and fix it. The fix should follow RFC 4180, which is what Excel reads and writes:
 

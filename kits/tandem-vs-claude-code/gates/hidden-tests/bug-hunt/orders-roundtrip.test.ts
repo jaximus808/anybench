@@ -1,4 +1,5 @@
-// Tests added by the fix commit "fix(csv): quote and unquote fields per RFC 4180 (#212)".
+// The RFC 4180 round-trip tests, removed when the bug was planted (synthetic history: see
+// workloads/bug-hunt/PROVENANCE.md). They are part of the grader for bug-hunt.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ordersFromCsv, ordersToCsv, type Order } from "../src/orders.ts";

@@ -51,8 +51,12 @@ Environment: $node_line. Host load average when the run started: $host_load (on 
 - **api-load**: measures p95 at 50 req/s on todo-api only after its hidden tests pass. On do-nothing it
   refuses ("no latency without correctness"). The p95 below is from a laptop container and only shows the
   gate works; real numbers come from the eval computers.
-- **revert check**: bug-hunt's starting repo is byte-for-byte the tree you get by reverting its fix commit,
-  and the fix commit added exactly the hidden tests.
+- **planted-bug check**: bug-hunt is a planted bug with synthetic history (\`workloads/bug-hunt/PROVENANCE.md\`).
+  Its starting repo is byte-for-byte the tree you get by reverting oracle + hidden tests, and that commit
+  added exactly the hidden tests.
+- **gate convention**: every gate runs as \`check.sh <frozen-out> <workload-id> <gate.json>\` with contender
+  code through \`\$AB_RUN\` in \`\$AB_RUN_DIR\` (here \`scripts/ab-run-local.sh\`: clean env, no uid switch),
+  as the gate runner (packages/bench gate.ts) calls it on a scoring computer.
 
 ## Results
 
@@ -65,8 +69,8 @@ HEAD
       const fs = require("fs");
       let o = 0, ot = 0, d = 0, dt = 0;
       for (const w of ["todo-api", "auth-refactor", "bug-hunt"]) {
-        const a = JSON.parse(fs.readFileSync(process.argv[1] + "/oracle/" + w + "/hidden-tests/hidden-tests.json"));
-        const b = JSON.parse(fs.readFileSync(process.argv[1] + "/do-nothing/" + w + "/hidden-tests/hidden-tests.json"));
+        const a = JSON.parse(fs.readFileSync(process.argv[1] + "/oracle/" + w + "/hidden-tests/out/hidden-tests.json"));
+        const b = JSON.parse(fs.readFileSync(process.argv[1] + "/do-nothing/" + w + "/hidden-tests/out/hidden-tests.json"));
         o += a.passed; ot += a.total; d += b.passed; dt += b.total;
       }
       console.log(`oracle ${o}/${ot} hidden tests passed (100% on 3/3 tasks); do-nothing ${d}/${dt} passed (all ${dt} failed).`);

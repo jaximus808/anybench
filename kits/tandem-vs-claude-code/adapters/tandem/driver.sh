@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# L2 driver for contender `tandem` (subject), type harness. Setups C and D come from the kit's
-# `vary: {TANDEM_WORKERS: [3, 5]}`.
+# L2 driver for contender `tandem` (subject), type harness. Setups C, D and E come from the kit's
+# `vary: {TANDEM_WORKERS: [1, 3, 5]}`. CC_MODEL (required) is the pinned model id.
 #
 #   driver.sh run <task> <workspace>
 #
@@ -23,13 +23,14 @@ task="${2:?usage: driver.sh run <task> <workspace>}"
 ws="${3:-${EVAL_WS:?EVAL_WS is not set}}"
 out="${EVAL_OUT:?EVAL_OUT is not set}"
 workers="${TANDEM_WORKERS:?TANDEM_WORKERS is not set}"
+model="${CC_MODEL:?CC_MODEL is not set: the kit pins the model in driver.env}"
 code="${TANDEM_CANVAS_CODE:?TANDEM_CANVAS_CODE is not set (the approver sidecar provides it)}"
 
 if [[ -n "${EVAL_SECRETS:-}" ]]; then set -a; . "$EVAL_SECRETS"; set +a; fi
 
 mcp="$out/tandem/mcp.json"
 mkdir -p "$out/tandem"
-printf '{"mcpServers":{"tandem":{"command":"npx","args":["-y","@jaximus/tandem-mcp@%s"]}}}\n' "${TANDEM_MCP_VERSION:-latest}" > "$mcp"
+printf '{"mcpServers":{"tandem":{"command":"npx","args":["-y","@jaximus/tandem-mcp@%s"]}}}\n' "${TANDEM_MCP_VERSION:-3.2.0}" > "$mcp"
 
 prompt="$(TASK="$(cat "$task")" TANDEM_WORKERS="$workers" TANDEM_CANVAS_CODE="$code" node -e '
   const fs = require("node:fs");
@@ -38,9 +39,8 @@ prompt="$(TASK="$(cat "$task")" TANDEM_WORKERS="$workers" TANDEM_CANVAS_CODE="$c
   process.stdout.write(p);
 ' "$kit/adapters/tandem/planner-prompt.md")"
 
-printf '{"claude_code":"%s","node":"%s","tandem_workers":%s}\n' "$(claude --version | head -1)" "$(node --version)" "$workers" > "$out/versions.json"
+printf '{"claude_code":"%s","node":"%s","model":"%s","tandem_workers":%s}\n' "$(claude --version | head -1)" "$(node --version)" "$model" "$workers" > "$out/versions.json"
 
-args=(-p "$prompt" --output-format stream-json --verbose --dangerously-skip-permissions --mcp-config "$mcp")
-[[ -n "${CC_MODEL:-}" ]] && args+=(--model "$CC_MODEL")
+args=(-p "$prompt" --output-format stream-json --verbose --dangerously-skip-permissions --mcp-config "$mcp" --model "$model")
 cd "$ws"
 claude "${args[@]}" > "$out/stream.jsonl"

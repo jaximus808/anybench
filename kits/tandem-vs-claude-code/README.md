@@ -1,30 +1,50 @@
 # kits/tandem-vs-claude-code
 
 The acceptance kit for Anybench (plan.md E14, ticket 14.2; the "What using it looks like" example
-on the product page). Question: **does Tandem with 3 or 5 workers beat plain Claude Code, solo or
+on the product page). Question: **does Tandem with 1, 3 or 5 workers beat plain Claude Code, solo or
 with subagents?** Three coding tasks, graded by hidden tests that live outside the starting repos.
 
 ## Setups
 
 | | Contender | Driver | How |
 | --- | --- | --- | --- |
-| A | `claude-code-solo` (baseline) | `coding-agent` | headless Claude Code, `--disallowedTools Task`, `adapters/claude-code-solo/CLAUDE.md` |
+| A | `claude-code-solo` (baseline) | `coding-agent` | headless Claude Code, `--disallowedTools Task Agent` (both names of the subagent tool), `adapters/claude-code-solo/CLAUDE.md` |
 | B | `claude-code-subagents` (competitor) | `coding-agent` | headless Claude Code with `adapters/claude-code-subagents/.claude/agents/` (implementer, test-writer, reviewer) |
-| C | `tandem` with `TANDEM_WORKERS=3` (subject) | `harness` | planner + 3 workers on a fresh Tandem canvas; approvals by `human_in_loop {kind: tandem, policy: llm-reviewer}` |
-| D | `tandem` with `TANDEM_WORKERS=5` | `harness` | same, 5 workers |
+| C | `tandem` with `TANDEM_WORKERS=1` (subject) | `harness` | planner + 1 worker on a fresh Tandem canvas; approvals automatic (`human_in_loop {kind: tandem, policy: auto}`) |
+| D | `tandem` with `TANDEM_WORKERS=3` | `harness` | same, 3 workers |
+| E | `tandem` with `TANDEM_WORKERS=5` | `harness` | same, 5 workers |
 
-C and D are one contender expanded by `vary: {TANDEM_WORKERS: [3, 5]}`. Convention this kit relies on:
+C, D and E are one contender expanded by `vary: {TANDEM_WORKERS: [1, 3, 5]}`. Convention this kit relies on:
 a `vary` key expands only the contenders whose `driver.env` declares it (`tandem` declares
 `TANDEM_WORKERS: "3"`), so A and B are not duplicated. Score setup ids look like
 `tandem@TANDEM_WORKERS=3`.
+
+### Comparable setups (plan.md 17.2 rule 4)
+
+`validateKitDir` refuses a kit whose setups differ in anything but what is under test. Here every
+setup runs:
+
+- the same dated model, `claude-opus-4-5-20251101` (`driver.model`, passed to Claude Code as
+  `CC_MODEL`; the drivers refuse to run without it);
+- the same Claude Code, `2.1.311` (`versions.CLAUDE_CODE_VERSION`, also the install scripts'
+  default, so a runner that doesn't export `versions` still installs it);
+- Tandem at commit `05b4a02` (tag `v0.2.0`) and `@jaximus/tandem-mcp@3.2.0` (tag `mcp-v3.2.0`, the same commit);
+- the same caps: 3600 s wall clock and 8,000,000 tokens;
+- no assist only one setup gets: approvals are automatic, since A and B have no approval step
+  for an llm-reviewer to help with.
+
+The contender order rotates per round (`schedule.order_seed`).
+
+Current Claude models (4.6 and later) have no dated snapshot ids, and the validator only accepts a
+dated `claude-*` id, so the newest model this kit can pin today is Opus 4.5.
 
 ## Tasks
 
 | Workload | Shape | Hidden tests | What it is |
 | --- | --- | --- | --- |
-| `todo-api` | splits cleanly into 5 tickets | 16 | Build accounts, bearer auth, todo CRUD, cursor listing and JSON persistence on a `node:http` skeleton. |
+| `todo-api` | splits cleanly (no ticket split is given: planning is the harness's job) | 16 | Build accounts, bearer auth, todo CRUD, cursor listing and JSON persistence on a `node:http` skeleton. |
 | `auth-refactor` | tightly coupled, ~9 files | 14 | Move a cookie-session service to stateless HS256 JWT: config, types, middleware, every auth route, revocation. |
-| `bug-hunt` | from a reverted commit | 12 | Re-fix RFC 4180 CSV quoting; the grader is the tests from the reverted fix commit (`workloads/bug-hunt/PROVENANCE.md`). |
+| `bug-hunt` | planted bug | 12 | Fix RFC 4180 CSV quoting. A planted bug with synthetic history, not mined history; the grader is the codec's removed tests (`workloads/bug-hunt/PROVENANCE.md`). |
 
 Every starting repo is Node/TypeScript with **zero dependencies**: Node 22.18+ runs `.ts` directly
 (type stripping) and tests use `node:test`, so everything runs offline with no `npm install`.
@@ -48,15 +68,22 @@ scripts/verify-proof.sh           runs the proof in Docker; results in PROOF.md
 
 ## Gates and scoring
 
-- `hidden-tests` copies the frozen workspace into a sandbox, drops in the workload's hidden tests
-  as `.hidden-tests/`, runs them offline with a scrubbed env, and scores every test in `tests.json`
-  (a test that never reports counts as failed). It passes only at 100%. Output: `gate.json`,
-  `metrics.jsonl` (`hidden_tests_passed`, `hidden_tests_total`, `hidden_tests_passed_ratio`, all
-  diagnostic), `hidden-tests.json`, `hidden-tests.log`.
-- `api-load` re-runs the hidden tests and only if they all pass starts the app and drives
-  `GET /todos` / `POST /todos` at 50 req/s for 20 s, writing `api_p95_ms`. Workloads without an
-  API answer `pass: false, "not applicable"`; `api-p95` is scoped to `workloads: [todo-api]`, so
-  those trials leave the requirement and the api-load tally.
+Both gates use the gate runner's calling convention (packages/bench `gate.ts`, TDM-51):
+`check.sh <frozen-out> <workload-id> <gate.json>`. Contender code runs only through `"$AB_RUN"`
+(its own uid, clean env) in `$AB_RUN_DIR` (its own copy of the outputs, with `workspace/` in it);
+the check writes only under `$1` and `$3`, and an EXIT trap turns any verdict-less exit into a FAIL.
+Locally, `scripts/ab-run-local.sh` stands in for `$AB_RUN` (clean env, no uid switch).
+
+- `hidden-tests` replaces `workspace/.hidden-tests/` with the workload's hidden tests (before any
+  contender code runs), runs them offline through `$AB_RUN`, and scores every test in `tests.json`
+  (a test that never reports counts as failed, so `process.exit(0)` on import fails them all). It
+  passes only at 100%. Output: the verdict, and `hidden-tests.json`, `hidden-tests.log`,
+  `hidden-tests.metrics.jsonl` in `<frozen-out>`.
+- `api-load` re-runs the hidden tests and only if they all pass starts the app through `$AB_RUN`
+  (`gates/api-load/serve.ts`, which exits when its stdin closes) and drives `GET /todos` /
+  `POST /todos` at 50 req/s for 20 s, writing `api_p95_ms` to `api-load.metrics.jsonl`. Workloads
+  without an API answer `{pass: false, applicable: false}`; `api-p95` is also scoped to
+  `workloads: [todo-api]`.
 
 | Requirement | Metric | Target | Gate | Weight |
 | --- | --- | --- | --- | --- |

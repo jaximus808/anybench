@@ -1,35 +1,48 @@
 #!/usr/bin/env node
 // L5 gate `api-load` for tandem-vs-claude-code: API p95 latency at a fixed request rate.
 //
-//   node load.mjs --workload <id> --workspace <frozen EVAL_WS> --out <dir>
+//   check.sh <frozen-out> <workload-id> <gate.json>
+//   → node load.mjs --workload <id> --run-dir "$AB_RUN_DIR" --out <frozen-out> --verdict <gate.json>
 //
-// No speed number without a correctness gate: this first runs the hidden-tests gate on the same
-// workspace (into <out>/hidden-tests/). Only if every hidden test passes does it start the app
-// and drive load, so a fast but wrong API never gets a latency number.
+// The gate runner's calling convention (packages/bench gate.ts, TDM-51): contender code runs ONLY
+// through "$AB_RUN" in "$AB_RUN_DIR"; this process writes only under <frozen-out> and <gate.json>.
 //
-// Workloads without an API (not in workloads.json) get pass:false with a "not applicable" reason:
-// the scorer only counts metrics from trials whose gate passed, so api-p95 is scored on todo-api
-// trials only.
+// No speed number without a correctness gate: this first runs the hidden tests on the same
+// workspace (into <frozen-out>/api-load-hidden/). Only if every hidden test passes does it start the
+// app and drive load, so a fast but wrong API never gets a latency number.
 //
-// Load: the app runs in its own process (`load.mjs serve <sandbox>`); this process seeds a user
-// with N todos, sends warm-up requests, then fires requests on a fixed open-loop schedule
-// (rps, duration_s) alternating the `mix`. Latency is send → full body read. Any non-2xx or
-// network error fails the gate. Overrides for quick local runs: LOAD_DURATION_S, LOAD_RPS.
+// Workloads without an API (not in workloads.json) answer {pass: false, applicable: false}: the
+// trial leaves the gate's tally and api-p95 (which is also scoped to `workloads: [todo-api]`).
+//
+// Load: the app runs as the contender uid (`"$AB_RUN" node .hidden-tests/serve.ts`, copied in with
+// the hidden tests before any contender code runs); it prints its port and exits when its stdin
+// closes. This process seeds a user with N todos, sends warm-up requests, then fires requests on a
+// fixed open-loop schedule (rps, duration_s) alternating the `mix`. Latency is send → full body
+// read. Any non-2xx or network error fails the gate. Overrides for quick local runs:
+// LOAD_DURATION_S, LOAD_RPS.
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { gradeHiddenTests } from "../hidden-tests/grade.mjs";
+import {
+  hiddenTestsVerdict,
+  manifestOf,
+  prepareHiddenTests,
+  runHiddenTests,
+  workspaceOf,
+  writeVerdict,
+} from "../hidden-tests/grade.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function writeGate(out, gate, metrics = []) {
+function writeMetrics(out, metrics) {
   mkdirSync(out, { recursive: true });
-  writeFileSync(join(out, "gate.json"), `${JSON.stringify(gate, null, 2)}\n`);
-  writeFileSync(join(out, "metrics.jsonl"), metrics.map((m) => `${JSON.stringify({ ...m, source: "gate:api-load" })}\n`).join(""));
+  writeFileSync(
+    join(out, "api-load.metrics.jsonl"),
+    metrics.map((m) => `${JSON.stringify({ ...m, source: "gate:api-load" })}\n`).join(""),
+  );
 }
 
 /** Nearest-rank percentile. */
@@ -38,12 +51,14 @@ function percentile(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
 }
 
-async function startServer(sandbox) {
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "serve", sandbox], {
-    cwd: sandbox,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: sandbox, NODE_ENV: "production", NO_COLOR: "1" },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+/** Starts the contender's app as the contender uid. `stop()` closes its stdin and waits for exit. */
+async function startServer(ws, abRun, deadlineS) {
+  const child = spawn(
+    abRun,
+    ["env", "NODE_ENV=production", "NO_COLOR=1", "timeout", "-k", "5", String(deadlineS), "node", ".hidden-tests/serve.ts"],
+    { cwd: ws, stdio: ["pipe", "pipe", "inherit"] },
+  );
+  const exited = new Promise((r) => child.on("exit", r));
   const port = await new Promise((resolvePort, reject) => {
     let buf = "";
     const timer = setTimeout(() => reject(new Error("app did not start within 20 s")), 20_000);
@@ -55,9 +70,20 @@ async function startServer(sandbox) {
         resolvePort(Number(m[1]));
       }
     });
-    child.on("exit", (code) => reject(new Error(`app exited early with code ${code}`)));
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`app exited early with code ${code}`));
+    });
   });
-  return { port, stop: () => child.kill("SIGKILL") };
+  const stop = async () => {
+    child.stdin.end();
+    const done = await Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 10_000))]);
+    if (!done) {
+      child.kill("SIGTERM"); // reaches `su`, which passes it on
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+    }
+  };
+  return { port, stop };
 }
 
 async function drive(base, profile) {
@@ -125,51 +151,62 @@ async function drive(base, profile) {
   };
 }
 
-export async function runApiLoad({ workload, workspace, out }) {
+export async function runApiLoad({ workload, runDir, out, verdict, abRun }) {
   const profiles = JSON.parse(readFileSync(join(here, "workloads.json"), "utf8"));
   const base = profiles[workload];
   if (base === undefined) {
-    writeGate(out, {
+    const gate = {
       pass: false,
+      applicable: false,
       reason: `not applicable: workload '${workload}' has no API under load (api-p95 is scored on ${Object.keys(profiles).join(", ")} only)`,
       evidence: [],
-    });
-    return { applicable: false };
+    };
+    writeVerdict(verdict, gate);
+    return { applicable: false, gate };
   }
+  manifestOf(workload); // a KitError before the outputs are touched
   const profile = {
     ...base,
     duration_s: Number(process.env.LOAD_DURATION_S ?? base.duration_s),
     rps: Number(process.env.LOAD_RPS ?? base.rps),
   };
+  mkdirSync(out, { recursive: true });
+  const ws = workspaceOf(runDir);
+  if (ws === null) {
+    const gate = { pass: false, reason: "the outputs have no workspace/", evidence: [] };
+    writeVerdict(verdict, gate);
+    return { applicable: true, gate };
+  }
+  // Everything the contender uid runs is copied in now, before any contender code runs.
+  prepareHiddenTests({ workload, ws, extra: [{ from: join(here, "serve.ts"), as: "serve.ts" }] });
 
-  const hidden = gradeHiddenTests({ workload, workspace, out: join(out, "hidden-tests") });
+  const hidden = runHiddenTests({ workload, ws, out: join(out, "api-load-hidden"), abRun });
   if (hidden.passed !== hidden.total) {
-    writeGate(out, {
+    const gate = {
       pass: false,
       reason: `no latency without correctness: ${hidden.passed}/${hidden.total} hidden tests passed, so the API was not load tested`,
-      evidence: ["hidden-tests/gate.json", "hidden-tests/hidden-tests.json"],
-    });
-    return { applicable: true, hidden };
+      evidence: hiddenTestsVerdict(hidden, "api-load-hidden/").evidence,
+    };
+    writeVerdict(verdict, gate);
+    return { applicable: true, hidden, gate };
   }
 
-  const sandbox = mkdtempSync(join(tmpdir(), `api-load-${workload}-`));
   let server;
   try {
-    cpSync(workspace, sandbox, { recursive: true, filter: (src) => !/(^|\/)(\.git|node_modules)(\/|$)/.test(src.slice(workspace.length)) });
-    server = await startServer(sandbox);
+    const deadlineS = Math.ceil(profile.duration_s + 300);
+    server = await startServer(ws, abRun, deadlineS);
     const result = { workload, profile, ...(await drive(`http://127.0.0.1:${server.port}`, profile)) };
-    mkdirSync(out, { recursive: true });
     writeFileSync(join(out, "api-load.json"), `${JSON.stringify(result, null, 2)}\n`);
     const pass = result.errors === 0;
-    writeGate(
+    const gate = {
+      pass,
+      reason: pass
+        ? `p95 ${result.p95_ms.toFixed(1)} ms at ${profile.rps} req/s over ${result.requests} requests, 0 errors`
+        : `${result.errors}/${result.requests} requests failed under load; first: ${result.first_error}`,
+      evidence: ["api-load.json", "api-load-hidden/hidden-tests.json"],
+    };
+    writeMetrics(
       out,
-      {
-        pass,
-        reason: pass
-          ? `p95 ${result.p95_ms.toFixed(1)} ms at ${profile.rps} req/s over ${result.requests} requests, 0 errors`
-          : `${result.errors}/${result.requests} requests failed under load; first: ${result.first_error}`,
-        evidence: ["api-load.json", "hidden-tests/gate.json"],
-      },
       pass
         ? [
             { metric: "api_p95_ms", value: Number(result.p95_ms.toFixed(3)), unit: "ms" },
@@ -179,31 +216,54 @@ export async function runApiLoad({ workload, workspace, out }) {
           ]
         : [],
     );
-    return { applicable: true, hidden, result };
+    writeVerdict(verdict, gate);
+    return { applicable: true, hidden, result, gate };
   } catch (err) {
-    writeGate(out, { pass: false, reason: `load run failed: ${err instanceof Error ? err.message : String(err)}`, evidence: [] });
-    return { applicable: true, hidden, error: String(err) };
+    const gate = { pass: false, reason: `load run failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1000), evidence: [] };
+    writeVerdict(verdict, gate);
+    return { applicable: true, hidden, error: String(err), gate };
   } finally {
-    server?.stop();
-    rmSync(sandbox, { recursive: true, force: true });
+    await server?.stop();
   }
 }
 
-const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain && process.argv[2] === "serve") {
-  // Child mode: start the contender's app and report the port.
-  const sandbox = process.argv[3];
-  const { createApp } = await import(pathToFileURL(join(sandbox, "src/app.ts")).href);
-  const server = createApp({});
-  server.listen(0, "127.0.0.1", () => console.log(`PORT ${server.address().port}`));
-} else if (isMain) {
-  const { values } = parseArgs({ options: { workload: { type: "string" }, workspace: { type: "string" }, out: { type: "string" } } });
-  if (!values.workload || !values.workspace || !values.out) {
-    console.error("usage: load.mjs --workload <id> --workspace <dir> --out <dir>");
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { values } = parseArgs({
+    options: {
+      workload: { type: "string" },
+      "run-dir": { type: "string" },
+      out: { type: "string" },
+      verdict: { type: "string" },
+    },
+  });
+  const abRun = process.env.AB_RUN;
+  if (!values.workload || !values["run-dir"] || !values.out || !values.verdict || !abRun) {
+    console.error("usage: AB_RUN=<cmd> load.mjs --workload <id> --run-dir <AB_RUN_DIR> --out <frozen-out> --verdict <gate.json>");
     process.exit(2);
   }
-  const r = await runApiLoad({ workload: values.workload, workspace: resolve(values.workspace), out: resolve(values.out) });
-  const gate = JSON.parse(readFileSync(join(resolve(values.out), "gate.json"), "utf8"));
-  console.log(`api-load ${values.workload}: ${gate.pass ? "pass" : "fail"}: ${gate.reason}`);
-  if (r.error !== undefined && r.hidden === undefined) process.exit(2);
+  const verdict = resolve(values.verdict);
+  try {
+    JSON.parse(readFileSync(join(here, "workloads.json"), "utf8"));
+  } catch (err) {
+    console.error(`api-load grader error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  try {
+    const { gate } = await runApiLoad({
+      workload: values.workload,
+      runDir: resolve(values["run-dir"]),
+      out: resolve(values.out),
+      verdict,
+      abRun,
+    });
+    console.log(`api-load ${values.workload}: ${gate.pass ? "pass" : "fail"}: ${gate.reason}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (err?.constructor?.name === "KitError") {
+      console.error(`api-load grader error: ${msg}`);
+      process.exit(2);
+    }
+    writeVerdict(verdict, { pass: false, reason: `api-load could not run on these outputs: ${msg}`.slice(0, 1000), evidence: [] });
+    console.log(`api-load ${values.workload}: fail: ${msg}`);
+  }
 }

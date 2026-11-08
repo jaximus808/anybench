@@ -22,43 +22,50 @@ afterEach(async () => {
   await Promise.all(tmpDirsTdm178.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
-/** The flagship kit with every comparability problem fixed (what TDM-184 [16.13] will do). */
-async function fixedFlagshipTdm178(): Promise<string> {
+/**
+ * The flagship kit as it was before TDM-184 [16.13] pinned it: no model, Claude Code and
+ * tandem-mcp installed at `latest`, ref main, 8M vs 5M token caps, the reviewer only for Tandem,
+ * and A still has the `Agent` tool.
+ */
+async function brokenFlagshipTdm178(): Promise<string> {
   const d = await mkdtemp(path.join(tmpdir(), "anybench-kit-tdm178-"));
   tmpDirsTdm178.push(d);
   await cp(FLAGSHIP_TDM178, d, { recursive: true });
-  const y = path.join(d, "anybench.yaml");
-  let text = await readFile(y, "utf8");
-  const pins = ["      model: claude-sonnet-4-5-20250929", "      token_cap_tokens: 5000000"].join(
-    "\n",
-  );
-  const versions = (extra = "") =>
-    `    versions: { CLAUDE_CODE_VERSION: "2.0.14"${extra} }\n    assists: [llm-reviewer]\n`;
-  text = text
-    .replaceAll("      token_cap: 5000000", pins)
-    .replace("      token_cap: 8000000", pins)
-    .replace("CC_DISALLOWED_TOOLS: Task", 'CC_DISALLOWED_TOOLS: "Task Agent"')
-    .replace("      ref: main", "      ref: 0123456789abcdef0123456789abcdef01234567")
-    .replace(
-      '    found_by: "researcher: the plain default (subagents removed)"\n',
-      `    found_by: "researcher: the plain default (subagents removed)"\n${versions()}`,
-    )
-    .replace(
-      '    found_by: "user: the setup Tandem has to beat"\n',
-      `    found_by: "user: the setup Tandem has to beat"\n${versions()}`,
-    )
-    .replace(
-      '        TANDEM_WORKERS: "3"\n',
-      `        TANDEM_WORKERS: "3"\n${versions(', TANDEM_MCP_VERSION: "0.4.1"')}`,
-    )
-    .replace("repeats: 5\n", "repeats: 5\nschedule: { order_seed: 178 }\n");
-  await writeFile(y, text);
+  const edit = async (rel: string, f: (t: string) => string) => {
+    const p = path.join(d, rel);
+    await writeFile(p, f(await readFile(p, "utf8")));
+  };
+  await edit("anybench.yaml", (t) => {
+    const i = t.lastIndexOf("token_cap_tokens: 8000000");
+    return `${t.slice(0, i)}token_cap_tokens: 5000000${t.slice(i + "token_cap_tokens: 8000000".length)}`
+      .replace(/^ {6}model: .*\n/gm, "")
+      .replace(/^ {4}versions: .*\n/gm, "")
+      .replace('CC_DISALLOWED_TOOLS: "Task Agent"', "CC_DISALLOWED_TOOLS: Task")
+      .replace(/ref: [0-9a-f]{40}/, "ref: main")
+      .replace("policy: auto", "policy: llm-reviewer")
+      .replace(/\nschedule:\n(?: {2}.*\n)+/, "\n");
+  });
+  for (const s of ["adapters/claude-code/install.sh", "adapters/tandem/install.sh"])
+    await edit(s, (t) =>
+      t
+        .replace(/CLAUDE_CODE_VERSION:-[0-9.]+/g, "CLAUDE_CODE_VERSION:-latest")
+        .replace(/TANDEM_MCP_VERSION:-[0-9.]+/g, "TANDEM_MCP_VERSION:-latest"),
+    );
   return d;
 }
 
-describe("kits/tandem-vs-claude-code is not comparable yet (fixed by TDM-184 [16.13])", () => {
-  it("fails validation, naming the unpinned model, claude-code@latest, ref main and 8M vs 5M", async () => {
+describe("kits/tandem-vs-claude-code (pinned by TDM-184 [16.13])", () => {
+  it("passes validation: pinned model, versions and ref, equal caps, no one-sided reviewer", async () => {
     const r = await validateKitDir(FLAGSHIP_TDM178);
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    const codes = r.warnings.map((w) => w.code);
+    expect(codes).not.toContain("token_cap_deprecated");
+    expect(codes).not.toContain("order_not_rotated");
+  });
+
+  it("its pre-TDM-184 form fails, naming the unpinned model, claude-code@latest, ref main and 8M vs 5M", async () => {
+    const r = await validateKitDir(await brokenFlagshipTdm178());
     expect(r.ok).toBe(false);
     expect(r.errors.map((e) => [e.code, e.path])).toEqual([
       ["version_unpinned", "contenders[0].install.script"],
@@ -70,7 +77,7 @@ describe("kits/tandem-vs-claude-code is not comparable yet (fixed by TDM-184 [16
       ["version_unpinned", "contenders[2].install.script"],
       ["version_unpinned", "contenders[2].install.script"],
       ["model_unpinned", "contenders[2].driver"],
-      ["caps_unequal", "contenders[2].driver.token_cap"],
+      ["caps_unequal", "contenders[2].driver.token_cap_tokens"],
       ["assist_unequal", "human_in_loop.policy"],
     ]);
     const text = r.lines.join("\n");
@@ -78,33 +85,24 @@ describe("kits/tandem-vs-claude-code is not comparable yet (fixed by TDM-184 [16
     expect(text).toMatch(/installs @anthropic-ai\/claude-code@latest unless CLAUDE_CODE_VERSION/);
     expect(text).toMatch(/installs @jaximus\/tandem-mcp@latest unless TANDEM_MCP_VERSION/);
     expect(text).toMatch(/ref 'main' of jaximus808\/tandem/);
-    expect(text).toMatch(/claude-code-solo 5000000, claude-code-subagents 5000000, tandem 8000000/);
+    expect(text).toMatch(/claude-code-solo 8000000, claude-code-subagents 8000000, tandem 5000000/);
     expect(text).toMatch(/'llm-reviewer' must reach every contender or none/);
     expect(text).toMatch(/disallows 'Task' but not 'Agent'/);
     // Each error points at the line of the field in anybench.yaml.
     for (const e of r.errors) expect(e.line, `${e.code} ${e.path}`).toBeGreaterThan(0);
-    expect(r.warnings.map((w) => w.code)).toEqual(
-      expect.arrayContaining(["token_cap_deprecated", "order_not_rotated"]),
-    );
-  });
-
-  it("passes once the model, versions and ref are pinned, caps are equal and the reviewer goes to everyone", async () => {
-    const r = await validateKitDir(await fixedFlagshipTdm178());
-    expect(r.lines).toEqual([]);
-    expect(r.ok).toBe(true);
-    const codes = r.warnings.map((w) => w.code);
-    expect(codes).not.toContain("token_cap_deprecated");
-    expect(codes).not.toContain("order_not_rotated");
+    expect(r.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(["order_not_rotated"]));
   });
 
   it("an unequal cap with unequal_caps_reason is a warning, not an error", async () => {
-    const d = await fixedFlagshipTdm178();
+    const d = await mkdtemp(path.join(tmpdir(), "anybench-kit-tdm178-"));
+    tmpDirsTdm178.push(d);
+    await cp(FLAGSHIP_TDM178, d, { recursive: true });
     const y = path.join(d, "anybench.yaml");
     const text = await readFile(y, "utf8");
-    const i = text.lastIndexOf("token_cap_tokens: 5000000");
+    const i = text.lastIndexOf("token_cap_tokens: 8000000");
     await writeFile(
       y,
-      `${text.slice(0, i)}token_cap_tokens: 8000000${text.slice(i + "token_cap_tokens: 5000000".length)}` +
+      `${text.slice(0, i)}token_cap_tokens: 9000000${text.slice(i + "token_cap_tokens: 8000000".length)}` +
         "unequal_caps_reason: Tandem runs a planner and N workers, so it gets the per-worker budget\n",
     );
     const r = await validateKitDir(d);

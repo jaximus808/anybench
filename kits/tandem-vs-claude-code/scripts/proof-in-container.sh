@@ -3,7 +3,12 @@
 # $PROOF_OUT). For each workload it builds a fresh workspace with the workload's setup.sh, then:
 #   oracle      proof/oracle/driver.sh, then both gates: must pass 100% of the hidden tests
 #   do-nothing  proof/do_less/do-nothing/driver.sh, then both gates: must fail every hidden test
-# plus: the starting repo's and the oracle's own `npm test`, and the bug-hunt revert check.
+# plus: the starting repo's and the oracle's own `npm test`, and the bug-hunt planted-bug check.
+#
+# Gates run under the gate runner's convention (packages/bench gate.ts, TDM-51):
+# `check.sh <frozen-out> <workload-id> <gate.json>`, contender code through $AB_RUN in $AB_RUN_DIR
+# (a copy of the outputs, with workspace/ in it). Here $AB_RUN is scripts/ab-run-local.sh (clean
+# env, no uid switch), and each gate gets its own fresh copy, as on a scoring computer.
 set -uo pipefail
 KIT="${KIT:-/kit}"
 OUT="${PROOF_OUT:-/out}"
@@ -12,6 +17,15 @@ mkdir -p "$OUT"
 fail=0
 note() { printf '%s\n' "$*"; }
 bad() { printf 'FAIL: %s\n' "$*"; fail=1; }
+
+export AB_RUN="$KIT/scripts/ab-run-local.sh"
+# run_gate <gate> <workload> <workspace> <dir>: <dir>/out (frozen-out), <dir>/gate.json (verdict).
+run_gate() {
+  local gate="$1" w="$2" ws="$3" d="$4"
+  mkdir -p "$d/out" "$d/run" "$d/home"
+  cp -R "$ws" "$d/run/workspace"
+  AB_RUN_DIR="$d/run" AB_RUN_HOME="$d/home" "$KIT/gates/$gate/check.sh" "$d/out" "$w" "$d/gate.json"
+}
 
 count() { node -e 'const s=require(process.argv[1]); console.log(`${s.passed} ${s.failed} ${s.total}`)' "$1"; }
 own_tests() { # prints "pass fail" of the workspace's own test suite
@@ -32,12 +46,12 @@ for w in "${WORKLOADS[@]}"; do
     fi
     o="$OUT/$variant/$w"
     mkdir -p "$o"
-    "$KIT/gates/hidden-tests/check.sh" "$w" "$ws" "$o/hidden-tests" > "$o/hidden-tests.stdout" 2>&1 || bad "$w $variant hidden-tests grader error"
-    "$KIT/gates/api-load/check.sh" "$w" "$ws" "$o/api-load" > "$o/api-load.stdout" 2>&1 || bad "$w $variant api-load grader error"
-    read -r passed failed total < <(count "$o/hidden-tests/hidden-tests.json")
+    run_gate hidden-tests "$w" "$ws" "$o/hidden-tests" > "$o/hidden-tests.stdout" 2>&1 || bad "$w $variant hidden-tests grader error"
+    run_gate api-load "$w" "$ws" "$o/api-load" > "$o/api-load.stdout" 2>&1 || bad "$w $variant api-load grader error"
+    read -r passed failed total < <(count "$o/hidden-tests/out/hidden-tests.json")
     hidden_gate="$(node -p 'require(process.argv[1]).pass' "$o/hidden-tests/gate.json")"
-    load_gate="$(node -p 'require(process.argv[1]).pass' "$o/api-load/gate.json")"
-    p95="$(node -e 'try{const r=require(process.argv[1]); console.log(r.p95_ms.toFixed(1)+" ms")}catch{console.log("n/a")}' "$o/api-load/api-load.json")"
+    load_gate="$(node -p 'const g=require(process.argv[1]); g.applicable===false?"n/a":g.pass' "$o/api-load/gate.json")"
+    p95="$(node -e 'try{const r=require(process.argv[1]); console.log(r.p95_ms.toFixed(1)+" ms")}catch{console.log("n/a")}' "$o/api-load/out/api-load.json")"
     read -r own_pass own_fail < <(own_tests "$ws")
     rows+=("| $w | $variant | $start_commit | $passed/$total | $failed | $hidden_gate | $load_gate | $p95 | $own_pass pass, $own_fail fail |")
     if [[ "$variant" == oracle ]]; then
@@ -46,13 +60,14 @@ for w in "${WORKLOADS[@]}"; do
       if [[ "$w" == todo-api ]]; then [[ "$load_gate" == true ]] || bad "todo-api oracle api-load gate failed"; fi
     else
       [[ "$passed" == 0 && "$failed" == "$total" && "$hidden_gate" == false ]] || bad "$w do-nothing passed $passed/$total hidden tests"
-      [[ "$load_gate" == false ]] || bad "$w do-nothing api-load gate passed"
+      [[ "$load_gate" != true ]] || bad "$w do-nothing api-load gate passed"
       [[ "$own_fail" == 0 ]] || bad "$w starting repo's own tests fail ($own_fail)"
     fi
   done
 done
 
-# bug-hunt revert check: starting repo == fix commit reverted; the fix added exactly the hidden tests.
+# bug-hunt planted-bug check (synthetic history, workloads/bug-hunt/PROVENANCE.md): the starting repo
+# == oracle + hidden tests with that commit reverted; the "fix" added exactly the hidden tests.
 r="$(mktemp -d)/revert"
 export GIT_AUTHOR_NAME=kit GIT_AUTHOR_EMAIL=kit@anybench.invalid GIT_COMMITTER_NAME=kit GIT_COMMITTER_EMAIL=kit@anybench.invalid
 export GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
@@ -80,7 +95,7 @@ revert_ok=true
   echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
   printf '%s\n' "${rows[@]}"
   echo
-  echo "Revert check (bug-hunt): fix commit added \`${added% }\`, its tests passed $fix_tests_pass, and \`git revert\` of it gives tree \`${after_tree:0:12}\` = starting tree \`${before_tree:0:12}\`: $revert_ok."
+  echo "Planted-bug check (bug-hunt, synthetic history): fix commit added \`${added% }\`, its tests passed $fix_tests_pass, and \`git revert\` of it gives tree \`${after_tree:0:12}\` = starting tree \`${before_tree:0:12}\`: $revert_ok."
 } > "$OUT/summary.md"
 cat "$OUT/summary.md"
 if [[ "$fail" == 0 ]]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; fi
