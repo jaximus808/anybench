@@ -31,6 +31,10 @@ export interface MineRepoTasksOptions
   targetTasks?: number;
   /** Verify at most this many candidates (newest first). Default 60. */
   maxVerify?: number;
+  /** TDM-60: no candidate starts verifying after this epoch ms (the rest drop as over_limit). */
+  deadline?: number;
+  /** TDM-60: aborts between candidates (cancel, lost lease). */
+  signal?: AbortSignal;
   /** Fraction held out (when at least 3 tasks). Default 1/3. */
   heldOutFraction?: number;
   /** Write the tasks and mined/report.json here. */
@@ -96,7 +100,9 @@ export async function mineRepoTasks(
     if (sel.candidates.length > 0 && !computerId) await createComputer();
     let tried = 0;
     for (const cand of sel.candidates) {
-      if (verified.length >= target || tried >= maxVerify) {
+      if (opts.signal?.aborted) throw new Error("mining aborted");
+      const late = opts.deadline !== undefined && Date.now() > opts.deadline;
+      if (verified.length >= target || tried >= maxVerify || late) {
         drops.push({
           sha: cand.sha,
           stage: "verify",
@@ -104,7 +110,9 @@ export async function mineRepoTasks(
           detail:
             verified.length >= target
               ? `target of ${target} tasks reached`
-              : `maxVerify ${maxVerify} reached`,
+              : late && tried < maxVerify
+                ? "mining time cap reached"
+                : `maxVerify ${maxVerify} reached`,
         });
         continue;
       }

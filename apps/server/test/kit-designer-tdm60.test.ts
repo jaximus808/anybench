@@ -22,7 +22,7 @@ import { RepoIngestSchema, type RepoIngest } from "@anybench/kit";
 import { FakeNaive } from "@anybench/naive/fake";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { kits, runs, trials, contenders } from "../src/db/schema/index.js";
-import { kitBuilderStages } from "../src/orchestrator/kit-builder.js";
+import { kitBuilderStages, wantsMinedKit } from "../src/orchestrator/kit-builder.js";
 import type {
   RunIntake,
   StageContext,
@@ -205,7 +205,7 @@ describe.skipIf(!available)("kit designer stage (TDM-60)", () => {
     });
   });
 
-  it("holds coding-agent / harness repos (miner) and unsupported drivers with the understander's reason", async () => {
+  it("holds a harness with no adapter and unsupported drivers with the understander's reason", async () => {
     const run = await runTdm60("example/agent");
     const before = designerCreates().length;
     const agent = await stages().designKit(ctxTdm60(run), {
@@ -216,7 +216,7 @@ describe.skipIf(!available)("kit designer stage (TDM-60)", () => {
     });
     expect(agent).toMatchObject({
       outcome: "needs_human",
-      reason: expect.stringMatching(/TDM-186/),
+      reason: expect.stringMatching(/no contender adapter for this harness yet/),
     });
     const lib = await stages().designKit(ctxTdm60(run), {
       digest: ingest.digest,
@@ -363,6 +363,12 @@ describe.skipIf(!available)("kit designer stage (TDM-60)", () => {
     expect(await readFile(path.join(r.value.files_dir!, "design/draft.json"), "utf8")).toContain(
       '"driver": "cli"',
     );
+  });
+
+  it("the Tandem repo takes the mined path when the question asks for a mined kit", () => {
+    expect(wantsMinedKit("Benchmark Tandem on tasks mined from its own history")).toBe(true);
+    expect(wantsMinedKit("a kit from the repo's history please")).toBe(true);
+    expect(wantsMinedKit("is tandem faster than claude code?")).toBe(false);
   });
 
   it("the Tandem repo stays curated: no kit-designer session", async () => {

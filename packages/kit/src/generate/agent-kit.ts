@@ -335,6 +335,56 @@ export async function partialFix(
   return { files, dropped: `${best.path} hunk ${drop + 1}/${best.hs.length}` };
 }
 
+/** The test-function / test-case name an id ends in: `pkg/TestX/sub` → `TestX`, `f > s > t` → `t`. */
+function leafName(id: string): string {
+  const tail = id.split(/\s*>\s*|::/).pop() ?? id;
+  const slash = tail.split("/");
+  const goTest = slash.find((seg) => /^(Test|Benchmark|Example|Fuzz)[A-Z0-9_]/.test(seg));
+  return (goTest ?? tail).replace(/\[.*\]$/, "").trim();
+}
+
+/**
+ * Keep FAIL_TO_PASS to the tests the commit added or changed. When a test file did not compile
+ * before the fix (Go), the miner sees the WHOLE package fail-before / pass-after; the tests the
+ * commit did not touch move to PASS_TO_PASS (they passed 3/3 on the fixed tree, so the gate still
+ * requires them). If no FAIL_TO_PASS id can be matched to an added line, the task is unchanged.
+ */
+export async function focusFailToPass(
+  repoDir: string,
+  task: MinedTask,
+): Promise<{ task: MinedTask; moved: number }> {
+  const paths = task.files.test_files.map((f) => f.path);
+  const after = await readTreeFiles(repoDir, task.source.commit, {
+    paths,
+    maxBytes: 64 * 1024 * 1024,
+  });
+  const before = await readTreeFiles(repoDir, task.source.parent, {
+    paths,
+    maxBytes: 64 * 1024 * 1024,
+  });
+  const beforeOf = new Map(before.map((f) => [f.path, f.content.toString("utf8")]));
+  const added: string[] = [];
+  for (const f of after)
+    for (const h of await hunks(beforeOf.get(f.path) ?? "", f.content.toString("utf8")))
+      added.push(...h.add);
+  const text = added.join("\n");
+  const touched = (id: string): boolean => {
+    const leaf = leafName(id);
+    return leaf.length > 0 && text.includes(leaf);
+  };
+  const keep = task.fail_to_pass.filter(touched);
+  if (keep.length === 0 || keep.length === task.fail_to_pass.length) return { task, moved: 0 };
+  const moved = task.fail_to_pass.filter((id) => !touched(id));
+  return {
+    task: {
+      ...task,
+      fail_to_pass: keep,
+      pass_to_pass: [...new Set([...task.pass_to_pass, ...moved])],
+    },
+    moved: moved.length,
+  };
+}
+
 /** 1-based lines of each fix file that the fix added or changed (the mutation targets). */
 export async function fixChangedLines(
   repoDir: string,
@@ -410,6 +460,8 @@ export interface MaterializedAgentKit {
   workloads: string[];
   /** Tasks with no partial-oracle (one hunk, one file): they still get the noop do-less. */
   noPartial: string[];
+  /** Tasks whose FAIL_TO_PASS was cut to the tests the commit touched (the rest → PASS_TO_PASS). */
+  focused: { id: string; moved: number }[];
 }
 
 async function put(dir: string, rel: string, content: string | Buffer, mode = 0o644) {
@@ -456,7 +508,13 @@ export async function materializeAgentKit(
 
   const noPartial: string[] = [];
   const workloads: Record<string, unknown>[] = [];
-  for (const { task, instruction } of input.tasks) {
+  const focused: { id: string; moved: number }[] = [];
+  const finalTasks: MinedTask[] = [];
+  for (const { task: raw, instruction } of input.tasks) {
+    const f = await focusFailToPass(input.repoDir, raw);
+    const task = f.task;
+    finalTasks.push(task);
+    if (f.moved > 0) focused.push({ id: task.id, moved: f.moved });
     await materializeMinedTask(input.repoDir, task, dir, { gateId: MINED_GATE_ID });
     await put(dir, `workloads/${task.id}/instruction.md`, instruction);
     const leaks = await checkMinedTaskLeaks(input.repoDir, dir, task);
@@ -617,13 +675,13 @@ export async function materializeAgentKit(
     const rdir = tSpec.proof.regression.dir;
     await cp(path.join(template.dir, rdir), path.join(dir, rdir), { recursive: true });
   }
-  const groups = groupMinedTasks(input.tasks.map((t) => t.task));
+  const groups = groupMinedTasks(finalTasks);
   await put(
     dir,
     "design/tasks.json",
     `${JSON.stringify(
       {
-        tasks: input.tasks.map(({ task }) => ({
+        tasks: finalTasks.map((task) => ({
           id: task.id,
           area: task.area,
           held_out: task.held_out,
@@ -636,6 +694,7 @@ export async function materializeAgentKit(
         backlogs: groups.groups,
         ungrouped: groups.ungrouped,
         claim_scope: n < AGENT_CLAIM_MIN_TASKS ? `on these ${n} tasks` : "general",
+        fail_to_pass_focused: focused,
         ...(input.provenance ? { provenance: input.provenance } : {}),
       },
       null,
@@ -651,5 +710,5 @@ export async function materializeAgentKit(
       stringify(spec, { lineWidth: 100 }),
     ].join("\n"),
   );
-  return { dir, spec, workloads: input.tasks.map((t) => t.task.id), noPartial };
+  return { dir, spec, workloads: input.tasks.map((t) => t.task.id), noPartial, focused };
 }

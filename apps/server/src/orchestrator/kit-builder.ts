@@ -33,6 +33,7 @@ import { createNaiveClient, type NaiveClient } from "@anybench/naive";
 import type { Database } from "../db/client.js";
 import type { Config } from "../config.js";
 import { runAgentStage } from "../jobs/agent-session.js";
+import { computeProviderFromConfig } from "../lib/compute.js";
 import { curatedKitStages, isTandemRepo } from "./curated.js";
 import { naiveKitDesigner, type KitDesignerOptions } from "./kit-designer.js";
 import { kitSkeptic } from "./skeptic.js";
@@ -156,6 +157,16 @@ export async function naiveUnderstand(
   return { result, verdict, costMicroUsd: r.value.costMicroUsd, context: loaded.from };
 }
 
+/** "a kit mined from its history": the Tandem repo then takes the generated (mined) path. */
+export function wantsMinedKit(question: string): boolean {
+  return /\bmined\b|from (?:its|the repo'?s) (?:own )?(?:commit )?history/i.test(question);
+}
+
+/** The Tandem repo stays curated unless the question asks for a mined kit. */
+function curatedRun(ctx: StageContext): boolean {
+  return isTandemRepo(ctx.run.intake.source) && !wantsMinedKit(ctx.run.question);
+}
+
 export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort {
   const curated = curatedKitStages(opts.kitsDir ? { kitsDir: opts.kitsDir } : {});
   const designer =
@@ -166,18 +177,19 @@ export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort 
       ...(opts.ingestCacheDir ? { ingestCacheDir: opts.ingestCacheDir } : {}),
       ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
       ...(opts.ingest ? { ingest: opts.ingest } : {}),
+      ...(opts.kitsDir ? { kitsDir: opts.kitsDir } : {}),
       // TDM-187: the independent skeptic between kit validation and proof.
       skeptic: kitSkeptic({ db: opts.db, client: opts.client }),
       ...opts.kitDesigner,
     });
   return {
     async understand(ctx, input) {
-      if (isTandemRepo(ctx.run.intake.source)) return curated.understand(ctx, input);
+      if (curatedRun(ctx)) return curated.understand(ctx, input);
       return (await naiveUnderstand(opts, ctx, input.digest)).result;
     },
 
     async research(ctx, input) {
-      if (isTandemRepo(ctx.run.intake.source)) return curated.research(ctx, input);
+      if (curatedRun(ctx)) return curated.research(ctx, input);
       // TODO([6.3] researcher): competitor research on Naïve. v1 benchmarks the subject alone.
       await say(
         ctx,
@@ -189,7 +201,7 @@ export function kitBuilderStages(opts: KitBuilderStagesOptions): AgentStagePort 
 
     async designKit(ctx, input) {
       // The Tandem repo stays curated (its kit and its signed-off proof).
-      if (isTandemRepo(ctx.run.intake.source)) return curated.designKit(ctx, input);
+      if (curatedRun(ctx)) return curated.designKit(ctx, input);
       return designer(ctx, input);
     },
 
@@ -210,8 +222,16 @@ export function defaultAgentStages(ctx: { db: Database; config: Config }): Agent
     }),
     ...kitsDir,
     ...(config.GITHUB_TOKEN ? { githubToken: config.GITHUB_TOKEN } : {}),
-    ...(config.ANYBENCH_GENERATED_KITS_DIR
-      ? { kitDesigner: { generatedKitsDir: config.ANYBENCH_GENERATED_KITS_DIR } }
-      : {}),
+    kitDesigner: {
+      ...(config.ANYBENCH_GENERATED_KITS_DIR
+        ? { generatedKitsDir: config.ANYBENCH_GENERATED_KITS_DIR }
+        : {}),
+      ...kitsDir,
+      // v1 scope (b): the mining computer comes from the run's provider (our infra cost).
+      mining: {
+        provider: computeProviderFromConfig(config),
+        ...(config.GITHUB_TOKEN ? { githubToken: config.GITHUB_TOKEN } : {}),
+      },
+    },
   });
 }

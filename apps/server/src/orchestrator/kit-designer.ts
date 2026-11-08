@@ -47,7 +47,10 @@ import { eq, max } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { kits } from "../db/schema/kits.js";
 import { runAgentStage, type AgentStageOutput } from "../jobs/agent-session.js";
+import { designMinedAgentKit } from "./agent-kit-designer.js";
+import { CURATED_TANDEM_KIT, defaultKitsDir, isTandemRepo } from "./curated.js";
 import { generatedKitDir } from "./generated-kits.js";
+import { mineForRun, type MineStageOptions } from "./mine-stage.js";
 import {
   stageHold,
   stageOk,
@@ -66,7 +69,7 @@ export const KIT_DESIGNER_FIX_ATTEMPTS = 1;
 /** The TDM-187 seam: a second opinion on a validated kit, before it goes to env build + proof. */
 export type KitSkeptic = (
   ctx: StageContext,
-  kit: { spec: KitSpec; dir: string; draft: KitDesignerOutput; attempt?: number },
+  kit: { spec: KitSpec; dir: string; draft?: KitDesignerOutput; attempt?: number },
 ) => Promise<
   | { ok: true }
   // `repair`: the blocking findings, re-asked as fix issues (findings only, never scores).
@@ -92,6 +95,16 @@ export interface KitDesignerOptions {
   pins?: PinDeps;
   /** TDM-187. Default noSkeptic. */
   skeptic?: KitSkeptic;
+  /** v1 scope (b): mining a coding-agent / harness repo's history (provider, caches, caps). */
+  mining?: MineStageOptions;
+  /**
+   * The contender template for an agent/harness repo: its adapters and the plain Claude Code
+   * baseline, pinned exactly like it. Default: the Tandem repo → kits/tandem-vs-claude-code;
+   * anything else → null (holds: no adapter for that harness yet).
+   */
+  agentTemplate?: (source: StageContext["run"]["intake"]["source"]) => AgentKitTemplate | null;
+  /** This repo's kits/ dir (the default agent template). */
+  kitsDir?: string;
   /** The kits.version this design will get. Default: max(kits.version) + 1 for the run. */
   nextVersion?: (runId: string) => Promise<number>;
 }
@@ -175,11 +188,11 @@ export function naiveKitDesigner(opts: KitDesignerOptions): AgentStagePort["desi
     if (u.supported === false) {
       return stageHold(u.reason || `driver ${u.driver_type ?? "unknown"} is not supported yet`);
     }
+    if (u.driver_type === "coding-agent" || u.driver_type === "harness") {
+      return designAgentKit(opts, ctx, input, nextVersion, skeptic);
+    }
     if (u.driver_type !== "cli") {
-      const why =
-        u.driver_type === "coding-agent" || u.driver_type === "harness"
-          ? `automatic kits for ${u.driver_type} repos are not built yet: they need tasks mined from the repo's history (the TDM-186 miner) turned into issue text, a hidden-tests gate and pinned Claude Code contenders (TDM-60 follow-up)`
-          : `driver ${u.driver_type ?? "unknown"} is not supported yet`;
+      const why = `driver ${u.driver_type ?? "unknown"} is not supported yet`;
       await say(ctx, why);
       return stageHold(why);
     }
@@ -291,4 +304,98 @@ export function naiveKitDesigner(opts: KitDesignerOptions): AgentStagePort["desi
       ),
     );
   };
+}
+
+export interface AgentKitTemplate {
+  dir: string;
+  contenders: string[];
+  subject: string;
+}
+
+/** Tandem → the curated kit's adapters (claude-code-solo + tandem); other harnesses: none yet. */
+export function defaultAgentTemplate(kitsDir?: string) {
+  return (source: StageContext["run"]["intake"]["source"]): AgentKitTemplate | null =>
+    isTandemRepo(source)
+      ? {
+          dir: path.join(defaultKitsDir(kitsDir), CURATED_TANDEM_KIT),
+          contenders: ["claude-code-solo", "tandem"],
+          subject: "tandem",
+        }
+      : null;
+}
+
+/** v1 scope (b): mine → issues → materialize → validate → skeptic, for coding-agent / harness. */
+async function designAgentKit(
+  opts: KitDesignerOptions,
+  ctx: StageContext,
+  input: Parameters<AgentStagePort["designKit"]>[1],
+  nextVersion: (runId: string) => Promise<number>,
+  skeptic: KitSkeptic,
+): Promise<StageResult<KitDesign>> {
+  const u = input.understanding!;
+  if (input.previous) {
+    const failed = input.previous.proof.filter((p) => !p.pass).map((p) => p.check);
+    return stageHold(
+      `the mined ${u.driver_type} kit failed its proof (${failed.join(", ")}); a mined kit is not repaired automatically yet`,
+    );
+  }
+  if (!input.digest) return stageHold("the kit designer needs the repo digest");
+  if (u.history && !u.history.minable) {
+    const why = `the history is not minable for tasks: ${u.history.why || `${u.history.test_commits} test commits`}`;
+    await say(ctx, why);
+    return stageHold(why);
+  }
+  const template = (opts.agentTemplate ?? defaultAgentTemplate(opts.kitsDir))(
+    ctx.run.intake.source,
+  );
+  if (!template) {
+    const why = `no contender adapter for this ${u.driver_type} yet: generated agent kits drive the subject through a pinned adapter, and only Tandem has one`;
+    await say(ctx, why);
+    return stageHold(why);
+  }
+  const mined = await mineForRun(ctx, input.digest, opts.mining ?? { provider: null }, (t) =>
+    say(ctx, t),
+  );
+  if (!mined.ok) {
+    await say(ctx, mined.reason);
+    return stageHold(mined.reason);
+  }
+  const version = await nextVersion(ctx.run.id);
+  const dir = generatedKitDir({
+    runId: ctx.run.id,
+    version,
+    ...(opts.generatedKitsDir ? { root: opts.generatedKitsDir } : {}),
+  });
+  const readme = existsSync(path.join(mined.repoDir, "README.md"))
+    ? (await readFile(path.join(mined.repoDir, "README.md"), "utf8")).slice(0, 4_000)
+    : undefined;
+  const r = await designMinedAgentKit({ db: opts.db, client: opts.client }, ctx, {
+    repoDir: mined.repoDir,
+    tasks: mined.tasks,
+    repo: { name: input.digest.name, summary: u.summary },
+    ...(readme ? { readmeExcerpt: readme } : {}),
+    subject: {
+      kind: u.driver_type === "harness" ? "harness" : "agent",
+      name: input.digest.name,
+      summary: `${u.summary} Compared with plain Claude Code on issues mined from the repo's own history.`,
+      better_means: u.better_means,
+    },
+    template,
+    dir,
+  });
+  if (!r.ok) {
+    await say(ctx, r.reason);
+    return stageHold(r.reason);
+  }
+  const second = await skeptic(ctx, { spec: r.spec, dir });
+  if (!second.ok) return stageHold(`the kit skeptic refused the kit: ${second.reason}`);
+  await say(
+    ctx,
+    [
+      `designed kit v${version} from ${r.kept.length} mined task(s) (${r.dropped.length} dropped at issue writing)${mined.cached ? ", mine reused from the cache" : ""}`,
+      `contenders ${r.spec.contenders.map((c) => c.id).join(" vs ")}, gate hidden-tests (FAIL_TO_PASS + PASS_TO_PASS), ${r.spec.repeats} repeats`,
+      `issue sessions cost ${r.costMicroUsd} µ$`,
+    ].join("\n"),
+  );
+  return stageOk({ spec: r.spec, files_dir: dir });
 }

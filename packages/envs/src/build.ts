@@ -329,7 +329,8 @@ export async function buildEnvSnapshot(opts: BuildEnvSnapshotOptions): Promise<E
  * 429 on the destroy used to leak it (docs/findings/proof-suite.md). A non-retryable error, or the last try,
  * is logged and swallowed so the build's own result or error stands.
  */
-async function destroyBuildComputer(
+/** Destroy an infra computer, retrying a retryable failure (429, network) with backoff. */
+export async function destroyBuildComputer(
   provider: BuildEnvSnapshotOptions["provider"],
   id: string,
   opts: Pick<BuildEnvSnapshotOptions, "destroyTries" | "destroyBackoffMs">,
