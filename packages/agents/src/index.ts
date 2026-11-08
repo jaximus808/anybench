@@ -3,3 +3,5 @@
 export * from "./registry.js";
 export * from "./sync.js";
 export { syncMain, type SyncCliIo } from "./sync-cli.js";
+// TDM-56 [6.2]: the understander role's input, output schema and code-enforced verdict.
+export * from "./understander.js";

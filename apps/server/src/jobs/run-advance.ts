@@ -46,7 +46,7 @@ import {
   ledgerCharges,
   naiveSessionCanceller,
 } from "../orchestrator/defaults.js";
-import { curatedKitStages } from "../orchestrator/curated.js";
+import { defaultAgentStages } from "../orchestrator/kit-builder.js";
 import { curatedProof, kitScore } from "../orchestrator/proof-score.js";
 import {
   noSessionCanceller,
@@ -136,11 +136,7 @@ export function orchestratorDeps(
   return {
     db: ctx.db,
     jobs: options.jobs?.(ctx, helpers) ?? graphileJobsPort(ctx.db, helpers.addJob),
-    agents:
-      options.agents?.(ctx) ??
-      curatedKitStages(
-        ctx.config.ANYBENCH_KITS_DIR ? { kitsDir: ctx.config.ANYBENCH_KITS_DIR } : {},
-      ),
+    agents: options.agents?.(ctx) ?? defaultAgentStages(ctx),
     pipeline: options.pipeline?.(ctx) ?? defaultPipeline(ctx),
     sessions: options.sessions?.(ctx) ?? defaultSessions(ctx),
     billingGate: options.billingGate?.(ctx) ?? defaultBillingGate(ctx.config, ctx.db),

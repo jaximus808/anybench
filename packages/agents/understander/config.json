@@ -1,0 +1,13 @@
+{
+  "role": "understander",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "harness": "pi",
+  "window": "immediate",
+  "description": "Anybench understander (E6 6.2): what a repo is, which driver benchmarks it, what better means, and whether it is benchable.",
+  "budget": {
+    "cap_micro_usd": 5000000,
+    "max_task_micro_usd": 100000,
+    "period": "day"
+  },
+  "tools": { "default_config": { "permission": "deny" }, "configs": {} }
+}

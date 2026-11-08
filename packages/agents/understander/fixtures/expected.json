@@ -1,0 +1,95 @@
+{
+  "about": "TDM-56 [6.2] labels for the understander eval, written by hand from reading each repo BEFORE any model run. Scored on kind + benchable (post-code verdict); driver_type and outcome are reported too. github is the repo the digest names; local is the checkout the live eval ingests (the jaximus808 repos are private or local-only, see docs/findings/understander.md).",
+  "fixture": [
+    {
+      "name": "agentcanvas",
+      "github": "https://github.com/jaximus808/agentcanvas",
+      "local": "agentcanvas",
+      "kind": "harness",
+      "benchable": "ready",
+      "driver_type": "harness",
+      "outcome": "ready",
+      "why": "Tandem: a shared task queue that coordinates parallel Claude Code sessions (claims, approvals). A harness of coding agents with a test-heavy history."
+    },
+    {
+      "name": "eyetrax",
+      "github": "https://github.com/jaximus808/eyetrax",
+      "local": "eyetrax",
+      "kind": "software",
+      "benchable": "needs_hardware",
+      "driver_type": "lib",
+      "outcome": "hold",
+      "why": "A Python library for webcam eye tracking; its eyetrax-demo / virtualcam CLIs are demos. It needs a webcam and a screen to do its job."
+    },
+    {
+      "name": "obrist",
+      "github": "https://github.com/jaximus808/obrist",
+      "local": "obrist",
+      "kind": "agent",
+      "benchable": "ready",
+      "driver_type": "http-agent",
+      "outcome": "hold",
+      "why": "Art gallery guide agent: a FastAPI server around a LangGraph ReAct agent (plus an Expo app). An HTTP chat agent with no labelled conversation set, so not supported yet."
+    },
+    {
+      "name": "web-helper",
+      "github": "https://github.com/jaximus808/web-helper",
+      "local": "web-helper",
+      "kind": "software",
+      "benchable": "ready",
+      "driver_type": "web",
+      "outcome": "hold",
+      "why": "A browser extension plus a tiny local Node bridge that shells out to claude -p. A browser extension is a web driver: not supported yet."
+    },
+    {
+      "name": "quant-grader",
+      "github": "https://github.com/jaximus808/quant-grader",
+      "local": "quant-grader",
+      "kind": "software",
+      "benchable": "ready",
+      "driver_type": "web",
+      "outcome": "hold",
+      "why": "An offline LeetCode-style grader: a stdlib Python server with a browser UI on 127.0.0.1:8765. A web app: not supported yet."
+    },
+    {
+      "name": "SHTRM",
+      "github": "https://github.com/jaximus808/SHTRM",
+      "local": "SHTRM",
+      "kind": "software",
+      "benchable": "needs_hardware",
+      "driver_type": "service",
+      "outcome": "hold",
+      "why": "Telehand: an archived science-fair robotic hand (webcam hand tracking, Unity fleet server, ESP8266 + Arduino servos). Needs a webcam and the physical robot."
+    },
+    {
+      "name": "PersonalWebsite",
+      "github": "https://github.com/jaximus808/PersonalWebsite",
+      "local": "PersonalWebsite",
+      "kind": "software",
+      "benchable": "skip",
+      "driver_type": "web",
+      "outcome": "fail",
+      "why": "A personal Next.js website (create-next-app README). A portfolio site: nothing to benchmark."
+    }
+  ],
+  "public": [
+    {
+      "name": "ripgrep",
+      "github": "https://github.com/BurntSushi/ripgrep",
+      "kind": "software",
+      "benchable": "ready",
+      "driver_type": "cli",
+      "outcome": "ready",
+      "why": "A line-oriented search CLI (rg) with release binaries."
+    },
+    {
+      "name": "fd",
+      "github": "https://github.com/sharkdp/fd",
+      "kind": "software",
+      "benchable": "ready",
+      "driver_type": "cli",
+      "outcome": "ready",
+      "why": "A find alternative CLI with release binaries."
+    }
+  ]
+}

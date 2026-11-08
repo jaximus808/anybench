@@ -2,7 +2,7 @@
 // JobsPort and the kit-backed TrialSource that trial.execute uses.
 //
 //   githubIngest        PipelinePort.ingest for `github` sources: packages/kit ingestGitHubRepo
-//                       ([4.2]). Binary and Claude Code setup sources need uploads ([7.4]) first.
+//                       ([4.2]); the RepoIngest is cached for the agent stages (TDM-56). Binary and Claude Code setup sources need uploads ([7.4]) first.
 //   naiveSessionCanceller  SessionCanceller over agent_sessions + Naïve `sessions.cancel`.
 //   graphileJobsPort    JobsPort on the job's helpers.addJob + graphile_worker._private_jobs.
 //   kitTrialSource      trial.execute's TrialSource: the run's kit → TrialJob (trialJobFromKit).
@@ -17,6 +17,7 @@ import type { Database } from "../db/client.js";
 import { agentSessions } from "../db/schema/agent_sessions.js";
 import type { Config } from "../config.js";
 import type { JobsPort, RunChargesHook } from "./advance.js";
+import { writeRepoIngestCache } from "./repo-ingest-cache.js";
 import {
   stageFail,
   stageHold,
@@ -35,8 +36,14 @@ function githubInput(github: string, ref: string | undefined): string {
   return `https://github.com/${path}${ref ? `#${ref}` : ""}`;
 }
 
-/** PipelinePort.ingest: GitHub repos for real; other sources hold for their ticket. */
-export function githubIngest(opts: { githubToken?: string } = {}): PipelinePort["ingest"] {
+/**
+ * PipelinePort.ingest: GitHub repos for real; other sources hold for their ticket. The whole
+ * RepoIngest (digest + repo context) is also cached under the digest hash for the agent stages
+ * (repo-ingest-cache.ts, TDM-56); a cache write that fails never fails the ingest.
+ */
+export function githubIngest(
+  opts: { githubToken?: string; ingestCacheDir?: string } = {},
+): PipelinePort["ingest"] {
   return async (ctx) => {
     const source = ctx.run.intake.source;
     if (source.kind !== "github") {
@@ -47,6 +54,9 @@ export function githubIngest(opts: { githubToken?: string } = {}): PipelinePort[
       const result = await ingestGitHubRepo(githubInput(source.github, source.ref), {
         ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
       });
+      await writeRepoIngestCache(result, {
+        ...(opts.ingestCacheDir ? { dir: opts.ingestCacheDir } : {}),
+      }).catch(() => undefined);
       return stageOk(result.digest);
     } catch (err) {
       if (!(err instanceof IngestError)) throw err;

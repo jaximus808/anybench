@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@anybench/core": "workspace:*",
+    "@anybench/kit": "workspace:*",
     "@anybench/naive": "workspace:*",
     "zod": "^4.6.7"
   }

@@ -34,6 +34,7 @@ import {
   type ProofCheckResult,
   type TrialState,
 } from "@anybench/core";
+import { UnderstandingExtrasShape } from "@anybench/agents";
 import { z } from "zod";
 
 // ---------- what the orchestrator knows about a run ----------
@@ -91,7 +92,12 @@ export const stageFail = <T>(reason: string): StageResult<T> => ({
 
 // ---------- stage outputs (plan.md section 11 table) ----------
 
-/** understander: ProjectDigest → what the project is and what "better" means. */
+/**
+ * understander: ProjectDigest → what the project is and what "better" means. TDM-56 adds the kit
+ * designer's fields (driver_type, supported, claims, subject_command, history,
+ * labelled_conversations: @anybench/agents UnderstandingExtrasShape), all optional or defaulted
+ * so the curated pass-through and outputs stored before them still parse.
+ */
 export const UnderstandingSchema = z.object({
   kind: SubjectKindSchema,
   summary: z.string().min(1),
@@ -99,6 +105,7 @@ export const UnderstandingSchema = z.object({
   risks: z.array(z.string()).default([]),
   benchable: z.enum(["ready", "needs_hardware", "skip"]),
   reason: z.string().default(""),
+  ...UnderstandingExtrasShape,
 });
 export type Understanding = z.infer<typeof UnderstandingSchema>;
 

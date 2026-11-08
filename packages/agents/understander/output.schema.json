@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string", "enum": ["agent", "harness", "software"] },
+    "driver_type": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "service",
+        "lib",
+        "pty",
+        "x11",
+        "web",
+        "coding-agent",
+        "http-agent",
+        "harness"
+      ]
+    },
+    "driver_reason": { "type": "string" },
+    "summary": { "type": "string" },
+    "better_means": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "benchable": { "type": "string", "enum": ["ready", "needs_hardware", "skip"] },
+    "reason": { "type": "string" },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "quote": { "type": "string" },
+          "source": { "type": "string" }
+        },
+        "required": ["text", "quote", "source"],
+        "additionalProperties": false
+      }
+    },
+    "subject_command": {
+      "type": ["object", "null"],
+      "properties": {
+        "binary": { "type": "string" },
+        "install_route": {
+          "type": "string",
+          "enum": ["github_release", "cargo", "npm", "pip", "go", "brew", "apt", "source"]
+        },
+        "package": { "type": ["string", "null"] },
+        "version_command": { "type": ["string", "null"] }
+      },
+      "required": ["binary", "install_route", "package", "version_command"],
+      "additionalProperties": false
+    },
+    "history": {
+      "type": ["object", "null"],
+      "properties": {
+        "minable": { "type": "boolean" },
+        "why": { "type": "string" }
+      },
+      "required": ["minable", "why"],
+      "additionalProperties": false
+    },
+    "labelled_conversations": { "type": ["string", "null"] }
+  },
+  "required": [
+    "kind",
+    "driver_type",
+    "driver_reason",
+    "summary",
+    "better_means",
+    "risks",
+    "benchable",
+    "reason",
+    "claims",
+    "subject_command",
+    "history",
+    "labelled_conversations"
+  ],
+  "additionalProperties": false
+}

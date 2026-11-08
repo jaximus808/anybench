@@ -167,6 +167,9 @@ importers:
       '@anybench/core':
         specifier: workspace:*
         version: link:../core
+      '@anybench/kit':
+        specifier: workspace:*
+        version: link:../kit
       '@anybench/naive':
         specifier: workspace:*
         version: link:../naive
