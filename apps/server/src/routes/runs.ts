@@ -6,6 +6,8 @@
 //   PATCH /runs/:id/kit      runs.editKit: edit the run's kit (same as kits.createVersion; see kits.ts)
 //   POST  /runs/:id/go       leave awaiting_go: proven kit, estimate within budget, billing gate
 //   POST  /runs/:id/cancel   set cancel_requested_at, move to cancelled, write the event
+//   GET   /runs/:id/contenders  runs.contenders: every candidate, kept or dropped, with its spec
+//   GET   /runs/:id/agents      runs.agents: the run's Naïve agent sessions (agent_sessions)
 //
 // The API never runs ingest or agents: it persists and enqueues `run.advance` (job key
 // `runs:<id>:<step>`) in the SAME transaction as the write (lib/job-queue.ts), so a run is never
@@ -29,6 +31,7 @@
 import {
   AlertIdSchema,
   apiRoutes,
+  ContenderSchema,
   isTerminalRunState,
   KitIdSchema,
   newId,
@@ -44,6 +47,7 @@ import {
   type PaymentRequired,
   type Run,
   type RunCommand,
+  type RunContender,
   type RunDetail,
   type RunSource,
   type RunState,
@@ -269,6 +273,34 @@ async function runDetail(tx: DbTx, row: RunRow): Promise<RunDetail> {
     },
     open_alerts: openAlerts.map(toAlert),
     agents: agents.map((a) => toAgentSession(a, row.id)),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Contenders
+
+/**
+ * contenders.source is the JSON of the kit contender (runs.create writes it) or, for a candidate
+ * an agent found, a free-form source string. Only a valid core Contender becomes `spec`.
+ */
+function toRunContender(row: typeof contenders.$inferSelect): RunContender {
+  let spec: RunContender["spec"] = null;
+  try {
+    const parsed = ContenderSchema.safeParse(JSON.parse(row.source));
+    if (parsed.success) spec = parsed.data;
+  } catch {
+    // not JSON: a free-form source
+  }
+  const role = ContenderSchema.shape.role.safeParse(row.role);
+  return {
+    id: row.id as RunContender["id"],
+    kit_id: (row.kitId ?? null) as RunContender["kit_id"],
+    name: spec?.name ?? spec?.id ?? row.source.slice(0, 200),
+    role: spec?.role ?? (role.success ? role.data : "competitor"),
+    status: row.status,
+    reason: row.reason ?? null,
+    found_by: row.foundBy ?? null,
+    spec,
   };
 }
 
@@ -608,6 +640,44 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     if (!result.ok)
       return fail(c, result.status === 404 ? "not_found" : "conflict", result.message);
     return send(c, route, { run: toRun(result.run) });
+  });
+
+  // contenders and agent_sessions carry no owner_id: the run is read under RLS first, so a
+  // foreign or unknown run is a 404 and only then are its children read by run_id.
+  r.get("/:id/contenders", readRun, async (c) => {
+    const route = contract.contenders;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const id = parsed.request.params.id;
+    const rows = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
+      const [run] = await tx.select({ id: runs.id }).from(runs).where(eq(runs.id, id)).limit(1);
+      if (!run) return null;
+      return tx
+        .select()
+        .from(contenders)
+        .where(eq(contenders.runId, id))
+        .orderBy(contenders.createdAt, contenders.id);
+    });
+    if (!rows) return fail(c, "not_found", "run not found");
+    return send(c, route, { items: rows.map(toRunContender) });
+  });
+
+  r.get("/:id/agents", readRun, async (c) => {
+    const route = contract.agents;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const id = parsed.request.params.id;
+    const rows = await scopedDb(c.get("actor"), deps.db).transaction(async (tx) => {
+      const [run] = await tx.select({ id: runs.id }).from(runs).where(eq(runs.id, id)).limit(1);
+      if (!run) return null;
+      return tx
+        .select()
+        .from(agentSessions)
+        .where(eq(agentSessions.runId, id))
+        .orderBy(agentSessions.createdAt, agentSessions.id);
+    });
+    if (!rows) return fail(c, "not_found", "run not found");
+    return send(c, route, { items: rows.map((a) => toAgentSession(a, id)) });
   });
 
   return r;

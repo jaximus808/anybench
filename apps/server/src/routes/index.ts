@@ -28,6 +28,7 @@ import { runnerRoutes } from "./runner.js";
 import { runsRoutes } from "./runs.js";
 import { scanRoutes } from "./scan.js";
 import { trialLogsRoutes } from "./trial-logs.js";
+import { runTrialsRoutes, trialsRoutes } from "./trials.js";
 
 export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // TDM-65/TDM-66: tenant routes take a Bearer API key or the session cookie unless the caller
@@ -55,11 +56,15 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   app.use("/runs/:id/stream", requireScope(deps, "events:read", { runIdParam: "id" }));
   app.route("/runs", eventsRoutes(deps));
   app.route("/runs", runsRoutes(tenant));
+  // Run page fix: trials.list (runs:read; a run-scoped key only reaches its own runs).
+  app.route("/runs", runTrialsRoutes(deps));
   app.route("/scans", scanRoutes(deps));
   // TDM-74: trial logs need `logs:read`; the handler checks a run-scoped key against the trial's run.
   app.use("/trials/:id/log", requireScope(deps, "logs:read"));
   app.use("/trials/:id/logs", requireScope(deps, "logs:read"));
   app.use("/trials/:id/log/stream", requireScope(deps, "logs:read"));
   app.route("/trials", trialLogsRoutes(deps));
+  // Run page fix: trials.get (runs:read; the handler checks a run-scoped key against the trial's run).
+  app.route("/trials", trialsRoutes(deps));
   app.route("/v1/trials", runnerRoutes(deps));
 }
