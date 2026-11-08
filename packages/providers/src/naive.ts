@@ -15,9 +15,8 @@
 //   mkdirs the parent through fs, creates a non-world-readable file empty with its mode before the
 //   content goes in, then checks through exec (chmod + stat size) until the shell sees it.
 //   Secrets therefore never go on an exec command line; only paths and modes do.
-// - execDetached. Its own launch line, not `buildDetachedCommand`: only the setsid job is put in
-//   the background and every fd is redirected, because a Naïve exec waits for anything still
-//   holding its stdout/stderr.
+// - execDetached. `buildDetachedCommand` puts only the setsid job in the background with every
+//   fd redirected, because a Naïve exec waits for anything still holding its stdout/stderr.
 // - Cost. Billed in advance per 10-minute block at 8 400 µ$ per vCPU + 2 700 µ$ per GiB;
 //   `naiveBlockPriceMicroUsd` and `naiveComputerCostMicroUsd` compute it in bigint micro-USD.
 //
@@ -45,6 +44,7 @@ import {
   isProviderError,
 } from "./errors.js";
 import {
+  buildDetachedCommand,
   capOutput,
   defaultDetachedLogPath,
   effectiveExecTimeout,
@@ -200,18 +200,6 @@ export function providerErrorFromNaive(err: unknown, resource?: string): Provide
 }
 
 // ---------- detached launch ----------
-
-/**
- * The exec line execDetached sends: makes the log's directory, starts `command` in its own
- * session with every fd redirected (so the exec returns at once), prints the pid.
- */
-export function buildNaiveDetachedCommand(command: string, logPath: string): string {
-  const log = shellQuote(logPath);
-  return (
-    `mkdir -p "$(dirname ${log})" || exit 1; ` +
-    `setsid nohup sh -c ${shellQuote(command)} >> ${log} 2>&1 < /dev/null & echo $!`
-  );
-}
 
 /** Links the fs home to $HOME when they differ, then checks both name the same directory. */
 export function buildNaiveHomeLinkCommand(fsHome: string): string {
@@ -522,7 +510,7 @@ export class NaiveProvider implements ComputeProvider {
       o.data.logPath === undefined
         ? defaultDetachedLogPath(home, `${Date.now()}-${++this.detachedSeq}`)
         : resolveHomePath(home, o.data.logPath, this.name);
-    const r = await this.exec(id, buildNaiveDetachedCommand(command, logPath), {
+    const r = await this.exec(id, buildDetachedCommand(command, logPath), {
       timeoutMs: Math.min(SETUP_TIMEOUT_MS, this.capabilities.maxExecTimeoutMs),
     });
     if (r.exitCode !== 0) {

@@ -3,9 +3,13 @@
 import { FakeNaive, fakeNaiveError, type NaiveComputersApi } from "@anybench/naive";
 import { describe, expect, it } from "vitest";
 import { isProviderError, type ProviderErrorCode } from "../src/errors.js";
-import { buildDetachedCommand, decodeText, trialTag } from "../src/helpers.js";
 import {
-  buildNaiveDetachedCommand,
+  buildDetachedCommand,
+  decodeText,
+  legacyBackgroundedListCommand,
+  trialTag,
+} from "../src/helpers.js";
+import {
   decodeNaiveComputerName,
   encodeNaiveComputerName,
   naiveBlockPriceMicroUsd,
@@ -181,13 +185,17 @@ describe("execDetached", () => {
     expect(proc).toMatchObject({ logPath: "/home/naive/logs/run.log" });
     expect(proc.pid).toBeGreaterThan(0);
     expect(fake.commandHistory.at(-1)!.command).toBe(
-      buildNaiveDetachedCommand("sleep 3000 && echo late", "/home/naive/logs/run.log"),
+      buildDetachedCommand("sleep 3000 && echo late", "/home/naive/logs/run.log"),
     );
-    // The shared helper backgrounds `mkdir && setsid …` as one job whose mkdir keeps the
-    // exec's stdout: on Naïve that holds the call open until the timeout.
-    const held = await p.exec(c.id, buildDetachedCommand("sleep 3000", "/home/naive/logs/b.log"), {
-      timeoutMs: 1_000,
-    });
+    // The pre-TDM-22 line backgrounds `mkdir && setsid …` as one job whose subshell keeps the
+    // exec's stdout: on live Naïve that held the call open until the timeout.
+    const held = await p.exec(
+      c.id,
+      legacyBackgroundedListCommand("sleep 3000", "/home/naive/logs/b.log"),
+      {
+        timeoutMs: 1_000,
+      },
+    );
     expect(held.timedOut).toBe(true);
   });
 });

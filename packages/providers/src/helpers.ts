@@ -149,8 +149,22 @@ export function defaultDetachedLogPath(home: string, n: number | string): string
  * The one shell line real providers send through exec to start detached work:
  * survives the exec returning, its timeout and the session ending (setsid + nohup,
  * stdin closed), appends output to `logPath`, and prints the new pid.
+ *
+ * Only the setsid job goes in the background, with every fd redirected. The earlier
+ * `mkdir … && setsid … &` form backgrounded the whole list in a subshell that kept the
+ * exec's stdout open, so a Naïve exec waited for the job and hit its timeout (TDM-22 live
+ * run, docs/findings/naive-provider.md); it also printed the subshell's pid, not the job's.
  */
 export function buildDetachedCommand(command: string, logPath: string): string {
+  const log = shellQuote(logPath);
+  return (
+    `mkdir -p "$(dirname ${log})" || exit 1; ` +
+    `setsid nohup sh -c ${shellQuote(command)} >> ${log} 2>&1 < /dev/null & echo $!`
+  );
+}
+
+/** The pre-TDM-22 line, kept only so tests can show why it was replaced. Do not use. */
+export function legacyBackgroundedListCommand(command: string, logPath: string): string {
   const log = shellQuote(logPath);
   return (
     `mkdir -p "$(dirname ${log})" && ` +
