@@ -85,7 +85,7 @@ export const DeployEnvSchema = z
   });
 export type DeployEnv = z.infer<typeof DeployEnvSchema>;
 
-function sameDatabase(a: string, b: string): boolean {
+export function sameDatabase(a: string, b: string): boolean {
   try {
     const ua = new URL(a);
     const ub = new URL(b);

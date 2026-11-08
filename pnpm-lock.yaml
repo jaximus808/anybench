@@ -404,18 +404,31 @@ importers:
       '@anybench/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@anybench/envs':
+        specifier: workspace:*
+        version: link:../../packages/envs
       '@anybench/naive':
         specifier: workspace:*
         version: link:../../packages/naive
+      '@anybench/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       server:
         specifier: workspace:*
         version: link:../../apps/server
       zod:
         specifier: ^4.6.7
         version: 4.6.7
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
 
   scripts/spikes/stripe:
     dependencies:

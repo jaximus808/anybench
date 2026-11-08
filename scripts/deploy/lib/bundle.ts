@@ -92,12 +92,16 @@ export function contentHashOf(files: Record<string, Buffer>): string {
   return `sha256:${h.digest("hex")}`;
 }
 
-export async function bundleApi(options: BundleOptions): Promise<ApiBundle> {
-  const scope = options.bundledScope ?? "@anybench/";
-  const nodeMajor = options.nodeMajor ?? 22;
-  const seen = new Map<string, Set<string>>();
+/** A bundled CommonJS `require` of a builtin needs a real require in an ESM file. */
+export const CREATE_REQUIRE_BANNER =
+  'import { createRequire as __anybenchCreateRequire } from "node:module";\nconst require = __anybenchCreateRequire(import.meta.url);';
 
-  const externalNpm: Plugin = {
+/**
+ * esbuild plugin: npm packages stay external, and each one's resolved version is recorded in
+ * `seen` (for the shipped package.json). Packages under `scope` are bundled from their dist/.
+ */
+export function externalNpmPlugin(scope: string, seen: Map<string, Set<string>>): Plugin {
+  return {
     name: "external-npm",
     setup(b) {
       b.onResolve({ filter: /^[^./]/ }, (args) => {
@@ -111,6 +115,14 @@ export async function bundleApi(options: BundleOptions): Promise<ApiBundle> {
       });
     },
   };
+}
+
+export async function bundleApi(options: BundleOptions): Promise<ApiBundle> {
+  const scope = options.bundledScope ?? "@anybench/";
+  const nodeMajor = options.nodeMajor ?? 22;
+  const seen = new Map<string, Set<string>>();
+
+  const externalNpm = externalNpmPlugin(scope, seen);
 
   const result = await build({
     entryPoints: [options.entry],
@@ -121,10 +133,7 @@ export async function bundleApi(options: BundleOptions): Promise<ApiBundle> {
     target: `node${nodeMajor}`,
     outfile: "api/app.js",
     plugins: [externalNpm],
-    // A bundled CommonJS `require` of a builtin needs a real require in an ESM file.
-    banner: {
-      js: 'import { createRequire as __anybenchCreateRequire } from "node:module";\nconst require = __anybenchCreateRequire(import.meta.url);',
-    },
+    banner: { js: CREATE_REQUIRE_BANNER },
     legalComments: "none",
     logLevel: "silent",
   });
