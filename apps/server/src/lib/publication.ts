@@ -15,6 +15,7 @@ import {
   type Publication,
   type PublicationBadge,
   type PublicationEvaluation,
+  type PublicationScoreCell,
   type Report,
   SubjectKindSchema,
   type RunState,
@@ -88,6 +89,8 @@ export interface PublicationInput {
   contenders: { id: string; source: string; role: string }[];
   trials: {
     contenderId: string;
+    /** Missing on old callers: the scoreboard then has overall cells only. */
+    workloadId?: string;
     repeat: number;
     state: string;
     gate: unknown;
@@ -233,6 +236,40 @@ export function badgeOf(report: Report, kitSubject: string, primary?: string): P
 
 const SUBJECT_KINDS = new Set<string>(SubjectKindSchema.options);
 
+type PubTrial = PublicationInput["trials"][number];
+
+/** Raw per-setup counts (overall, then per task) for the scoreboard bars. */
+export function scoreCells(
+  setupIds: string[],
+  graded: PubTrial[],
+  gatePassed: PubTrial[],
+): PublicationScoreCell[] {
+  const passed = new Set(gatePassed);
+  const tasks = [
+    ...new Set(graded.map((t) => t.workloadId).filter((w): w is string => !!w)),
+  ].sort();
+  const cell = (id: string, task: string | null): PublicationScoreCell => {
+    const ts = graded.filter(
+      (t) => t.contenderId === id && (task === null || t.workloadId === task),
+    );
+    const walls = ts
+      .filter((t) => passed.has(t))
+      .map((t) => (t.metrics as Record<string, unknown> | null)?.wall_s)
+      .filter((w): w is number => typeof w === "number" && Number.isFinite(w) && w >= 0);
+    const cost = ts.reduce((a, t) => a + t.costMicroUsd, 0n);
+    return {
+      contender_id: id as PublicationScoreCell["contender_id"],
+      workload_id: task,
+      graded: ts.length,
+      passed: ts.filter((t) => passed.has(t)).length,
+      cost_micro_usd: Number(cost),
+      wall_s_mean: walls.length ? walls.reduce((a, w) => a + w, 0) / walls.length : null,
+      wall_n: walls.length,
+    };
+  };
+  return setupIds.flatMap((id) => [cell(id, null), ...tasks.map((w) => cell(id, w))]);
+}
+
 export function buildPublication(input: PublicationInput): Publication {
   const { report, run, kit } = input;
   const facts = KitFactsSchema.parse(kit.spec);
@@ -330,6 +367,11 @@ export function buildPublication(input: PublicationInput): Publication {
       per_task_family: report.per_task?.family ?? null,
       per_task_scope: report.per_task?.scope ?? null,
     },
+    scoreboard: scoreCells(
+      report.contenders.map((c) => c.contender_id),
+      graded,
+      gatePassed,
+    ),
     metrics: {
       wall_clock: input.trials.some((t) => {
         const m = t.metrics as Record<string, unknown> | null;

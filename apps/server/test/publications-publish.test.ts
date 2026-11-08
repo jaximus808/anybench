@@ -459,3 +459,40 @@ describe.skipIf(!available)("publication routes", () => {
     );
   });
 });
+
+describe("scoreCells (scoreboard counts in the snapshot)", () => {
+  it("counts per setup, overall and per task; time only from gate-passing trials", async () => {
+    const { scoreCells } = await import("../src/lib/publication.js");
+    const tr = (c: string, w: string, ok: boolean, wall: number, cost: bigint) => ({
+      contenderId: c,
+      workloadId: w,
+      repeat: 0,
+      state: "done",
+      gate: null,
+      metrics: { wall_s: wall },
+      costMicroUsd: cost,
+    });
+    const graded = [
+      tr("a", "x", true, 10, 100n),
+      tr("a", "y", false, 99, 300n),
+      tr("b", "x", true, 30, 1000n),
+    ];
+    const cells = scoreCells(["a", "b"], graded, [graded[0]!, graded[2]!]);
+    expect(cells.find((c) => c.contender_id === "a" && c.workload_id === null)).toMatchObject({
+      graded: 2,
+      passed: 1,
+      cost_micro_usd: 400,
+      wall_s_mean: 10,
+      wall_n: 1,
+    });
+    expect(cells.filter((c) => c.contender_id === "b").map((c) => c.workload_id)).toEqual([
+      null,
+      "x",
+      "y",
+    ]);
+    expect(cells.find((c) => c.contender_id === "b" && c.workload_id === "y")).toMatchObject({
+      graded: 0,
+      wall_s_mean: null,
+    });
+  });
+});

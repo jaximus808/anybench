@@ -234,6 +234,7 @@ export function publicationsRoutes(deps: AppDeps): Hono<ActorEnv> {
             tx
               .select({
                 contenderId: trials.contenderId,
+                workloadId: trials.workloadId,
                 repeat: trials.repeat,
                 state: trials.state,
                 gate: trials.gate,

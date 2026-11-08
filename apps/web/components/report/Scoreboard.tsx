@@ -4,7 +4,7 @@
 import { apiRoutes, type RunId, type RunTraceSummary, type Trial } from "@anybench/core";
 import { useEffect, useState } from "react";
 import { useLiveApi } from "../../lib/live/client";
-import { scoreboard, type BarGroup, type Setup } from "./scoreboard-model";
+import { scoreboard, type BarGroup, type Board, type Setup } from "./scoreboard-model";
 import s from "./scoreboard.module.css";
 
 async function loadTrials(client: ReturnType<typeof useLiveApi>, id: RunId): Promise<Trial[]> {
@@ -50,13 +50,7 @@ function tone(i: number, setup: Setup): string {
   return ["a", "b", "c", "d"][i % 4]!;
 }
 
-export function Scoreboard({
-  board,
-  setups,
-}: {
-  board: NonNullable<ReturnType<typeof scoreboard>>;
-  setups: Setup[];
-}) {
+export function Scoreboard({ board, setups }: { board: Board; setups: Setup[] }) {
   const subjects = setups.filter((x) => !x.baseline);
   const toneOf = (id: string) => {
     const setup = setups.find((x) => x.id === id)!;

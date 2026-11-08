@@ -45,6 +45,21 @@ export const PublicationSetupSchema = z.object({
 });
 export type PublicationSetup = z.infer<typeof PublicationSetupSchema>;
 
+export const PublicationScoreCellSchema = z.object({
+  contender_id: ContenderIdSchema,
+  /** null: every task together. */
+  workload_id: z.string().min(1).nullable(),
+  graded: Count,
+  /** Graded trials that passed every applicable gate. */
+  passed: Count,
+  /** Sum over the graded trials, integer micro-USD. */
+  cost_micro_usd: Count,
+  /** Mean wall clock over the gate-passing trials (no speed number without the gate). */
+  wall_s_mean: z.number().nonnegative().nullable(),
+  wall_n: Count,
+});
+export type PublicationScoreCell = z.infer<typeof PublicationScoreCellSchema>;
+
 export const PublicationEvaluationSchema = z.object({
   /** The preregistered whole-kit hash (frozen before the first contender trial). */
   kit_hash: z.string().min(1).max(200),
@@ -98,6 +113,11 @@ export const PublicationEvaluationSchema = z.object({
   }),
   /** Which metrics the run reported (wall clock and cost can be missing on older runs). */
   metrics: z.object({ wall_clock: z.boolean(), cost: z.boolean() }),
+  /**
+   * Raw counts behind the scoreboard bars: per setup, overall (`workload_id` null) and per task.
+   * No verdict; missing on publications made before it existed.
+   */
+  scoreboard: z.array(PublicationScoreCellSchema).optional(),
 });
 export type PublicationEvaluation = z.infer<typeof PublicationEvaluationSchema>;
 

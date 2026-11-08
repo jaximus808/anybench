@@ -14,6 +14,21 @@ import { requirementViews, taskViews } from "../bench/model";
 import { perTaskRows, resultRows, VERDICT_WORD } from "../report/model";
 import { heroSentence, publicationUrls, shortName } from "../../lib/publish/view";
 import styles from "./publish.module.css";
+import { Scoreboard } from "../report/Scoreboard";
+import { buildBoard, cellsFromPublication, type Setup } from "../report/scoreboard-model";
+
+/** The scoreboard bars from the snapshot's raw counts; null on snapshots made before them. */
+function publicBoard(p: Publication) {
+  const cells = p.evaluation.scoreboard;
+  if (!cells?.length) return null;
+  const setups: Setup[] = p.evaluation.setups.map((s) => ({
+    id: s.contender_id,
+    name: s.name,
+    baseline: s.role === "baseline",
+  }));
+  const board = buildBoard(setups, cellsFromPublication(cells), "wall clock, gate-passing trials");
+  return board ? { board, setups } : null;
+}
 
 type Live = Extract<PublicPublication, { status: "live" }>;
 
@@ -51,24 +66,38 @@ const GATE_KIND: Record<string, string> = {
 export function PublicReport({ data, origin }: { data: Live; origin?: string }) {
   const p = data.signed.payload;
   const urls = publicationUrls(p.slug, origin);
-  const tone = p.badge.verdict ?? "none";
+  const sb = publicBoard(p);
+  const tone = sb ? "none" : (p.badge.verdict ?? "none");
   return (
     <article className={styles.page} data-testid="public-report">
       <header className={styles.hero}>
         <div className={styles.heroText}>
           <p className={styles.question}>{p.title}</p>
           <h1 className={styles.verdict} data-verdict={tone} data-testid="public-verdict">
-            {heroSentence(p.badge)}
+            {sb && p.badge.baseline
+              ? `${p.badge.subject} vs ${p.badge.baseline}`
+              : heroSentence(p.badge)}
           </h1>
           <p className={styles.scope} data-testid="public-scope">
             {p.badge.scope ? `${capitalize(p.badge.scope)}, ` : ""}
             {p.evaluation.trials.graded} graded trials across {p.evaluation.setups.length} setups.
             {p.evaluation.stats.per_task_scope ? ` ${p.evaluation.stats.per_task_scope}` : ""}
           </p>
-          <p className={styles.statement}>{p.verdict}</p>
+          <p className={styles.statement}>
+            {p.verdict.replace(/no detectable difference/g, "not significant")}
+          </p>
         </div>
         <Seal data={data} />
       </header>
+
+      {sb ? (
+        <section className={styles.section} aria-labelledby="score-h">
+          <h2 id="score-h" className={styles.h2}>
+            Scoreboard
+          </h2>
+          <Scoreboard board={sb.board} setups={sb.setups} />
+        </section>
+      ) : null}
 
       <Setups p={p} />
 
