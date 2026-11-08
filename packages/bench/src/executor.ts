@@ -70,7 +70,12 @@ import {
   type TrialState,
 } from "@anybench/core";
 import type { ComputerRegistry } from "@anybench/envs";
-import { contenderDriverEnv } from "@anybench/kit";
+import {
+  contenderDriverEnv,
+  createProxyKeyGuard,
+  DRIVER_TOKEN_CAP_FILE,
+  type ProxyKeyGuard,
+} from "@anybench/kit";
 import {
   decodeText,
   isProviderError,
@@ -231,7 +236,32 @@ export interface TrialPrepared {
   secrets: Record<string, string>;
   /** Workload inputs and the like, relative to the computer's home (e.g. `eval/in/words.txt`). */
   files?: { path: string; content: string | Uint8Array; mode?: number }[];
+  /** TDM-39: the trial's Naïve proxy key, when its tokens come from the Naïve proxy. */
+  proxy_key?: TrialProxyKey;
 }
+
+/**
+ * TDM-39 [4.7]: a per-trial Naïve `proxy:write` key (TDM-16 `provisionClaudeCodeProxyEnv`). It has
+ * no Naïve-side spend cap, so the executor polls `enforce` every heartbeat, revokes the moment a
+ * cap is hit (the runner's status.json `token_cap.exceeded`, or the coding-agent driver's
+ * EVAL_OUT/coding-agent/token-cap.json), and revokes at the end of the attempt on every path
+ * except a worker abort / lost lease (the attempt is still running and gets re-attached).
+ * Put the proxy env file itself in `files` (`.anybench/proxy.env`, mode 0o600).
+ */
+export interface TrialProxyKey {
+  /** Revoke the key (TDM-16 `revokeTrialProxyCredential`). Must be idempotent. */
+  revoke: () => Promise<void>;
+  /** Each poll: TDM-16 `enforceTrialProxyBudget({keyId, capMicroUsd})` (revokes at the cap). */
+  enforce?: () => Promise<void>;
+  /**
+   * The key's secret. Added to ~/.anybench/env as ANYBENCH_PROXY_AUTH_TOKEN so the runner redacts
+   * it from every log and event, even when the agent prints its env file into its transcript.
+   */
+  secret?: string;
+}
+
+/** ~/.anybench/env name that carries the proxy secret for the runner's redaction list. */
+export const PROXY_SECRET_ENV_NAME = "ANYBENCH_PROXY_AUTH_TOKEN";
 
 export interface TrialSource {
   prepare(trial: ExecTrial): Promise<TrialPrepared>;
@@ -625,6 +655,8 @@ class TrialExecution {
   private seenRunnerEdges: RunnerEdge[] = [];
   /** This execution wrote ~/.anybench/cancel: a runner-reported `cancelled` is ours. */
   private cancelWritten = false;
+  /** TDM-39: revokes the trial's Naïve proxy key at a cap hit and at the end of the attempt. */
+  private proxyGuard: ProxyKeyGuard | null = null;
 
   constructor(
     private readonly deps: ExecutorDeps,
@@ -655,6 +687,7 @@ class TrialExecution {
       if (err instanceof Stop) {
         outcome = { kind: err.kind, trial: this.trial };
       } else {
+        await this.endProxyKey("executor error");
         // Unexpected (store down, a bug): release so the job's retry or the next sweep can take the
         // trial at once, instead of leaving it unwatched (no cancel, kill switch or deadline).
         clearInterval(refresher);
@@ -668,6 +701,7 @@ class TrialExecution {
       this.opts.signal?.removeEventListener("abort", onAbort);
     }
     if (outcome.kind !== "aborted" && outcome.kind !== "lease_lost") {
+      await this.endProxyKey(`attempt ${outcome.kind}`);
       try {
         await this.opts.beforeRelease?.(outcome);
       } finally {
@@ -835,6 +869,24 @@ class TrialExecution {
     if (!this.prepared) {
       try {
         this.prepared = await this.deps.source.prepare(this.t);
+        const key = this.prepared.proxy_key;
+        if (key) {
+          this.proxyGuard = createProxyKeyGuard({
+            revoke: key.revoke,
+            sleep: (ms) => this.sleep(ms),
+            onRevoked: (r) => {
+              const log = { trialId: this.trialId, ...r };
+              if (r.ok) this.deps.logger?.info(log, "proxy key revoked");
+              else this.deps.logger?.error(log, "proxy key revoke FAILED (the reaper will retry)");
+            },
+          });
+          if (key.secret !== undefined) {
+            this.prepared = {
+              ...this.prepared,
+              secrets: { ...this.prepared.secrets, [PROXY_SECRET_ENV_NAME]: key.secret },
+            };
+          }
+        }
       } catch (err) {
         throw new InfraFailure(`could not prepare the trial: ${errMessage(err)}`, "prepare");
       }
@@ -1233,6 +1285,7 @@ class TrialExecution {
       if (isTerminalTrialState(this.state())) return this.finish(status);
 
       status = await this.readStatus();
+      await this.watchProxyKey(status);
       if (status) {
         const sig = `${status.phase}|${status.heartbeat_at ?? ""}|${status.updated_at}`;
         if (sig !== lastSig) {
@@ -1257,6 +1310,43 @@ class TrialExecution {
       }
       await this.sleep(this.timing.pollMs, this.stop.signal);
     }
+  }
+
+  /** TDM-39: enforce the proxy budget and revoke the key the moment any cap is hit. */
+  private async watchProxyKey(status: RunnerStatus | null): Promise<void> {
+    const guard = this.proxyGuard;
+    const key = this.prepared?.proxy_key;
+    if (!guard || !key || guard.revoked) return;
+    try {
+      await key.enforce?.();
+      if (status) await guard.observeRunnerStatus(status);
+      if (!guard.revoked && (await this.driverTokenCapHit())) {
+        await guard.capHit("coding-agent driver: token cap exceeded");
+      }
+    } catch (err) {
+      this.deps.logger?.warn({ err, trialId: this.trialId }, "proxy key budget check failed");
+    }
+  }
+
+  private async driverTokenCapHit(): Promise<boolean> {
+    const pid = this.computer?.info.id;
+    if (!pid) return false;
+    try {
+      await this.deps.registry.provider.getFile(
+        pid,
+        `${this.paths().outDir}/${DRIVER_TOKEN_CAP_FILE}`,
+      );
+      return true;
+    } catch (err) {
+      if (isProviderError(err, "not_found")) return false;
+      throw err;
+    }
+  }
+
+  private async endProxyKey(detail: string): Promise<void> {
+    await this.proxyGuard?.trialEnded(detail).catch((err: unknown) => {
+      this.deps.logger?.error({ err, trialId: this.trialId }, "proxy key revoke failed");
+    });
   }
 
   private async writeCancelFile(): Promise<void> {
