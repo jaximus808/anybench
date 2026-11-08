@@ -13,6 +13,7 @@ import { DiffChart, RequirementChart } from "../bench/Charts";
 import { requirementViews, taskViews } from "../bench/model";
 import { perTaskRows, resultRows, VERDICT_WORD } from "../report/model";
 import { heroSentence, publicationUrls, shortName } from "../../lib/publish/view";
+import { questionTitle } from "../../lib/question-title";
 import styles from "./publish.module.css";
 import { Scoreboard } from "../report/Scoreboard";
 import { buildBoard, cellsFromPublication, type Setup } from "../report/scoreboard-model";
@@ -72,7 +73,7 @@ export function PublicReport({ data, origin }: { data: Live; origin?: string }) 
     <article className={styles.page} data-testid="public-report">
       <header className={styles.hero}>
         <div className={styles.heroText}>
-          <p className={styles.question}>{p.title}</p>
+          <p className={styles.question}>{questionTitle(p.title)}</p>
           <h1 className={styles.verdict} data-verdict={tone} data-testid="public-verdict">
             {sb && p.badge.baseline
               ? `${p.badge.subject} vs ${p.badge.baseline}`

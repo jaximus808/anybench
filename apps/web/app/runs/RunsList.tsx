@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ApiClientError, formatUsd, type ApiClient, type Run, type RunState } from "@anybench/core";
 import { api } from "../../lib/api";
+import { questionTitle } from "../../lib/question-title";
 import styles from "./new/new-run.module.css";
 
 const SIGNIN_RUNS = `/signin?redirect_to=${encodeURIComponent("/runs")}`;
@@ -116,5 +117,6 @@ export function stateTone(state: RunState): StateTone {
 }
 
 function firstLine(question: string): string {
-  return question.split("\n", 1)[0] ?? question;
+  const title = questionTitle(question);
+  return title.split("\n", 1)[0] ?? title;
 }

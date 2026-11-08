@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 import { fetchPublication } from "../../../lib/publish/fetch";
 import { heroSentence, setupNames, trialLine } from "../../../lib/publish/view";
+import { questionTitle } from "../../../lib/question-title";
 
 // OG image for /r/<slug> (E12 12.6): the verdict in big type plus the setups, for link unfurls
 // on X, Slack and LinkedIn. Instrument palette (dark); colour only for a called verdict.
@@ -73,7 +74,7 @@ export default async function Image({ params }: { params: Promise<{ slug: string
   let signed = false;
   if (got.kind === "found" && got.data.status === "live") {
     const p = got.data.signed.payload;
-    question = p.title;
+    question = questionTitle(p.title);
     verdict = heroSentence(p.badge);
     tone = p.badge.verdict === "better" ? C.pass : p.badge.verdict === "worse" ? C.fail : C.fg;
     setups = setupNames(p);

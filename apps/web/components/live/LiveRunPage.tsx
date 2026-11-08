@@ -8,6 +8,7 @@
 import { apiRoutes, type AlertId, type ApiClient, type RunState } from "@anybench/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LiveApiContext, useLiveApi } from "../../lib/live/client";
+import { questionTitle } from "../../lib/question-title";
 import { countTrials, type FeedItem, type LiveRun, type SearchHit } from "../../lib/live/model";
 import {
   describeApiError,
@@ -277,8 +278,8 @@ export function LiveRunView({
               </span>
             ) : null}
           </p>
-          <h1 className={styles.question} title={live.question}>
-            {live.question}
+          <h1 className={styles.question} title={questionTitle(live.question)}>
+            {questionTitle(live.question)}
           </h1>
           <div className={styles.mTopActions}>
             <button type="button" className={styles.searchBtn} onClick={() => setPalette(true)}>

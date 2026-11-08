@@ -6,6 +6,7 @@ import { apiRoutes, type ApiClient, type Run, type RunId } from "@anybench/core"
 import { useEffect, useState } from "react";
 import { LiveApiContext, useLiveApi } from "../../lib/live/client";
 import { describeApiError } from "../../lib/live/useLiveRun";
+import { questionTitle } from "../../lib/question-title";
 import styles from "../live/live.module.css";
 import { SharePanel } from "../publish/SharePanel";
 import { ResultsPanel, ResultsView } from "./ResultsPanel";
@@ -36,7 +37,7 @@ function ReportLoader({ runId }: { runId: string }) {
   return (
     <div className={styles.page}>
       <div className={styles.shell}>
-        {run ? <h1 className={styles.question}>{run.question}</h1> : null}
+        {run ? <h1 className={styles.question}>{questionTitle(run.question)}</h1> : null}
         {error ? (
           <ResultsView runId={runId} state={{ kind: "error", message: error }} runState={null} />
         ) : run ? (

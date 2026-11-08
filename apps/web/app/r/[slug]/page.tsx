@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { PublicReport, WithdrawnNotice } from "../../../components/publish/PublicReport";
 import { fetchPublication } from "../../../lib/publish/fetch";
 import { heroSentence, publicationUrls, setupNames } from "../../../lib/publish/view";
+import { questionTitle } from "../../../lib/question-title";
 
 // The public benchmark page (E12 12.3): no login, server-rendered from the signed snapshot.
 // Unlisted: the unguessable slug is the permission, so search engines are asked not to index it.
@@ -27,7 +28,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
     return { title: "Withdrawn benchmark", robots: { index: false } };
   const p = got.data.signed.payload;
   const title = heroSentence(p.badge).replace(/\.$/, "");
-  const description = `${p.title} ${p.badge.scope ? `${p.badge.scope}, ` : ""}${p.evaluation.trials.graded} graded trials. Setups: ${setupNames(p).join(", ")}. Signed by Anybench.`;
+  const description = `${questionTitle(p.title)} ${p.badge.scope ? `${p.badge.scope}, ` : ""}${p.evaluation.trials.graded} graded trials. Setups: ${setupNames(p).join(", ")}. Signed by Anybench.`;
   return {
     title,
     description,
