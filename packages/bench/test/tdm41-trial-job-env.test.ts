@@ -44,8 +44,8 @@ describe("trialJobFromKit on kits/tandem-vs-claude-code", () => {
       expect(job.env).toMatchObject({
         ...c.versions,
         ...c.driver.env,
-        ANYBENCH_MODEL: "anthropic/claude-sonnet-4.6",
-        CC_MODEL: "anthropic/claude-sonnet-4.6",
+        ANYBENCH_MODEL: "anthropic/claude-opus-5.5",
+        CC_MODEL: "anthropic/claude-opus-5.5",
         ANYBENCH_HIL_KIND: "tandem",
         ANYBENCH_HIL_POLICY: kit.human_in_loop!.policy,
         ANYBENCH_WALL_CAP_S: String(job.wall_clock_s),
@@ -60,7 +60,7 @@ describe("trialJobFromKit on kits/tandem-vs-claude-code", () => {
   it("a Claude Code contender gets its versions and model but no harness env", () => {
     const job = trialJobFromKit(kit, "claude-code-solo", "todo-api");
     expect(job.env?.CLAUDE_CODE_VERSION).toBe("2.1.319");
-    expect(job.env?.CC_MODEL).toBe("anthropic/claude-sonnet-4.6");
+    expect(job.env?.CC_MODEL).toBe("anthropic/claude-opus-5.5");
     expect(job.env).not.toHaveProperty("ANYBENCH_HIL_POLICY");
     expect(job.env).not.toHaveProperty("TANDEM_WORKERS");
   });

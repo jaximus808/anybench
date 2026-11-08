@@ -603,6 +603,7 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
   // The real kit (TDM-184 v2): driver.env carries AB_TOKEN_SOURCE=naive_proxy and the proxy
   // settings, versions pins CLAUDE_CODE_VERSION, driver.model the Naïve model. The stub passes all
   // of it to the adapter's env and writes the per-trial proxy env file, as the worker will.
+  const TVCC_MODEL = "anthropic/claude-opus-5.5";
   const TVCC = path.join(here, "..", "..", "..", "kits", "tandem-vs-claude-code");
   const CONTENDERS = [
     ["claude-code-solo", "Setup A: Claude Code solo"],
@@ -624,7 +625,7 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
       proxyEnv: {
         ANTHROPIC_BASE_URL: "https://api.vetta.sh/v1/proxy/anthropic",
         ANTHROPIC_AUTH_TOKEN: fake.key,
-        ANTHROPIC_MODEL: NAIVE_MODEL,
+        ANTHROPIC_MODEL: TVCC_MODEL,
       },
     });
     await materialize(plan.files, root);
@@ -650,7 +651,7 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
     });
     for (const line of [
       "export CLAUDE_CODE_VERSION='2.1.319'",
-      `export ANYBENCH_MODEL='${NAIVE_MODEL}'`,
+      `export ANYBENCH_MODEL='${TVCC_MODEL}'`,
       "export ANYBENCH_TOKEN_CAP_TOKENS='8000000'",
       "export AB_TOKEN_SOURCE='naive_proxy'",
       "export CC_SETUP='claude-code-solo'",
@@ -675,12 +676,12 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
       const seen = await readFile(path.join(fake.ctl, "seen"), "utf8");
       expect(seen).toContain("key=ok");
       expect(seen).toContain("auth_token=set api_key=\n");
-      expect(seen).toContain(`ANTHROPIC_MODEL=${NAIVE_MODEL}\n`);
+      expect(seen).toContain(`ANTHROPIC_MODEL=${TVCC_MODEL}\n`);
       expect(seen).toContain("MAX_THINKING_TOKENS=0\n");
       const argv = await argvOf(fake);
       expect(argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2)).toEqual([
         "--model",
-        NAIVE_MODEL,
+        TVCC_MODEL,
       ]);
       expect(argv.includes("Agent")).toBe(contender === "claude-code-solo");
       expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toContain(setupLine);
@@ -704,7 +705,7 @@ describe("kits/tandem-vs-claude-code contenders A and B through the stub", () =>
       expect(await readFile(path.join(fake.ctl, "claude-md"), "utf8")).toContain(setupLine);
       expect(JSON.parse(await readFile(path.join(out, P.versions), "utf8"))).toMatchObject({
         claude_code: CC,
-        model: NAIVE_MODEL,
+        model: TVCC_MODEL,
         token_source: "naive-proxy",
         provider: "naive:anthropic",
         effort: "naive-min",

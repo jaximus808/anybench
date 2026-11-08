@@ -170,7 +170,7 @@ describe("the runner stub on the real flagship kit's contender C", () => {
     for (const line of [
       "export TANDEM_WORKERS='5'",
       "export AB_TOKEN_SOURCE='naive_proxy'",
-      "export CC_MODEL='anthropic/claude-sonnet-4.6'",
+      "export CC_MODEL='anthropic/claude-opus-5.5'",
       "export TANDEM_MCP_VERSION='3.2.0'",
       "export CLAUDE_CODE_VERSION='2.1.319'",
       `export ANYBENCH_HIL_POLICY='${kit.spec.human_in_loop!.policy}'`,
