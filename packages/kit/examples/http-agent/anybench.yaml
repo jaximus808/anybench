@@ -24,7 +24,7 @@ contenders:
         stop: adapters/support-bot/driver.sh stop
       wall_clock_cap_s: 300
       max_turns: 6
-    version: support-bot@stub
+    version: support-bot@0.1.0-stub
 
 workloads:
   - id: support-basics

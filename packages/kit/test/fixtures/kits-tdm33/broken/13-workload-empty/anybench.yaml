@@ -7,7 +7,7 @@ subject:
 contenders:
   - id: tool
     role: subject
-    source: { github: example/tool, ref: v1 }
+    source: { github: example/tool, ref: v1.0.0 }
     driver:
       type: cli
       verbs: { run: "adapters/tool/driver.sh run {in} {out}" }

@@ -2,7 +2,8 @@
 //
 // A kit compares contenders only when their setups are equal in everything except what is
 // under test. validateKitDir refuses a kit unless:
-// - every agent contender pins a model id, and CLI/harness versions are pinned: no `latest`/
+// - every agent contender pins a model id (an http-agent pins its service instead), and
+//   CLI/harness versions are pinned: no `latest`/
 //   `main` in `versions`, in a github `ref`, or as an adapter script's `${VAR:-latest}` fallback;
 // - a version key (e.g. CLAUDE_CODE_VERSION) is pinned to the same value for every contender;
 // - caps (wall clock, tokens, spend, turns) are equal, unless the cap is the `vary` axis or
@@ -10,7 +11,8 @@
 // - every assist (`human_in_loop.policy` llm-reviewer / human-sim, tools) goes to every
 //   contender or to none;
 // - a contender that disables subagents disables both of Claude Code's names for them.
-// Warnings: deprecated `token_cap`, different pinned models, no `schedule.order_seed`.
+// Warnings: deprecated `token_cap`, different pinned models, no `schedule.order_seed`, an
+// http-agent service with no pinned version.
 //
 // Pure: the caller hands in the adapter scripts' text, so this runs in tests and on the server.
 import {
@@ -50,29 +52,76 @@ const FLOATING =
 /** Model aliases that resolve to whatever the provider ships today. */
 const MODEL_ALIASES = /^(sonnet|opus|haiku|opusplan|default|best|auto|latest)$/i;
 
-/** A version is pinned when it names one release: `2.0.14`, `v1`, a commit SHA. */
+const HEX_SHA = /^[0-9a-f]{7,40}$/i;
+const EXACT_SEMVER = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * A version is pinned when it names exactly one release: `v?X.Y.Z` with an optional `-pre` and
+ * `+build`, or a hex commit SHA (7–40 chars). `2`, `v2`, `2.0`, `^2.0.0`, `rc1`, `latest` are
+ * ranges or dist-tags that move.
+ */
 export function isPinnedVersion(v: string): boolean {
   const s = v.trim();
-  if (s === "" || FLOATING.test(s)) return false;
-  if (/[\^~<>=*|\s]/.test(s)) return false; // ranges
-  if (/(^|\.)x(\.|$)/i.test(s)) return false; // 1.x
-  return /\d/.test(s);
+  return EXACT_SEMVER.test(s) || HEX_SHA.test(s);
 }
 
-/** A git ref is pinned when it is a commit SHA or a release tag (`v1`, `14.1.1`, `tool-2.0`). */
+/**
+ * A git ref is pinned when it is a commit SHA or a release tag with at least three numeric
+ * components (`v0.1.0`, `14.1.1`, `ripgrep-14.1.1`). `main`, `release/1.2`, `stable-2` and `v1`
+ * move. A `/` is allowed only after an explicit `refs/tags/` (`refs/tags/tool/v1.2.3`).
+ */
 export function isPinnedGitRef(ref: string): boolean {
-  const s = ref.trim().replace(/^refs\/tags\//, "");
-  if (/^[0-9a-f]{7,40}$/i.test(s)) return true;
-  if (FLOATING.test(s) || s.startsWith("refs/heads/")) return false;
-  return /^(?:[A-Za-z][\w.-]*[-_/@])?v?\d+(?:\.\d+)*(?:[-+.][0-9A-Za-z.-]+)?$/.test(s);
+  const s = ref.trim();
+  if (HEX_SHA.test(s)) return true;
+  const explicitTag = s.startsWith("refs/tags/");
+  const tag = explicitTag ? s.slice("refs/tags/".length) : s;
+  if (!explicitTag && tag.includes("/")) return false;
+  return /^(?:[A-Za-z][\w./-]*?[-_@/])?v?\d+\.\d+\.\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$/.test(tag);
 }
 
-/** A model id is pinned when it names one snapshot, not an alias (`sonnet`, `*-latest`). */
+/**
+ * Snapshot ids without a trailing date that still name one fixed model (OpenAI's older `-MMDD`
+ * snapshots). Extend when a provider ships another undated snapshot id.
+ */
+export const UNDATED_MODEL_SNAPSHOTS: ReadonlySet<string> = new Set([
+  "gpt-4-0314",
+  "gpt-4-0613",
+  "gpt-4-1106-preview",
+  "gpt-4-0125-preview",
+  "gpt-3.5-turbo-0613",
+  "gpt-3.5-turbo-1106",
+  "gpt-3.5-turbo-0125",
+]);
+
+/** Families whose undated ids are aliases that move to the newest snapshot. */
+const DATED_FAMILIES = /^(claude-|gpt-|o\d)/i;
+const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
+
+/**
+ * A model id is pinned when it names one snapshot. `claude-*`, `gpt-*` and `o<digit>*` need a
+ * trailing `-YYYYMMDD` or `-YYYY-MM-DD` (or an entry in UNDATED_MODEL_SNAPSHOTS):
+ * `claude-sonnet-4-5`, `gpt-4o` and `o3` are aliases. Other providers: not an alias
+ * (`sonnet`, `*-latest`) and has a digit.
+ */
 export function isPinnedModelId(m: string): boolean {
   const s = m.trim();
   if (s === "" || MODEL_ALIASES.test(s) || FLOATING.test(s)) return false;
   if (/[-_.@:]latest$/i.test(s)) return false;
+  if (UNDATED_MODEL_SNAPSHOTS.has(s)) return true;
+  if (DATED_FAMILIES.test(s)) return DATE_SUFFIX.test(s);
   return /\d/.test(s);
+}
+
+/**
+ * An http-agent's model lives in the user's service, so the service itself must be pinned: a
+ * `versions` entry, a pinned `version` (`name@1.2.3`), a binary sha256, or a pinned github ref.
+ */
+function servicePinned(c: Contender): boolean {
+  if (Object.keys(c.versions ?? {}).length > 0) return true;
+  if (c.version !== undefined && isPinnedVersion(c.version.slice(c.version.lastIndexOf("@") + 1)))
+    return true;
+  if ("sha256" in c.source) return true;
+  return "github" in c.source && isPinnedGitRef(c.source.ref);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -222,8 +271,21 @@ export function comparabilityIssues(
   const models: [number, Contender, string][] = [];
   spec.contenders.forEach((c, i) => {
     const d = c.driver;
+    if (d.type === "http-agent") {
+      // The model belongs to the user's service: pin the service instead.
+      if (!servicePinned(c)) {
+        add(
+          "warning",
+          "service_unpinned",
+          [...base(i)],
+          `http-agent contender '${c.id}' has no pinned version: set versions, a version like '${c.id}@1.2.3', a binary sha256 or a pinned github ref, so every trial talks to the same service`,
+        );
+      }
+    }
     if (isAgentDriver(d)) {
-      if (d.model === undefined) {
+      if (d.type === "http-agent") {
+        if (d.model !== undefined && isPinnedModelId(d.model)) models.push([i, c, d.model]);
+      } else if (d.model === undefined) {
         add(
           "error",
           "model_unpinned",

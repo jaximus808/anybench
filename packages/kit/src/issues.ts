@@ -26,6 +26,7 @@ export type KitIssueCode =
   // Comparability (TDM-178 [16.7], plan.md 17.2 rule 4): see comparability.ts.
   | "model_unpinned"
   | "model_mismatch"
+  | "service_unpinned"
   | "ref_unpinned"
   | "version_unpinned"
   | "version_mismatch"

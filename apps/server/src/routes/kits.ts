@@ -26,6 +26,7 @@ import {
   PROOF_CHECKS,
   ProofCheckResultSchema,
   safeParseKitSpec,
+  toJsonValue,
   type KitDetail,
   type KitSpec,
   type KitSummary,
@@ -68,8 +69,13 @@ export const KIT_EDITABLE_STATES = ["kit_draft", "awaiting_go"] as const satisfi
 
 type KitRow = typeof kits.$inferSelect;
 
-/** Canonical JSON (sorted keys, no whitespace): the hash input for a spec-only kit version. */
+/**
+ * Canonical JSON (sorted keys, no whitespace): the hash input for a spec-only kit version.
+ * A bigint (micro-USD, e.g. `token_cap_micro_usd`) is written as its decimal string, the same
+ * form the spec is stored in, so a spec hashes the same before and after a round trip.
+ */
 export function canonicalJson(value: unknown): string {
+  if (typeof value === "bigint") return JSON.stringify(value.toString());
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
@@ -183,7 +189,8 @@ export async function insertKitVersion(
       ownerId: actor.userId,
       runId,
       version: (last?.v ?? 0) + 1,
-      spec,
+      // jsonb: bigints (micro-USD caps) are stored as decimal strings.
+      spec: toJsonValue(spec),
       // [7.4] resolves `upload:<id>` to the stored kit folder and replaces the hash with its tree hash.
       filesUrl: filesUploadId ? `upload:${filesUploadId}` : null,
       proof: null,

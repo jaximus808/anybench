@@ -440,7 +440,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
               ownerId: actor.userId,
               runId,
               version: 1,
-              spec: spec.spec,
+              spec: toJsonValue(spec.spec),
               filesUrl: rerun.filesUrl,
               proof: null,
               hash: kitSpecHash(spec.spec),
@@ -460,7 +460,7 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
           await tx.insert(contenders).values(
             body.contenders.map((ct) => ({
               runId,
-              source: JSON.stringify(ct),
+              source: JSON.stringify(toJsonValue(ct)),
               role: ct.role,
               status: "kept" as const,
               foundBy: "user",

@@ -351,12 +351,51 @@ describe("comparabilityIssues", () => {
   });
 });
 
+describe("http-agent contenders", () => {
+  const httpAgent = (
+    extra: Record<string, unknown> = {},
+    driver: Record<string, unknown> = {},
+  ) => ({
+    id: "bot",
+    role: "subject" as const,
+    source: { upload: ["server.ts"] },
+    driver: { type: "http-agent" as const, verbs: { run: "x" }, ...driver },
+    ...extra,
+  });
+  const issuesOf = (c: ReturnType<typeof httpAgent>) =>
+    comparabilityIssues(specTdm178({ contenders: [c] })).map((i) => [i.severity, i.code]);
+
+  it("need no driver.model (the model is the service's), but warn when the service is unpinned", () => {
+    expect(issuesOf(httpAgent())).toEqual([["warning", "service_unpinned"]]);
+    expect(issuesOf(httpAgent({ version: "bot@stub" }))).toEqual([["warning", "service_unpinned"]]);
+  });
+
+  it.each([
+    ["versions", { versions: { BOT_VERSION: "1.4.2" } }],
+    ["a pinned version", { version: "bot@1.4.2" }],
+    ["a binary sha256", { source: { binary_url: "https://x.test/bot", sha256: "a".repeat(64) } }],
+    ["a pinned github ref", { source: { github: "o/bot", ref: "v1.4.2" } }],
+  ])("a service pinned by %s has no issues", (_what, extra) => {
+    expect(issuesOf(httpAgent(extra))).toEqual([]);
+  });
+});
+
 describe("pin predicates", () => {
   it.each([
     ["2.0.14", true],
-    ["v1", true],
+    ["v2.0.14", true],
     ["1.2.3-beta.1", true],
+    ["1.2.3+build.5", true],
+    ["1.2.3-rc.1+sha.abc", true],
     ["0123abc", true],
+    ["deadbeef", true],
+    ["v1", false],
+    ["2", false],
+    ["v2", false],
+    ["2.0", false],
+    ["1.2", false],
+    ["rc1", false],
+    ["next-2", false],
     ["latest", false],
     ["main", false],
     ["^2.0.0", false],
@@ -370,20 +409,40 @@ describe("pin predicates", () => {
   it.each([
     ["0123456789abcdef0123456789abcdef01234567", true],
     ["a1b2c3d", true],
-    ["v1", true],
+    ["v0.1.0", true],
     ["14.1.1", true],
     ["ripgrep-14.1.1", true],
     ["refs/tags/v2.0.0", true],
+    ["refs/tags/tool/v1.2.3", true],
+    ["v1", false],
+    ["1", false],
+    ["v1.2", false],
+    ["release/1.2", false],
+    ["release/1.2.3", false],
+    ["stable-2", false],
     ["main", false],
     ["master", false],
     ["HEAD", false],
     ["refs/heads/main", false],
+    ["refs/tags/v1", false],
     ["feature-x", false],
   ])("isPinnedGitRef(%j) = %s", (v, ok) => expect(isPinnedGitRef(v)).toBe(ok));
 
   it.each([
     ["claude-sonnet-4-5-20250929", true],
+    ["claude-opus-4-1-20250805", true],
     ["gpt-5-2025-08-07", true],
+    ["gpt-4o-2024-08-06", true],
+    ["o3-2025-04-16", true],
+    ["gpt-4-0613", true], // UNDATED_MODEL_SNAPSHOTS
+    ["gemini-2.5-pro", true], // other providers: digit heuristic
+    ["llama-3.1-70b-instruct", true],
+    ["claude-sonnet-4-5", false],
+    ["claude-opus-4-1", false],
+    ["gpt-5", false],
+    ["gpt-4o", false],
+    ["o3", false],
+    ["o4-mini", false],
     ["sonnet", false],
     ["opus", false],
     ["claude-3-5-sonnet-latest", false],
