@@ -9,6 +9,7 @@ import {
   OWNED_SECRETS,
   parseDeployEnv,
   planSecrets,
+  secretPlanSummary,
   secretValueHash,
   siteOf,
 } from "../lib/api-plan.js";
@@ -172,6 +173,64 @@ describe("planSecrets (TDM-154)", () => {
   it("siteOf treats vercel.app as a public suffix", () => {
     expect(siteOf("anybench.vercel.app")).toBe("anybench.vercel.app");
     expect(siteOf("api.anybench.jaxonp.com")).toBe("jaxonp.com");
+  });
+});
+
+describe("BYOK key-encryption keys (TDM-234)", () => {
+  const KEK = "kek-SECRET-tdm234-0123456789abcdef0123456789";
+  const KEK_PREV = "kek-prev-SECRET-tdm234-0123456789abcdef01234";
+  const url = "https://anybench.vercel.app/api";
+
+  it("ANYBENCH_KEK and ANYBENCH_KEK_PREVIOUS become owned app secrets", () => {
+    const plan = planSecrets(
+      parseDeployEnv({ ...raw, ANYBENCH_KEK: KEK, ANYBENCH_KEK_PREVIOUS: KEK_PREV }),
+      url,
+    );
+    expect(plan.secrets.ANYBENCH_KEK).toBe(KEK);
+    expect(plan.secrets.ANYBENCH_KEK_PREVIOUS).toBe(KEK_PREV);
+    expect(OWNED_SECRETS).toEqual(
+      expect.arrayContaining(["ANYBENCH_KEK", "ANYBENCH_KEK_PREVIOUS"]),
+    );
+  });
+
+  it("unset: not planned, so a re-deploy deletes a stale one from the app", () => {
+    const plan = planSecrets(parseDeployEnv(raw), url);
+    expect(plan.secrets.ANYBENCH_KEK).toBeUndefined();
+    const diff = diffSecrets(plan.secrets, [
+      { name: "ANYBENCH_KEK_PREVIOUS", value_hash: "v1:old" },
+    ]);
+    expect(diff.remove).toContain("ANYBENCH_KEK_PREVIOUS");
+  });
+
+  it("refuses a short KEK by name only", () => {
+    expect(() => parseDeployEnv({ ...raw, ANYBENCH_KEK_PREVIOUS: "short-SECRET-kek" })).toThrow(
+      /ANYBENCH_KEK_PREVIOUS: must be at least 32 characters/,
+    );
+    try {
+      parseDeployEnv({ ...raw, ANYBENCH_KEK_PREVIOUS: "short-SECRET-kek" });
+    } catch (err) {
+      expect((err as Error).message).not.toContain("short-SECRET-kek");
+    }
+  });
+
+  it("the dry-run plan names the KEKs and never prints their values", () => {
+    const plan = planSecrets(
+      parseDeployEnv({ ...raw, ANYBENCH_KEK: KEK, ANYBENCH_KEK_PREVIOUS: KEK_PREV }),
+      url,
+    );
+    const summary = secretPlanSummary(plan);
+    expect(summary.secrets).toEqual(
+      expect.arrayContaining(["ANYBENCH_KEK", "ANYBENCH_KEK_PREVIOUS"]),
+    );
+    const printed = JSON.stringify(summary);
+    for (const v of [
+      KEK,
+      KEK_PREV,
+      raw.GITHUB_CLIENT_SECRET,
+      raw.SESSION_SECRET,
+      raw.NAIVE_API_KEY,
+    ])
+      expect(printed).not.toContain(v);
   });
 });
 

@@ -11,9 +11,10 @@
 // plaintext is decrypted only right before a trial and written to the trial computer's
 // ~/.anybench/env (0600) by the executor; it is never logged and never returned by any route.
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { userSecrets } from "../db/schema/user_secrets.js";
+import { users } from "../db/schema/users.js";
 
 /** user_secrets.provider for an Anthropic API key (AB_TOKEN_SOURCE=anthropic_key). */
 export const ANTHROPIC_PROVIDER = "anthropic";
@@ -127,6 +128,29 @@ export function openSecret(input: {
     if (e instanceof ByokError) throw e;
     throw new ByokError("the stored secret does not decrypt with this KEK");
   }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The user a secret belongs to, by GitHub login or user id (scripts/ops/store-byok-key.ts). Here
+ * rather than in the script so the drizzle operators resolve from apps/server's node_modules: the
+ * repo root has no drizzle-orm (TDM-234).
+ */
+export async function findSecretOwner(
+  db: Database,
+  owner: string,
+): Promise<{ id: string; login: string } | null> {
+  const [user] = await db
+    .select({ id: users.id, login: users.githubLogin })
+    .from(users)
+    .where(
+      UUID.test(owner)
+        ? or(eq(users.id, owner), eq(users.githubLogin, owner))
+        : eq(users.githubLogin, owner),
+    )
+    .limit(1);
+  return user ?? null;
 }
 
 /** Insert or replace the owner's secret for a provider. Returns its last 4 characters. */

@@ -2,24 +2,24 @@
 // AB_TOKEN_SOURCE=anthropic_key runs uses (kits/tandem-long-horizon).
 //
 //   pnpm tsx scripts/ops/store-byok-key.ts --owner <github-login | user-id> [--dry-run]
+//   node --env-file=.env --import tsx scripts/ops/store-byok-key.ts --owner <login> [--dry-run]
 //
-// Reads ANTHROPIC_API_KEY, ANYBENCH_KEK and DATABASE_URL_DIRECT (or DATABASE_URL) from the
-// environment (.env in the cwd is loaded the same way the server does). The key is sealed with
+// Run from the repo root. Reads ANTHROPIC_API_KEY, ANYBENCH_KEK and DATABASE_URL_DIRECT (or
+// DATABASE_URL) from the environment; .env in the cwd fills anything unset, the same way the
+// server loads it. Every import goes through apps/server, so its node_modules (drizzle-orm) resolve
+// from the repo root (TDM-234). The key is sealed with
 // envelope encryption (apps/server/src/lib/byok.ts) into user_secrets (provider `anthropic`),
 // replacing any earlier one, then read back and decrypted once to prove the KEK opens it. Only the
 // key's last 4 characters are ever printed.
-import { eq, or } from "drizzle-orm";
 import { loadDotEnv } from "../../apps/server/src/boot.js";
 import { loadConfig } from "../../apps/server/src/config.js";
 import { createDb } from "../../apps/server/src/db/client.js";
-import { users } from "../../apps/server/src/db/schema/users.js";
 import {
   ANTHROPIC_PROVIDER,
+  findSecretOwner,
   loadUserSecret,
   storeUserSecret,
 } from "../../apps/server/src/lib/byok.js";
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function usage(): never {
   console.error(
@@ -42,15 +42,7 @@ async function main(): Promise<void> {
   if (!config.ANYBENCH_KEK) throw new Error("ANYBENCH_KEK is not set");
   const h = createDb(config.databaseUrlDirect, { max: 1 });
   try {
-    const [user] = await h.db
-      .select({ id: users.id, login: users.githubLogin })
-      .from(users)
-      .where(
-        UUID.test(owner)
-          ? or(eq(users.id, owner), eq(users.githubLogin, owner))
-          : eq(users.githubLogin, owner),
-      )
-      .limit(1);
+    const user = await findSecretOwner(h.db, owner);
     if (!user) throw new Error(`no user '${owner}'`);
     if (dryRun) {
       console.log(JSON.stringify({ owner: user.login, user_id: user.id, dry_run: true }));

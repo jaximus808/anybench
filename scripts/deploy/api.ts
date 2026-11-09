@@ -28,6 +28,7 @@ import {
   findEnvFile,
   parseDeployEnv,
   planSecrets,
+  secretPlanSummary,
   readEnvFile,
   secretValueHash,
   type DeployEnv,
@@ -186,11 +187,7 @@ async function main(): Promise<void> {
 
   if (flag("dry-run")) {
     const plan = planSecrets(env, env.DEPLOY_API_PUBLIC_URL ?? "https://example.vercel.app");
-    say("dry run: would set", {
-      secrets: Object.keys(plan.secrets),
-      sameSite: plan.sameSite,
-      origins: plan.allowedOrigins,
-    });
+    say("dry run: would set", secretPlanSummary(plan));
     return;
   }
 

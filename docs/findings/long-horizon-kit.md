@@ -130,6 +130,45 @@ one-sentence clarifications that no hidden test depends on; the full run uses th
    The curated path does not run the skeptic, but a kit upload would.
 5. **BYOK key not stored yet.** Before a run on the server, store the founder's key once:
    `pnpm tsx scripts/ops/store-byok-key.ts --owner <github-login>` (needs `ANYBENCH_KEK` on the
-   worker too). The curated orchestrator (`apps/server/src/orchestrator/curated.ts`) still maps
+   worker too). Both done in TDM-234; see the last section. The curated orchestrator (`apps/server/src/orchestrator/curated.ts`) still maps
    the Tandem repo to `kits/tandem-vs-claude-code` and its Naïve-proxy disclosure; pointing it at
    this kit and `tokens: anthropic-key, effort: default, thinking: on` is TDM-213's.
+
+## Storing the BYOK key and getting the KEK to the deploys (TDM-234)
+
+The founder's key was stored on 2026-11-08 (user `jaximus808`, the dev Neon branch both deploys
+use, `round_trip: true`). Two gaps showed up doing it.
+
+**The script did not run from the repo root.** `scripts/ops/store-byok-key.ts` imported
+`drizzle-orm` itself, and the repo root has no `drizzle-orm` (only apps/server does), so:
+
+```sh
+$ pnpm tsx scripts/ops/store-byok-key.ts --owner jaximus808 --dry-run
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'drizzle-orm' imported from .../scripts/ops/store-byok-key.ts
+```
+
+The owner lookup moved into `apps/server/src/lib/byok.ts` (`findSecretOwner`), so every import
+the script makes goes through apps/server and resolves from its node_modules. The other
+`scripts/ops/*.ts` were already fine: they import only through `apps/server/src` or
+`packages/*/src` (plus type-only imports, which tsx erases). Now, from the repo root (the
+`.env` there is loaded for anything unset, like the server does), either form works:
+
+```sh
+$ pnpm tsx scripts/ops/store-byok-key.ts --owner jaximus808 --dry-run
+{"owner":"jaximus808","user_id":"<uuid>","dry_run":true}
+$ node --env-file=.env --import tsx scripts/ops/store-byok-key.ts --owner jaximus808 --dry-run
+{"owner":"jaximus808","user_id":"<uuid>","dry_run":true}
+```
+
+(Both also print pg's `sslmode=require` deprecation warning on stderr.) `--dry-run` only reads
+the users table. Without it the script seals `ANTHROPIC_API_KEY` under `ANYBENCH_KEK`, reads it
+back and prints only `last4` and `round_trip`. A git worktree has no `.env`: use the
+`node --env-file=<main checkout>/.env` form there.
+
+**The deploys did not forward the KEK.** `scripts/deploy/lib/worker-plan.ts` and `api-plan.ts`
+now read `ANYBENCH_KEK` and `ANYBENCH_KEK_PREVIOUS` from `.env`. Both are optional, but a set value
+shorter than 32 characters is refused by name, the same floor `apps/server/src/config.ts` enforces
+at boot. When set, they go into the worker's `~/.anybench/worker.env` and become owned API app
+secrets. When unset, they are left out, so a re-deploy deletes a stale API secret. `--dry-run`
+prints names only (`workerEnvPlanSummary`, `secretPlanSummary`). The worker's env fingerprint
+changes when the KEK is added, so the next worker deploy replaces the computer.

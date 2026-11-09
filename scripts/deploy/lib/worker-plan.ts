@@ -15,7 +15,7 @@ import {
   NAIVE_RATE_CARD,
 } from "@anybench/providers";
 import { z } from "zod";
-import { sameDatabase } from "./api-plan.js";
+import { kekVar, sameDatabase } from "./api-plan.js";
 
 const blank = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const req = (name: string) =>
@@ -45,6 +45,9 @@ export const WorkerDeployEnvSchema = z
     STRIPE_TEST_SECRET_KEY: opt,
     STRIPE_LIVE_SECRET_KEY: opt,
     RUNNER_TOKEN_SECRET: opt,
+    /** BYOK key-encryption keys (TDM-234): an AB_TOKEN_SOURCE=anthropic_key trial decrypts with them. */
+    ANYBENCH_KEK: kekVar,
+    ANYBENCH_KEK_PREVIOUS: kekVar,
     PUBLIC_API_URL: z.preprocess(blank, z.url().optional()),
     SENTRY_DSN: opt,
     GITHUB_TOKEN: opt,
@@ -141,6 +144,8 @@ export const WORKER_ENV_NAMES = [
   "NAIVE_API_KEY",
   "NAIVE_BASE_URL",
   "RUNNER_TOKEN_SECRET",
+  "ANYBENCH_KEK",
+  "ANYBENCH_KEK_PREVIOUS",
   "PUBLIC_API_URL",
   "SENTRY_DSN",
   "GITHUB_TOKEN",
@@ -181,6 +186,8 @@ export function planWorkerEnv(env: WorkerDeployEnv): Partial<Record<WorkerEnvNam
   for (const k of [
     "NAIVE_BASE_URL",
     "RUNNER_TOKEN_SECRET",
+    "ANYBENCH_KEK",
+    "ANYBENCH_KEK_PREVIOUS",
     "SENTRY_DSN",
     "GITHUB_TOKEN",
     "WORKER_CONCURRENCY",
@@ -212,6 +219,18 @@ export function renderEnvFile(vars: Record<string, string>): string {
     else throw new Error(`${name}: holds both quote kinds; cannot go in the env file`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** What `--dry-run` prints about the worker env file: variable NAMES and its size, never a value. */
+export function workerEnvPlanSummary(
+  vars: Partial<Record<WorkerEnvName, string>>,
+  envFile: string,
+): { path: string; names: WorkerEnvName[]; bytes: number } {
+  return {
+    path: `~/${HOST_PATHS.envFile} (mode 600, written by the fs API)`,
+    names: Object.keys(vars) as WorkerEnvName[],
+    bytes: envFile.length,
+  };
 }
 
 /** parseEnv, for the round-trip check and for the rotator reading the file back. */

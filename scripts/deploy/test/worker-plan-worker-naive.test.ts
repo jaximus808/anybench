@@ -22,6 +22,7 @@ import {
   WORKER_TAG,
   workerComputerName,
   workerCost,
+  workerEnvPlanSummary,
   type WorkerComputer,
 } from "../lib/worker-plan.js";
 
@@ -148,6 +149,53 @@ describe("planWorkerEnv + renderEnvFile", () => {
     const fp = envFingerprint(file);
     expect(fp).toMatch(/^[0-9a-f]{12}$/);
     expect(envFingerprint(`${file}X=1\n`)).not.toBe(fp);
+  });
+});
+
+describe("BYOK key-encryption keys (TDM-234)", () => {
+  const KEK = "kek-SECRET-tdm234-0123456789abcdef0123456789";
+  const KEK_PREV = "kek-prev-SECRET-tdm234-0123456789abcdef01234";
+
+  it("ANYBENCH_KEK and ANYBENCH_KEK_PREVIOUS reach the worker env file and round-trip", () => {
+    const vars = planWorkerEnv(
+      parseWorkerDeployEnv(baseEnv({ ANYBENCH_KEK: KEK, ANYBENCH_KEK_PREVIOUS: KEK_PREV })),
+    );
+    expect(vars.ANYBENCH_KEK).toBe(KEK);
+    expect(vars.ANYBENCH_KEK_PREVIOUS).toBe(KEK_PREV);
+    const back = parseEnvFile(renderEnvFile(vars as Record<string, string>));
+    expect(back.ANYBENCH_KEK).toBe(KEK);
+    expect(back.ANYBENCH_KEK_PREVIOUS).toBe(KEK_PREV);
+  });
+
+  it("leaves both out when unset (the server then refuses BYOK trials, not boot)", () => {
+    const vars = planWorkerEnv(parseWorkerDeployEnv(baseEnv({ ANYBENCH_KEK: "" })));
+    expect(Object.keys(vars)).not.toContain("ANYBENCH_KEK");
+    expect(Object.keys(vars)).not.toContain("ANYBENCH_KEK_PREVIOUS");
+  });
+
+  it("refuses a KEK shorter than the server's 32-char floor, by name only", () => {
+    let msg = "";
+    try {
+      parseWorkerDeployEnv(baseEnv({ ANYBENCH_KEK: "short-SECRET-kek" }));
+    } catch (err) {
+      msg = (err as Error).message;
+    }
+    expect(msg).toContain("ANYBENCH_KEK: must be at least 32 characters");
+    expect(msg).not.toContain("short-SECRET-kek");
+  });
+
+  it("the dry-run plan names the KEKs and never prints their values", () => {
+    const vars = planWorkerEnv(
+      parseWorkerDeployEnv(baseEnv({ ANYBENCH_KEK: KEK, ANYBENCH_KEK_PREVIOUS: KEK_PREV })),
+    );
+    const file = renderEnvFile(vars as Record<string, string>);
+    const summary = workerEnvPlanSummary(vars, file);
+    expect(summary.names).toEqual(
+      expect.arrayContaining(["ANYBENCH_KEK", "ANYBENCH_KEK_PREVIOUS"]),
+    );
+    expect(summary.bytes).toBe(file.length);
+    const printed = JSON.stringify(summary);
+    for (const v of [KEK, KEK_PREV, ...Object.values(SECRETS)]) expect(printed).not.toContain(v);
   });
 });
 

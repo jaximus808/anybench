@@ -40,6 +40,7 @@ import {
   envFingerprint,
   parseWorkerDeployEnv,
   planWorkerEnv,
+  workerEnvPlanSummary,
   releaseArtifactRef,
   renderBootstrap,
   renderEnvFile,
@@ -164,11 +165,7 @@ async function main(): Promise<void> {
 
   if (flag("dry-run")) {
     const bashCheck = spawnSync("bash", ["-n"], { input: bootstrap, encoding: "utf8" });
-    say("dry run: worker env file (names only)", {
-      path: "~/.anybench/worker.env (mode 600, written by the fs API)",
-      names: Object.keys(workerVars),
-      bytes: workerEnvFile.length,
-    });
+    say("dry run: worker env file (names only)", workerEnvPlanSummary(workerVars, workerEnvFile));
     say("dry run: computer", {
       name: workerComputerName(release.id, envFingerprint(workerEnvFile)),
       ...size,

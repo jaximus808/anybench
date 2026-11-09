@@ -12,6 +12,17 @@ const req = (name: string) =>
 const opt = z.preprocess(blank, z.string().optional());
 const pgUrl = (name: string) =>
   req(name).refine((v) => /^postgres(ql)?:\/\//.test(v), `${name} must be a postgres:// URL`);
+/**
+ * A BYOK key-encryption key (apps/server/src/config.ts ANYBENCH_KEK): optional, but when set it
+ * must pass the server's own 32-char floor, so a short one fails here rather than at boot.
+ */
+export const kekVar = z.preprocess(
+  blank,
+  z
+    .string()
+    .min(32, { error: "must be at least 32 characters (openssl rand -base64 32)" })
+    .optional(),
+);
 
 /** The .env keys the API deploy reads. Anything else in .env is ignored. */
 export const DeployEnvSchema = z
@@ -30,6 +41,9 @@ export const DeployEnvSchema = z
       "SESSION_SECRET must be 32+ chars",
     ),
     RUNNER_TOKEN_SECRET: opt,
+    /** BYOK key-encryption keys (TDM-212/TDM-234): the API seals and opens user_secrets with them. */
+    ANYBENCH_KEK: kekVar,
+    ANYBENCH_KEK_PREVIOUS: kekVar,
     ADMIN_GITHUB_LOGINS: opt,
     BILLING_MODE: z.preprocess(blank, z.string().default("test")),
     STRIPE_TEST_SECRET_KEY: opt,
@@ -205,6 +219,9 @@ export const OWNED_SECRETS = [
   "PUBLIC_WEB_URL",
   "ADMIN_GITHUB_LOGINS",
   "RUNNER_TOKEN_SECRET",
+  // BYOK model keys (user_secrets): the current KEK and, during a rotation, the previous one.
+  "ANYBENCH_KEK",
+  "ANYBENCH_KEK_PREVIOUS",
   "EVENTS_STREAM_MODE",
   "EVENTS_STREAM_MAX_DURATION_MS",
   "EVENTS_POLL_INTERVAL_MS",
@@ -306,6 +323,8 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
   if (stripe.price) s.STRIPE_PRICE_USAGE = stripe.price;
   if (env.ADMIN_GITHUB_LOGINS) s.ADMIN_GITHUB_LOGINS = env.ADMIN_GITHUB_LOGINS;
   if (env.RUNNER_TOKEN_SECRET) s.RUNNER_TOKEN_SECRET = env.RUNNER_TOKEN_SECRET;
+  if (env.ANYBENCH_KEK) s.ANYBENCH_KEK = env.ANYBENCH_KEK;
+  if (env.ANYBENCH_KEK_PREVIOUS) s.ANYBENCH_KEK_PREVIOUS = env.ANYBENCH_KEK_PREVIOUS;
   if (env.SENTRY_DSN) s.SENTRY_DSN = env.SENTRY_DSN;
   // Publish signing (E12): the public page and badge verify against these.
   if (env.PUBLISH_SIGNING_KEY_ID) s.PUBLISH_SIGNING_KEY_ID = env.PUBLISH_SIGNING_KEY_ID;
@@ -328,6 +347,19 @@ export function planSecrets(env: DeployEnv, publicUrl: string): SecretPlan {
     }
   }
   return { secrets: s, baseUrl, callbackUrl, allowedOrigins, sameSite, cookieDomain };
+}
+
+/** What `--dry-run` prints about a SecretPlan: secret NAMES only, never a value. */
+export function secretPlanSummary(plan: SecretPlan): {
+  secrets: OwnedSecret[];
+  sameSite: SecretPlan["sameSite"];
+  origins: string[];
+} {
+  return {
+    secrets: Object.keys(plan.secrets) as OwnedSecret[],
+    sameSite: plan.sameSite,
+    origins: plan.allowedOrigins,
+  };
 }
 
 /**
