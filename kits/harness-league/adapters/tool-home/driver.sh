@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # L2 driver for the skill-pack contenders (gstack, superpowers), type coding-agent: the shared
 # adapters/claude-code/driver.sh (byte-identical to kits/tandem-long-horizon's, so A and these
-# setups run the same driver), started with HOME set to the contender's own home.
+# setups run the same driver), started with HOME set to the contender's own home, through
+# adapters/headless-policy/driver.sh, the same headless policy A and B run under (TDM-228).
 #
 #   driver.sh run <task> <workspace>
 #
@@ -26,4 +27,4 @@ tool_home="$HOME/.anybench/homes/$name"
 # The secrets file and the runner's paths are absolute; git identity, if the image has one, follows.
 [[ -f "$HOME/.gitconfig" && ! -e "$tool_home/.gitconfig" ]] && cp "$HOME/.gitconfig" "$tool_home/.gitconfig"
 export HOME="$tool_home"
-exec "$kit/adapters/claude-code/driver.sh" "$@"
+exec "$kit/adapters/headless-policy/driver.sh" "$@"

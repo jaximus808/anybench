@@ -70,12 +70,23 @@ describe("kits/harness-league (TDM-227)", () => {
     expect(readTdm227("PROOF.md")).toBe(readFileSync(join(LONG_TDM227, "PROOF.md"), "utf8"));
   });
 
-  it("A and D are E18's setups unchanged; B is E18's planned B on E18's driver and settings", () => {
+  it("A and D are E18's setups unchanged (A: but for the headless-policy driver, TDM-228); B is A's driver and settings", () => {
     for (const id of ["claude-code-solo", "tandem"]) {
       const { found_by: _a, ...a } = byId(kit, id);
       const { found_by: _b, ...b } = byId(long, id);
-      expect({ ...a, name: undefined }, id).toEqual({ ...b, name: undefined });
+      // TDM-228: A runs E18's driver through adapters/headless-policy/driver.sh; nothing else
+      // differs (README "Headless policy": "A differs from E18's A by exactly one thing").
+      const driver =
+        id === "claude-code-solo"
+          ? {
+              ...b.driver,
+              script: "adapters/headless-policy/driver.sh",
+              verbs: { run: "adapters/headless-policy/driver.sh run {task} {workspace}" },
+            }
+          : b.driver;
+      expect({ ...a, name: undefined }, id).toEqual({ ...b, driver, name: undefined });
     }
+    expect(byId(long, "claude-code-solo").driver.script).toBe("adapters/claude-code/driver.sh");
     const a = byId(kit, "claude-code-solo");
     const b = byId(kit, "claude-code-subagents");
     expect(b.install).toEqual(a.install);
@@ -186,7 +197,11 @@ describe("kits/harness-league (TDM-227)", () => {
     }
     const drv = readTdm227("adapters/tool-home/driver.sh");
     expect(drv).toContain('export HOME="$tool_home"');
-    expect(drv).toContain('exec "$kit/adapters/claude-code/driver.sh" "$@"');
+    // TDM-228: through the headless policy, which then runs the shared E18 driver.
+    expect(drv).toContain('exec "$kit/adapters/headless-policy/driver.sh" "$@"');
+    expect(readTdm227("adapters/headless-policy/driver.sh")).toContain(
+      'exec "$kit/adapters/claude-code/driver.sh" "$@"',
+    );
   });
 
   it("every Claude Code setup gets the same task-agnostic lines; a skill pack adds only what its README prescribes", () => {

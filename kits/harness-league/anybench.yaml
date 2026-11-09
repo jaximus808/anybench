@@ -35,7 +35,7 @@ subject:
     - the code it leaves is easier to maintain
 
 # Five setups (README "Contenders", docs/findings/harness-league-contenders.md for the evidence):
-#   A claude-code-solo        baseline, byte-identical to E18's A
+#   A claude-code-solo        baseline: E18's A, run under the headless policy (below)
 #   B claude-code-subagents   Claude Code with built-in subagents (the setup E18 dropped)
 #   G gstack                  garrytan/gstack v1.98.0.0, its README's install (skills + ./setup)
 #   S superpowers             obra/superpowers v7.0.2, its README's install (Claude Code plugin)
@@ -60,6 +60,13 @@ subject:
 # Skill packs run in a home of their own (adapters/tool-home/driver.sh): one env snapshot serves
 # every setup, so a skill pack installed into the eval user's real ~/.claude would load in every
 # trial. Their install.sh runs the README's install with HOME=~/.anybench/homes/<tool>.
+#
+# Headless policy (TDM-228 [21.2], README "Headless policy"): every Claude Code setup (A, B, G, S)
+# runs E18's driver (adapters/claude-code/driver.sh, byte for byte) through
+# adapters/headless-policy/driver.sh. When a session's final message waits on the user, the same
+# session is resumed with one fixed reply, at most 8 times per trial; nothing is added to any
+# prompt. That driver is the one way A differs from E18's A. D's human step is the board's
+# approval gate, answered by human_in_loop.policy auto, as in E18.
 contenders:
   - id: claude-code-solo
     name: "A · Claude Code solo"
@@ -71,9 +78,9 @@ contenders:
       healthcheck: adapters/claude-code/healthcheck.sh
     driver:
       type: coding-agent
-      script: adapters/claude-code/driver.sh
+      script: adapters/headless-policy/driver.sh
       verbs:
-        run: adapters/claude-code/driver.sh run {task} {workspace}
+        run: adapters/headless-policy/driver.sh run {task} {workspace}
       wall_clock_cap_s: 10800
       model: claude-opus-5-5
       token_cap_micro_usd: 25000000
@@ -94,7 +101,7 @@ contenders:
     name: "B · Claude Code + subagents"
     role: subject
     # The implementer, test-writer and reviewer subagents of kits/tandem-vs-claude-code, copied
-    # byte for byte; E18's driver and settings.
+    # byte for byte; A's driver and settings.
     source:
       upload:
         - adapters/claude-code-subagents/CLAUDE.md
@@ -104,9 +111,9 @@ contenders:
       healthcheck: adapters/claude-code/healthcheck.sh
     driver:
       type: coding-agent
-      script: adapters/claude-code/driver.sh
+      script: adapters/headless-policy/driver.sh
       verbs:
-        run: adapters/claude-code/driver.sh run {task} {workspace}
+        run: adapters/headless-policy/driver.sh run {task} {workspace}
       wall_clock_cap_s: 10800
       model: claude-opus-5-5
       token_cap_micro_usd: 25000000

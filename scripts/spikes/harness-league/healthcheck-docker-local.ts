@@ -17,11 +17,22 @@
 // and result (cost) from stream.jsonl, and checks no file brought back holds the key. Each smoke
 // starts from the post-install image (a fresh `docker commit`), as every trial forks from the
 // snapshot. Removes only the containers and the image it created.
+//
+// TDM-228 [21.2] (headless policy): `--task <instruction.md> --input <dir>` smokes a real, small
+// task instead (the workspace starts as a git repo of <dir>), `--turns N` sets CC_MAX_TURNS (0:
+// no limit; default 1, and none with --task), `--wall S` the driver's wall cap (default 1200 with
+// --task). The report then also has what bench's stream-json collector reads from stream.jsonl
+// (processes, questions_auto_answered, turns, cost), each auto-answer event, the workspace's files
+// and `npm test` in it.
+//
+//   node --env-file=.env --import tsx scripts/spikes/harness-league/healthcheck-docker-local.ts \
+//     superpowers --smoke --task kits/tandem-vs-claude-code/workloads/todo-api/instruction.md \
+//     --input kits/tandem-vs-claude-code/workloads/todo-api/input
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatEnvFile } from "../../../packages/bench/src/index.js";
+import { formatEnvFile, parseStreamJson } from "../../../packages/bench/src/index.js";
 import { safeParseKitSpec } from "../../../packages/core/src/index.js";
 import { KIT_LAYOUT, parseKitYaml } from "../../../packages/kit/src/index.js";
 
@@ -62,6 +73,13 @@ const contenders = ids.map((id) => {
   return c;
 });
 const smokeIds = !args.includes("--smoke") ? [] : (flag("--smoke")?.split(",") ?? ids);
+const taskFile = flag("--task");
+const inputDir = flag("--input");
+if ((taskFile === undefined) !== (inputDir === undefined))
+  throw new Error("--task and --input go together");
+const turns = flag("--turns") ?? (taskFile ? "0" : "1");
+const wall = flag("--wall") ?? (taskFile ? "1200" : undefined);
+const smokeTask = taskFile ? readFileSync(path.resolve(repo, taskFile), "utf8") : SMOKE_TASK;
 
 type Report = Record<string, unknown>;
 
@@ -76,14 +94,35 @@ function smokeOne(id: string, key: string): Report {
       docker(["exec", "-i", "-u", USER, "-w", HOME, name, "bash", "-lc", cmd], input);
     asUser("mkdir -p ~/.anybench ~/eval/out ~/eval/ws");
     asUser("umask 077 && cat > ~/.anybench/env", formatEnvFile({ ANTHROPIC_API_KEY: key }));
-    asUser("cat > ~/eval/task.md", SMOKE_TASK);
+    asUser("cat > ~/eval/task.md", smokeTask);
+    if (inputDir) {
+      const input = execFileSync(
+        "tar",
+        [
+          "--no-xattrs",
+          "-C",
+          path.resolve(repo, inputDir),
+          "--exclude",
+          ".DS_Store",
+          "-cf",
+          "-",
+          ".",
+        ],
+        { maxBuffer: 1 << 28, env: { ...process.env, COPYFILE_DISABLE: "1" } },
+      );
+      asUser("tar -C ~/eval/ws -xf -", input);
+    } else asUser("cd ~/eval/ws && printf '# smoke\\n' > README.md");
     asUser(
-      "cd ~/eval/ws && git init -q && printf '# smoke\\n' > README.md && git add . && " +
+      "cd ~/eval/ws && git init -q && git add . && " +
         "GIT_AUTHOR_NAME=k GIT_AUTHOR_EMAIL=k@x.invalid GIT_COMMITTER_NAME=k GIT_COMMITTER_EMAIL=k@x.invalid git commit -qm init",
     );
-    const env = { ...(c.driver.env ?? {}), CC_MAX_TURNS: "1" };
+    const env: Record<string, string> = { ...(c.driver.env ?? {}) };
+    if (turns !== "0") env.CC_MAX_TURNS = turns;
+    if (wall) env.CC_WALL_CAP_S = wall;
     const envArgs = Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-    log(`smoke ${id}: ${driver} run (CC_MAX_TURNS=1)`);
+    log(
+      `smoke ${id}: ${driver} run (CC_MAX_TURNS=${env.CC_MAX_TURNS ?? "none"}, wall ${env.CC_WALL_CAP_S})`,
+    );
     const t1 = Date.now();
     const d = spawnSync(
       "docker",
@@ -105,7 +144,7 @@ function smokeOne(id: string, key: string): Report {
         "-lc",
         `bash ~/kit/${driver} run ~/eval/task.md ~/eval/ws`,
       ],
-      { encoding: "utf8", maxBuffer: 1 << 28, timeout: 600_000 },
+      { encoding: "utf8", maxBuffer: 1 << 28, timeout: (Number(wall ?? 540) + 60) * 1000 },
     );
     r.smoke_s = Math.round((Date.now() - t1) / 1000);
     r.smoke_exit = d.status;
@@ -121,6 +160,47 @@ function smokeOne(id: string, key: string): Report {
     r.key_leaks = [stream, stderr, versions, d.stdout, d.stderr].filter((t) =>
       t.includes(key),
     ).length;
+    const summary = parseStreamJson(stream);
+    r.collector = {
+      processes: summary.processes,
+      headless_policy: summary.headless_policy,
+      questions_auto_answered: summary.questions_auto_answered,
+      auto_answer_cap_reached: summary.auto_answer_cap_reached,
+      turns: summary.turns,
+      tool_calls: summary.tool_calls,
+      cost_micro_usd: summary.cost_micro_usd === null ? null : String(summary.cost_micro_usd),
+      result_subtype: summary.result_subtype,
+    };
+    if (taskFile) {
+      r.workspace_files = asUser(
+        "cd ~/eval/out/workspace 2>/dev/null && find . -type f -not -path './docs/*' | sort || true",
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      r.workspace_docs = asUser(
+        "cd ~/eval/out/workspace 2>/dev/null && find ./docs -type f 2>/dev/null | sort || true",
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      const t = spawnSync(
+        "docker",
+        [
+          "exec",
+          "-u",
+          USER,
+          "-w",
+          `${HOME}/eval/out/workspace`,
+          name,
+          "bash",
+          "-lc",
+          "npm test 2>&1 | tail -15",
+        ],
+        { encoding: "utf8" },
+      );
+      r.npm_test = t.stdout.trim();
+    }
     for (const line of stream.split("\n")) {
       let e: Record<string, unknown>;
       try {
@@ -142,9 +222,19 @@ function smokeOne(id: string, key: string): Report {
           mcp_servers: e.mcp_servers,
         };
       }
+      if (e.type === "system" && typeof e.subtype === "string" && e.subtype.startsWith("anybench_"))
+        r.policy_events = [...((r.policy_events as unknown[] | undefined) ?? []), e];
       if (e.type === "system" && e.subtype === "hook_response")
         r.hooks = [...((r.hooks as string[] | undefined) ?? []), String(e.hook_name)];
       if (e.type === "result") {
+        r.results = [
+          ...((r.results as unknown[] | undefined) ?? []),
+          {
+            num_turns: e.num_turns,
+            total_cost_usd: e.total_cost_usd,
+            text: typeof e.result === "string" ? e.result.slice(-1500) : null,
+          },
+        ];
         r.result = {
           subtype: e.subtype,
           num_turns: e.num_turns,

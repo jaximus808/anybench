@@ -608,6 +608,8 @@ export function buildSummary(
     (isProven(input.proof) ? "proof: all six checks passed" : "proof: not all six checks passed");
   lines.push(proofLine);
   if (input.disclosure) lines.push(input.disclosure);
+  const autoAnswered = autoAnswerLine(input.trials, nameOf);
+  if (autoAnswered) lines.push(autoAnswered);
   lines.push("");
   const headline =
     decided && stats.headline.length > 0
@@ -785,6 +787,46 @@ export const TANDEM_DISCLOSURE =
 
 /** The long-horizon kit's setups: our own Anthropic key, Claude Code's defaults (TDM-212/233). */
 export const LONG_HORIZON_DISCLOSURE = "tokens: anthropic-key, effort: default, thinking: on";
+
+/**
+ * TDM-228: the harness league's headless policy (kits/harness-league/adapters/headless-policy/
+ * policy.mjs; a test checks these against it). A Claude Code session whose last message waits on
+ * the user is resumed with this reply, the same for every Claude Code setup.
+ */
+export const HEADLESS_POLICY_ID = "headless-v1";
+export const HEADLESS_POLICY_REPLY =
+  "Yes, approved. Proceed with your recommended option and complete the task.";
+export const HEADLESS_POLICY_MAX = 8;
+/** The metric bench's stream-json collector writes per trial when the policy ran. */
+export const QUESTIONS_AUTO_ANSWERED_METRIC = "questions_auto_answered";
+
+/** The harness league's setups (kits/harness-league): E18's disclosure plus the headless policy. */
+export const HARNESS_LEAGUE_DISCLOSURE = `${LONG_HORIZON_DISCLOSURE}; headless policy ${HEADLESS_POLICY_ID} for every Claude Code setup: a session that stops to ask is resumed with "${HEADLESS_POLICY_REPLY}" (at most ${HEADLESS_POLICY_MAX} times per trial, counted as ${QUESTIONS_AUTO_ANSWERED_METRIC}); Tandem's approvals automatic`;
+
+/**
+ * TDM-228: "questions auto-answered (headless policy): A · Claude Code solo 0 in 5 trials; ..."
+ * from the measured trials' `questions_auto_answered`, or null when no trial carries it.
+ */
+export function autoAnswerLine(
+  trials: readonly StageTrial[],
+  nameOf: (contender: string) => string,
+): string | null {
+  const per = new Map<string, { n: number; trials: number }>();
+  for (const t of trials) {
+    if (t.repeat < 0) continue;
+    const v = numbersOf(t.metrics)[QUESTIONS_AUTO_ANSWERED_METRIC];
+    if (v === undefined) continue;
+    const p = per.get(t.contender) ?? { n: 0, trials: 0 };
+    p.n += v;
+    p.trials++;
+    per.set(t.contender, p);
+  }
+  if (per.size === 0) return null;
+  const parts = [...per].map(
+    ([c, p]) => `${nameOf(c)} ${p.n} in ${p.trials} trial${p.trials === 1 ? "" : "s"}`,
+  );
+  return `questions auto-answered (headless policy): ${parts.join("; ")}`;
+}
 
 /**
  * AgentStagePort.analyze without an LLM ([6.8] analyst not built): the summary from the score.

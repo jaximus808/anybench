@@ -179,6 +179,9 @@ $0.236 (all in one image, first CLAUDE.md) + $0.179 (all in one image, final kit
 
 ## For 21.2 (headless policy)
 
+Done in TDM-228: `docs/findings/headless-policy.md` (what `claude -p` does with AskUserQuestion,
+the policy every Claude Code setup now runs under, the Superpowers smokes).
+
 What each tool does that needs a person, as seen in its pinned source and the smokes:
 
 - **Claude Code 2.1.319 in `-p`**: `AskUserQuestion` is not in the session's tool list (none of

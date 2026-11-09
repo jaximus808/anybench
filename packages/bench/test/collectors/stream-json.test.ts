@@ -68,4 +68,57 @@ describe("stream-json collector (Claude Code transcript)", () => {
     expect(value(rows, "agent_error")).toBe(1);
     expect(rows.some((m) => m.name === "cost_micro_usd")).toBe(false);
   });
+
+  // TDM-228: a session the headless policy resumed (kits/harness-league), recorded for real.
+  describe("a resumed session (TDM-228 headless policy, real Claude Code 2.1.319)", () => {
+    const resumed = fixture("stream-json/resumed-auto-answer.real.jsonl");
+
+    it("bills the session once: its last result is the whole session's cost and tokens", () => {
+      const s = parseStreamJson(resumed);
+      expect(s.processes).toBe(2);
+      // 0.03944979999999999 then 0.04993379999999999: the second already includes the first.
+      expect(s.cost_micro_usd).toBe(49934n);
+      expect(s.token_source).toBe("modelUsage");
+      // modelUsage of the second result: input 4 + 6, cache read 28394 + 34425, ...
+      expect(s.tokens).toEqual({ input: 10, output: 367, cache_read: 62819, cache_creation: 5998 });
+    });
+
+    it("adds up turns and durations over the two processes", () => {
+      const s = parseStreamJson(resumed);
+      expect(s.turns).toBe(2 + 2);
+      expect(s.duration_ms).toBe(5463 + 4213);
+    });
+
+    it("counts the policy's auto-answers as questions_auto_answered", () => {
+      const s = parseStreamJson(resumed);
+      expect(s.headless_policy).toBe("headless-v1");
+      expect(s.questions_auto_answered).toBe(1);
+      expect(s.auto_answer_cap_reached).toBe(false);
+      const rows = collectStreamJson(resumed);
+      expect(value(rows, "questions_auto_answered")).toBe(1);
+      expect(value(rows, "auto_answer_cap_reached")).toBe(0);
+      expect(value(rows, "cost_micro_usd")).toBe(49934n);
+      expect(value(rows, "turns")).toBe(4);
+    });
+
+    it("reports 0 under the policy when it never fired, and no row without the policy", () => {
+      const lines = resumed.trimEnd().split("\n");
+      const quiet = lines.filter((l) => !l.includes('"anybench_auto_answer"')).join("\n");
+      expect(value(collectStreamJson(quiet), "questions_auto_answered")).toBe(0);
+      expect(collectStreamJson(ok).some((m) => m.name === "questions_auto_answered")).toBe(false);
+      const capped = `${resumed}{"type":"system","subtype":"anybench_auto_answer_cap","policy":"headless-v1","n":8}\n`;
+      expect(value(collectStreamJson(capped), "auto_answer_cap_reached")).toBe(1);
+    });
+
+    it("keeps two different sessions apart: each session's last result, added up", () => {
+      const other = resumed.replaceAll(
+        "97aabc3c-5e00-4043-8e63-cf3459ec2dbc",
+        "11111111-2222-4333-8444-555555555555",
+      );
+      const s = parseStreamJson(`${resumed}${other}`);
+      expect(s.processes).toBe(4);
+      expect(s.cost_micro_usd).toBe(2n * 49934n);
+      expect(s.turns).toBe(8);
+    });
+  });
 });

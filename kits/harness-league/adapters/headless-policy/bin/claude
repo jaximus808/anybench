@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The league's `claude` (TDM-228 [21.2]): ../shim.mjs around the real Claude Code (AB_REAL_CLAUDE).
+# ../driver.sh puts this directory first on PATH; see ../policy.mjs for the policy.
+exec node "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/shim.mjs" "$@"

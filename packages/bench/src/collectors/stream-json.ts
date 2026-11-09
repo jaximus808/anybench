@@ -4,6 +4,14 @@
 //
 // Money: `total_cost_usd` and `modelUsage.*.costUSD` are read from their JSON source text and
 // converted to micro-USD with bigint math. No float ever touches a cost.
+//
+// Resumed sessions (TDM-228): a driver may run several `claude -p` processes into one transcript,
+// each starting with its own `system/init` (kits/harness-league's headless policy resumes a session
+// that stopped to ask the user). A resumed process's `result` carries the whole session's cost and
+// `modelUsage` (Claude Code 2.1.319: docs/findings/headless-policy.md) but only its own
+// `num_turns` and `duration_ms`. So per session the last result is the bill, sessions add up, and
+// turns and durations add up over processes. The policy's own events (`system/anybench_*`) give
+// `questions_auto_answered`.
 import { z } from "zod";
 import type { MicroUsd } from "@anybench/core";
 import {
@@ -81,6 +89,7 @@ const RateLimitEventSchema = z.looseObject({
 
 const ResultEventSchema = z.looseObject({
   type: z.literal("result"),
+  session_id: z.string().optional(),
   subtype: z.string(),
   is_error: z.boolean().default(false),
   duration_ms: Count.optional(),
@@ -125,6 +134,14 @@ export interface StreamJsonSummary {
   has_result: boolean;
   /** Lines that were not JSON, or not a shape this parser knows (counted, not fatal). */
   unparsed_lines: number;
+  /** `claude` processes in the transcript (`system/init` events); more than 1 when resumed. */
+  processes: number;
+  /** The headless policy the driver ran under (`system/anybench_headless_policy`), or null. */
+  headless_policy: string | null;
+  /** `system/anybench_auto_answer` events: sessions the policy resumed with its fixed reply. */
+  questions_auto_answered: number;
+  /** A session still waited on the user when the policy's cap was reached. */
+  auto_answer_cap_reached: boolean;
 }
 
 const zero = (): TokenCounts => ({ input: 0, output: 0, cache_read: 0, cache_creation: 0 });
@@ -160,13 +177,21 @@ export function parseStreamJson(text: string): StreamJsonSummary {
     is_error: false,
     has_result: false,
     unparsed_lines: 0,
+    processes: 0,
+    headless_policy: null,
+    questions_auto_answered: 0,
+    auto_answer_cap_reached: false,
   };
   // Claude Code streams one assistant event per content block, all sharing message.id and
   // repeating the same usage: count usage and turns once per id, tool_use blocks every time.
   const assistantUsage = new Map<string, z.infer<typeof ApiUsageSchema>>();
   const topLevelIds = new Set<string>();
   const seenToolUseIds = new Set<string>();
-  let result: z.infer<typeof ResultEventSchema> | null = null;
+  type Result = z.infer<typeof ResultEventSchema>;
+  let result: Result | null = null;
+  // The last result of each `claude` process (between two `system/init` events).
+  const perProcess: Result[] = [];
+  let processResult: Result | null = null;
 
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
@@ -182,12 +207,22 @@ export function parseStreamJson(text: string): StreamJsonSummary {
 
     if (type === "system" && subtype === "init") {
       const e = InitEventSchema.safeParse(raw);
+      s.processes++;
+      if (processResult) perProcess.push(processResult);
+      processResult = null;
       if (!e.success) s.unparsed_lines++;
       else {
         s.session_id = e.data.session_id ?? s.session_id;
         s.model = e.data.model ?? s.model;
         s.claude_code_version = e.data.claude_code_version ?? s.claude_code_version;
       }
+    } else if (type === "system" && subtype === "anybench_headless_policy") {
+      const policy = (raw as { policy?: unknown }).policy;
+      s.headless_policy = typeof policy === "string" ? policy : "unknown";
+    } else if (type === "system" && subtype === "anybench_auto_answer") {
+      s.questions_auto_answered++;
+    } else if (type === "system" && subtype === "anybench_auto_answer_cap") {
+      s.auto_answer_cap_reached = true;
     } else if (type === "system" && subtype === "api_retry") {
       const e = ApiRetryEventSchema.safeParse(raw);
       if (!e.success) s.unparsed_lines++;
@@ -236,36 +271,71 @@ export function parseStreamJson(text: string): StreamJsonSummary {
     } else if (type === "result") {
       const e = ResultEventSchema.safeParse(raw);
       if (!e.success) s.unparsed_lines++;
-      else result = e.data; // the last result wins (streaming-input sessions emit one per turn)
+      else {
+        result = e.data; // the last result wins (streaming-input sessions emit one per turn)
+        processResult = e.data;
+      }
     }
     // Other event types (stream_event, tool_progress, system/status, ...) carry no metric.
   }
+
+  if (processResult) perProcess.push(processResult);
+  // Per session, its last result is the bill (a resumed process reports the whole session).
+  const bySession = new Map<string, Result>();
+  for (const [i, r] of perProcess.entries()) bySession.set(r.session_id ?? `process-${i}`, r);
+  const bills = perProcess.length > 1 ? [...bySession.values()] : result ? [result] : [];
+  const sumOf = (pick: (r: Result) => number | undefined): number | null =>
+    perProcess.length > 1
+      ? perProcess.reduce<number | null>((acc, r) => {
+          const v = pick(r);
+          return v === undefined ? acc : (acc ?? 0) + v;
+        }, null)
+      : result
+        ? (pick(result) ?? null)
+        : null;
 
   if (result) {
     s.has_result = true;
     s.result_subtype = result.subtype;
     s.is_error = result.is_error;
-    s.duration_ms = result.duration_ms ?? null;
-    s.duration_api_ms = result.duration_api_ms ?? null;
-    s.cost_micro_usd = result.total_cost_usd ?? null;
-    s.permission_denials = result.permission_denials.length;
+    s.duration_ms = sumOf((r) => r.duration_ms);
+    s.duration_api_ms = sumOf((r) => r.duration_api_ms);
+    s.cost_micro_usd = bills.some((r) => r.total_cost_usd !== undefined)
+      ? (bills.reduce((acc, r) => acc + (r.total_cost_usd ?? 0n), 0n) as MicroUsd)
+      : null;
+    s.permission_denials = bills.reduce((acc, r) => acc + r.permission_denials.length, 0);
   }
 
-  const models = result?.modelUsage;
-  if (models && Object.keys(models).length > 0) {
+  const withModels = bills.filter((r) => r.modelUsage && Object.keys(r.modelUsage).length > 0);
+  if (withModels.length > 0) {
     s.token_source = "modelUsage";
-    for (const [model, mu] of Object.entries(models)) {
-      const t: TokenCounts = {
-        input: mu.inputTokens,
-        output: mu.outputTokens,
-        cache_read: mu.cacheReadInputTokens,
-        cache_creation: mu.cacheCreationInputTokens,
-      };
-      s.tokens_by_model[model] = { ...t, cost_micro_usd: mu.costUSD ?? null };
-      s.tokens.input += t.input;
-      s.tokens.output += t.output;
-      s.tokens.cache_read += t.cache_read;
-      s.tokens.cache_creation += t.cache_creation;
+    for (const r of withModels) {
+      for (const [model, mu] of Object.entries(r.modelUsage!)) {
+        const t: TokenCounts = {
+          input: mu.inputTokens,
+          output: mu.outputTokens,
+          cache_read: mu.cacheReadInputTokens,
+          cache_creation: mu.cacheCreationInputTokens,
+        };
+        const prev = s.tokens_by_model[model];
+        const cost =
+          prev === undefined
+            ? (mu.costUSD ?? null)
+            : prev.cost_micro_usd === null && mu.costUSD === undefined
+              ? null
+              : (((prev.cost_micro_usd ?? 0n) + (mu.costUSD ?? 0n)) as MicroUsd);
+        s.tokens_by_model[model] = {
+          input: (prev?.input ?? 0) + t.input,
+          output: (prev?.output ?? 0) + t.output,
+          cache_read: (prev?.cache_read ?? 0) + t.cache_read,
+          cache_creation: (prev?.cache_creation ?? 0) + t.cache_creation,
+          cost_micro_usd: cost,
+        };
+        s.tokens.input += t.input;
+        s.tokens.output += t.output;
+        s.tokens.cache_read += t.cache_read;
+        s.tokens.cache_creation += t.cache_creation;
+      }
     }
   } else if (result?.usage) {
     s.token_source = "result.usage";
@@ -275,7 +345,7 @@ export function parseStreamJson(text: string): StreamJsonSummary {
     for (const u of assistantUsage.values()) addUsage(s.tokens, u);
   }
 
-  s.turns = result?.num_turns ?? topLevelIds.size;
+  s.turns = sumOf((r) => r.num_turns) ?? topLevelIds.size;
   return s;
 }
 
@@ -314,6 +384,11 @@ export function collectStreamJson(text: string): Metric[] {
     t("result_missing", s.has_result ? 0 : 1, "count"),
   ];
   if (s.cost_micro_usd !== null) rows.push(t("cost_micro_usd", s.cost_micro_usd, "micro_usd"));
+  // Only under a headless policy (its start event), so 0 means "ran under it, never fired".
+  if (s.headless_policy !== null || s.questions_auto_answered > 0) {
+    rows.push(t("questions_auto_answered", s.questions_auto_answered, "count"));
+    rows.push(t("auto_answer_cap_reached", s.auto_answer_cap_reached ? 1 : 0, "count"));
+  }
   if (s.duration_ms !== null) rows.push(t("agent_duration_ms", s.duration_ms, "ms"));
   if (s.duration_api_ms !== null) rows.push(t("agent_api_duration_ms", s.duration_api_ms, "ms"));
   for (const [name, n] of Object.entries(s.tool_calls_by_name)) {
