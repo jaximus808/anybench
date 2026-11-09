@@ -15,6 +15,12 @@
 // asks the executor for a per-trial Naïve proxy key (TrialPrepared.naive_proxy: model + cap); the
 // executor (TDM-39) mints it with TDM-16's provisionClaudeCodeProxyEnv, enforces the cap and
 // revokes it on every path.
+//
+// TDM-212: AB_TOKEN_SOURCE=anthropic_key (BYOK, e.g. kits/tandem-long-horizon): the run owner's
+// stored Anthropic key (user_secrets, provider `anthropic`, lib/byok.ts) is decrypted right here
+// and handed to the executor as the trial's ANTHROPIC_API_KEY secret, which it writes to
+// ~/.anybench/env (0600); the runner exports it to the driver and redacts it everywhere. No stored
+// key (or no ANYBENCH_KEK) refuses the trial: it never falls back to another key.
 import { trialJobFromKit, type TrialPrepared, type TrialSource } from "@anybench/bench";
 import {
   driverTokenCapTokens,
@@ -27,6 +33,7 @@ import { expandVarySetups, KIT_LAYOUT } from "@anybench/kit";
 import { shellQuote } from "@anybench/providers";
 import { and, eq, isNotNull } from "drizzle-orm";
 import type { Database } from "../db/client.js";
+import { ANTHROPIC_PROVIDER, type ByokLookup } from "../lib/byok.js";
 import { contenders } from "../db/schema/contenders.js";
 import { kits } from "../db/schema/kits.js";
 import { runs } from "../db/schema/runs.js";
@@ -42,7 +49,12 @@ export const TOKEN_CAP_MICRO_USD_PER_TOKEN = 3n;
 export interface KitTrialSourceOptions {
   /** The ceiling of every trial's proxy cap (TRIAL_PROXY_CAP_MICRO_USD). Default $3. */
   proxyCapMicroUsd?: bigint;
+  /** TDM-212: the run owner's stored BYOK key (lib/byok.ts byokLookup); unset without a KEK. */
+  byok?: ByokLookup;
 }
+
+/** The secret name an anthropic_key driver reads (kits' `secrets: [ANTHROPIC_API_KEY]`). */
+export const ANTHROPIC_KEY_SECRET = "ANTHROPIC_API_KEY";
 
 /** The trial's proxy cap: the driver's spend cap, else its token cap at list price; never above the ceiling. */
 export function trialProxyCap(
@@ -141,6 +153,7 @@ export function kitTrialSource(db: Database, options: KitTrialSourceOptions = {}
           contender: contenders.source,
           foundBy: contenders.foundBy,
           workloadId: trials.workloadId,
+          ownerId: runs.ownerId,
         })
         .from(trials)
         .innerJoin(runs, eq(runs.id, trials.runId))
@@ -184,6 +197,20 @@ export function kitTrialSource(db: Database, options: KitTrialSourceOptions = {}
           ...(small ? { smallFastModel: small } : {}),
           capMicroUsd: trialProxyCap(contender.driver, options.proxyCapMicroUsd),
         };
+      }
+
+      // BYOK: our own (the run owner's) Anthropic key for every trial of the run.
+      if (job.env?.AB_TOKEN_SOURCE === "anthropic_key") {
+        if (!options.byok)
+          throw new Error(
+            `trial ${trial.id}: the kit uses AB_TOKEN_SOURCE=anthropic_key but ANYBENCH_KEK is not set, so no stored key can be read`,
+          );
+        const key = await options.byok(row.ownerId, ANTHROPIC_PROVIDER);
+        if (!key)
+          throw new Error(
+            `trial ${trial.id}: the run owner has no stored Anthropic key (user_secrets provider ${ANTHROPIC_PROVIDER})`,
+          );
+        prepared.secrets[ANTHROPIC_KEY_SECRET] = key;
       }
       return prepared;
     },

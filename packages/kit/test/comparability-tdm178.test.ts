@@ -433,6 +433,8 @@ describe("pin predicates", () => {
     ["gpt-4o-2024-08-06", true],
     ["o3-2025-04-16", true],
     ["gpt-4-0613", true], // UNDATED_MODEL_SNAPSHOTS
+    ["claude-opus-5-5", true], // TDM-212: Anthropic ids from 4.6 on are the snapshot itself
+    ["claude-opus-4-6", true],
     ["gemini-2.5-pro", true], // other providers: digit heuristic
     ["llama-3.1-70b-instruct", true],
     ["claude-sonnet-4-5", false],

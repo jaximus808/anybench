@@ -59,19 +59,66 @@ are enough tasks for a stratified claim (plan.md 17.2 rule 3).
 
 ## Setups
 
-Same contenders, adapters, pinned model and pinned Claude Code version as
-`kits/tandem-vs-claude-code` (epic E18):
+Two setups (founder decision, 2026-11-08: the first run must be able to reach a statistically
+significant result, so the token budget buys repeats rather than setups):
 
 | | Contender | How |
 | --- | --- | --- |
-| A | `claude-code-solo` | headless Claude Code, subagent tool disallowed |
-| B | `claude-code-subagents` | headless Claude Code with the implementer, test-writer and reviewer subagents |
-| D | `tandem` with `TANDEM_WORKERS=3` | planner + 3 workers on a fresh Tandem canvas, approvals automatic |
+| A | `claude-code-solo` (baseline) | headless Claude Code, subagent tool disallowed |
+| D | `tandem` with `TANDEM_WORKERS=3` (subject) | planner + 3 workers on a fresh Tandem canvas, approvals automatic |
 
-Model tokens come from our own Anthropic key (`AB_TOKEN_SOURCE=anthropic_key`) at Claude Code's
-default effort with thinking on, the same for every setup, so the Naïve proxy handicap of the
-first kit (effort naive-min, thinking off) does not apply. Wall-clock cap: 3 hours per trial, equal
-for every setup. Budget for the first full run: $150 of Anthropic tokens, hard stop on overrun.
+`claude-code-subagents` (B: headless Claude Code with the implementer, test-writer and reviewer
+subagents of `kits/tandem-vs-claude-code`) is the planned third setup if budget remains after the
+first run. It is not in `anybench.yaml` yet, so the pre-registered prediction below is tested
+against A only until it is.
+
+Both setups use the adapters of `kits/tandem-vs-claude-code` (copied into `adapters/`), the same
+pinned Claude Code `2.1.319`, the same Tandem commit (`05b4a022`, v0.2.0, tandem-mcp 3.2.0) and
+the same pinned model, **`claude-opus-5-5`** (Claude Opus 5.5, the first-party id; it is an
+undated snapshot id, so `packages/kit` counts it as pinned). Every model alias Claude Code
+resolves (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) points at
+the same id. Caps, equal for both: wall clock 3 hours per trial (`wall_clock_cap_s` and the
+workload's `timeout_s`, 10800 s) and a spend cap of $25 per trial (`token_cap_micro_usd:
+25000000`), which the runner enforces live from the stream's usage at Opus 5.5 list prices.
+Repeats default to 5 per setup (`repeats`); the first full run (TDM-213) sizes them at 5 to 8 per
+setup from the power plan and the $150 budget. No warm-up trials (`schedule.warmups: 0`): a
+warm-up would be a whole 3 h trial.
+
+### Tokens: our own Anthropic key (founder decision)
+
+Model tokens come from our own Anthropic key (`AB_TOKEN_SOURCE=anthropic_key`, the BYOK path),
+the same for every setup, at Claude Code's default effort with thinking on. The drivers unset every
+Naïve proxy setting (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `MAX_THINKING_TOKENS`,
+`CLAUDE_CODE_MODEL_CAPABILITIES`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`), so the proxy
+handicap of the first kit (effort naive-min, thinking off) does not apply. Naïve credit now pays
+only for the computers.
+
+The key: the kit lists `secrets: [ANTHROPIC_API_KEY]`. The worker decrypts the run owner's
+stored key (apps/server `user_secrets`, provider `anthropic`, envelope-encrypted under
+`ANYBENCH_KEK`, `apps/server/src/lib/byok.ts`) right before each trial and writes it to the trial
+computer's `~/.anybench/env` (0600); a trial whose owner has no stored key is refused, never run
+on another key. Store it with `pnpm tsx scripts/ops/store-byok-key.ts --owner <github-login>`
+(reads `ANTHROPIC_API_KEY` and `ANYBENCH_KEK` from `.env`, prints only the last 4 characters).
+The drivers read the key from the env or `EVAL_SECRETS`, never echo it, and pass every transcript
+and stderr line through `adapters/tandem/board.ts` (`tap`, `redact`), which replaces `sk-ant-…`
+and the key's value with `[REDACTED]`; the runner redacts it from its own logs and events.
+
+**Disclosure (goes with every result from this kit):**
+`tokens: anthropic-key, effort: default, thinking: on`. First-party Claude Code at its default
+effort, on our own key; the cost numbers are list-price token spend (Claude Code's
+`total_cost_usd`).
+
+What changed in the copied adapters, and why:
+
+- `adapters/claude-code/driver.sh`: token source `anthropic_key` only (refuses anything else and
+  Naïve model ids); Claude Code is stopped 60 s before the wall cap (`CC_WALL_CAP_S`) so the
+  workspace is always frozen and partial work is graded; the stream goes through
+  `board.ts tap`, so the runner's spend cap sees A's usage live (the first kit wrote it only to a
+  file, which the proxy-side cap did not need).
+- `adapters/tandem/run.sh`: step 0 is the same `anthropic_key` check; the key is loaded only into
+  the planner and worker sessions; session stderr is redacted. `harness.yaml` `timeout_s` is
+  10800 (the driver's `ANYBENCH_WALL_CAP_S` overrides it anyway).
+- `adapters/tandem/board.ts`: `tap` redacts, and a new `redact` line filter.
 
 ## Workload
 
@@ -115,6 +162,9 @@ scripts/ab-run-local.sh                     local stand-in for the gate runner's
 gates/hidden-tests/check.sh                 the hidden-tests gate (L5), scoring computer only
 gates/hidden-tests/grade.mjs                copies the tests in, runs them, scores them, writes the verdict and metrics
 gates/hidden-tests/project-tracker/         120 hidden tests, one file per area, tests.json, fixtures/tracker-v1.json
+anybench.yaml                               the kit (KitSpec v2): setups, caps, requirements
+adapters/                                   copied from kits/tandem-vs-claude-code (see Setups)
+rubric.md                                   the code-quality review rubric (requirement `quality`)
 proof/oracle/driver.sh                      applies proof/oracle/<workload>/ (the reference solution)
 proof/oracle/project-tracker/               the reference solution: an overlay on the starting repo
 proof/do_less/do-nothing/driver.sh          the no-op harness
@@ -122,8 +172,13 @@ proof/regression/skip-tests/CLAUDE.md       the planted regression ("skip the te
 scripts/verify-proof.sh                     the offline proof (Docker, node:22, --network none); writes PROOF.md
 ```
 
-Still to come in sibling tickets of E18: the kit file `anybench.yaml` with the adapters (copied
-from `kits/tandem-vs-claude-code`).
+Requirements, all on the `hidden-tests` gate (no number without a correctness gate):
+`tests-fraction` (`hidden_test_fraction`, aggregate `all_trials`: partial credit, every trial;
+the preregistered primary), `tests-pass` (`gate_pass_rate`, the 100% verdict), `wall` (`wall_s`,
+failed trials at the 3 h cap), `cost` (`cost_micro_usd` per solved task), `cost-per-test`
+(`cost_micro_usd`, aggregate `per_test_passed`) and `quality` (reviewed, `rubric.md`).
+
+Still to come in E18: the first full run (TDM-213).
 
 ## Hidden tests and partial credit
 

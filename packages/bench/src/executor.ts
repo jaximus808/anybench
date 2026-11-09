@@ -617,6 +617,23 @@ export function formatEnvFile(secrets: Record<string, string>): string {
 }
 
 /**
+ * TDM-212: list prices of first-party Anthropic model ids, micro-USD per million tokens, for the
+ * runner's BYOK spend cap (TrialJob `token_prices`). Without them the runner's token estimate uses
+ * Sonnet list prices and a cap on a pricier model would stop late. Source: the Claude API
+ * reference (cached 2026-10-06); cache_creation is the 5-minute write price (1.25 × input).
+ */
+export const FIRST_PARTY_TOKEN_PRICES: Readonly<
+  Record<string, { input: bigint; output: bigint; cache_read: bigint; cache_creation: bigint }>
+> = {
+  "claude-opus-5-5": {
+    input: 4_000_000n,
+    output: 20_000_000n,
+    cache_read: 200_000n,
+    cache_creation: 5_000_000n,
+  },
+};
+
+/**
  * KitSpec → the runner part of TrialPrepared for one contender (kit id) × workload. The verbs are
  * passed through as shell commands; the wall-clock cap is the workload's, else the driver's, else
  * one hour. Secrets, files and the computer spec come from the env build (3.8) / orchestrator.
@@ -658,6 +675,12 @@ export function trialJobFromKit(
     env: { ...agentDriverEnv(d), ...contenderDriverEnv(kit, contender.id, workload.id, setup) },
     ...(isAgentDriver(d) && d.token_cap_micro_usd !== undefined
       ? { token_cap_micro_usd: d.token_cap_micro_usd }
+      : {}),
+    ...(isAgentDriver(d) &&
+    d.token_cap_micro_usd !== undefined &&
+    d.model !== undefined &&
+    FIRST_PARTY_TOKEN_PRICES[d.model]
+      ? { token_prices: { ...FIRST_PARTY_TOKEN_PRICES[d.model]! } }
       : {}),
   };
 }

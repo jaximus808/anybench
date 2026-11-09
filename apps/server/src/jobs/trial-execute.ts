@@ -70,6 +70,7 @@ import { drizzleComputerStore } from "../lib/computer-store.js";
 import { breakerConfigFrom, dbLaunchBreaker } from "../lib/provider-breaker.js";
 import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
+import { byokLookup } from "../lib/byok.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import { kitTrialSource } from "../orchestrator/defaults.js";
 import { attemptProxySpend, recordTrialMetrics } from "../orchestrator/trial-metrics.js";
@@ -568,8 +569,16 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
 export function defaultTrialExecuteOptions(): TrialExecuteJobOptions {
   return {
     provider: (ctx) => computeProviderFromConfig(ctx.config),
-    source: (ctx) =>
-      kitTrialSource(ctx.db, { proxyCapMicroUsd: ctx.config.TRIAL_PROXY_CAP_MICRO_USD }),
+    source: (ctx) => {
+      const byok = byokLookup(ctx.db, {
+        current: ctx.config.ANYBENCH_KEK,
+        previous: ctx.config.ANYBENCH_KEK_PREVIOUS,
+      });
+      return kitTrialSource(ctx.db, {
+        proxyCapMicroUsd: ctx.config.TRIAL_PROXY_CAP_MICRO_USD,
+        ...(byok ? { byok } : {}),
+      });
+    },
     naiveProxy: (ctx) => proxyDepsFromConfig(ctx.config),
     fallbackUpload: () => {
       const store = artifactStoreFromEnv();

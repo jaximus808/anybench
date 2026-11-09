@@ -1,0 +1,34 @@
+# Harness driver config for the Tandem contender (TDM-41 [4.9]). run.sh reads it with a line
+# parser, so it stays flat: one `key: value` scalar per line, no nesting, no lists.
+# packages/kit HarnessConfigSchema validates it (packages/kit/test/tdm41-harness-driver.test.ts).
+schema_version: 1
+harness: tandem
+# Prompts, relative to this directory. {{TASK}}, {{TANDEM_WORKERS}}, {{TANDEM_CANVAS_CODE}} and
+# (workers) {{WORKER_NAME}} are filled in by run.sh.
+planner_prompt: planner-prompt.md
+worker_prompt: worker-prompt.md
+# The env var that sets the worker count (the kit's `vary` axis).
+workers_env: TANDEM_WORKERS
+# Passed to every planner and worker session: the parallelism under test is the board's workers,
+# not Claude Code subagents (both of Claude Code's names for its subagent tool).
+disallowed_tools: Task Agent
+# Done when every approved epic has drained (each ticket done or failed) and the planner exited.
+completion: epics-drained
+# Hard wall-clock cap for the whole run; ANYBENCH_WALL_CAP_S (the driver's wall_clock_cap_s)
+# overrides it.
+timeout_s: 10800
+# The Tandem server must answer /healthz within this long.
+startup_timeout_s: 60
+# The planner must have an approved epic on the board within this long.
+epic_timeout_s: 1200
+# Board poll interval.
+poll_s: 5
+# After the board completes, workers get this long to exit on their own before they are stopped.
+drain_grace_s: 120
+# TERM, then KILL after this long.
+stop_grace_s: 10
+# A worker session that exits while work is open is restarted, at most this many times per slot.
+max_worker_restarts: 2
+# Files `tandem-mcp init --write` adds to the workspace: restored to their pre-trial state (or
+# removed) before the workspace is frozen, so the graded tree carries no harness identity.
+scrub: .mcp.json AGENTS.md CLAUDE.md .tandem

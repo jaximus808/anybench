@@ -80,10 +80,24 @@ export function isPinnedGitRef(ref: string): boolean {
 }
 
 /**
- * Snapshot ids without a trailing date that still name one fixed model (OpenAI's older `-MMDD`
- * snapshots). Extend when a provider ships another undated snapshot id.
+ * Snapshot ids without a trailing date that still name one fixed model: OpenAI's older `-MMDD`
+ * snapshots, and Anthropic's ids from Claude Opus 4.6 / Sonnet 4.6 on, which ship with no dated
+ * variant (the id is the snapshot; `claude-opus-5-5`, never `claude-opus-5-5-2026…`). Earlier
+ * Claude ids such as `claude-sonnet-4-5` stay aliases of a dated snapshot. Extend when a provider
+ * ships another undated snapshot id.
  */
 export const UNDATED_MODEL_SNAPSHOTS: ReadonlySet<string> = new Set([
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-fable-5",
+  "claude-fable-5-1",
+  "claude-opus-5-5",
+  "claude-sonnet-5-5",
+  "claude-haiku-5-5",
   "gpt-4-0314",
   "gpt-4-0613",
   "gpt-4-1106-preview",

@@ -50,6 +50,7 @@ is_pinned_model() {
   local dated='-([0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$' latest='(^|[-_.@:])latest$' digit='[0-9]'
   case "$1" in
     '' | sonnet | opus | haiku | opusplan | default | best | auto | latest | main) return 1 ;;
+    claude-opus-4-6 | claude-sonnet-4-6 | claude-opus-4-7 | claude-opus-4-8 | claude-opus-5 | claude-sonnet-5 | claude-fable-5 | claude-fable-5-1 | claude-opus-5-5 | claude-sonnet-5-5 | claude-haiku-5-5 | gpt-4-0314 | gpt-4-0613 | gpt-4-1106-preview | gpt-4-0125-preview | gpt-3.5-turbo-0613 | gpt-3.5-turbo-1106 | gpt-3.5-turbo-0125) return 0 ;;
     claude-* | gpt-* | o[0-9]*) [[ $1 =~ $dated ]] ;;
     *) [[ $1 =~ $digit ]] && ! [[ $1 =~ $latest ]] ;;
   esac

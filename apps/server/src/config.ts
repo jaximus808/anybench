@@ -200,6 +200,22 @@ export const EnvSchema = z.object({
       .default("3000000")
       .transform((v) => BigInt(v)),
   ),
+  /**
+   * TDM-212: the key-encryption key for BYOK model keys (user_secrets, lib/byok.ts). Unset = no
+   * stored key can be read, so an AB_TOKEN_SOURCE=anthropic_key trial fails to prepare.
+   */
+  ANYBENCH_KEK: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .min(32, { error: "must be at least 32 characters (openssl rand -base64 32)" })
+      .optional(),
+  ),
+  /** The previous KEK during a rotation (rows with kek_version 0). */
+  ANYBENCH_KEK_PREVIOUS: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32, { error: "must be at least 32 characters" }).optional(),
+  ),
   /** The curated kits directory (TDM-54 CuratedKitStage); default: the repo's kits/. */
   ANYBENCH_KITS_DIR: optionalString,
   /**
@@ -440,6 +456,8 @@ export function configSecrets(config: Config): Record<string, string | undefined
     GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
     SESSION_SECRET: config.SESSION_SECRET,
     RUNNER_TOKEN_SECRET: config.RUNNER_TOKEN_SECRET,
+    ANYBENCH_KEK: config.ANYBENCH_KEK,
+    ANYBENCH_KEK_PREVIOUS: config.ANYBENCH_KEK_PREVIOUS,
     MONID_API_KEY: config.MONID_API_KEY,
     PUBLISH_SIGNING_PRIVATE_KEY_DER_B64: config.PUBLISH_SIGNING_PRIVATE_KEY_DER_B64,
   };

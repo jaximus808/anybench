@@ -1,0 +1,256 @@
+# Kit: on a whole-application build, does Tandem with 3 workers beat plain Claude Code solo?
+# The long-horizon kit for Anybench (plan.md E18, ticket 18.5, TDM-212). Validated by KitSpecSchema
+# (packages/core) and validateKitDir (packages/kit) in
+# packages/kit/test/tdm212-long-horizon-kit.test.ts.
+schema_version: 2
+
+subject:
+  kind: harness
+  name: tandem
+  summary: >-
+    Tandem is a shared task board where a planner splits work into tickets and N Claude Code
+    workers claim them, with approvals. This kit compares Tandem with 3 workers against plain
+    Claude Code working alone on one whole-application build (a multi-user project tracker API,
+    12 feature areas) graded by 120 hidden tests. Every setup runs claude-opus-5-5 on Claude Code
+    2.1.319 with our own Anthropic key, at Claude Code's default effort with thinking on.
+  better_means:
+    - passes more of the hidden tests (partial credit across 12 feature areas)
+    - more trials pass every hidden test
+    - finishes sooner (wall clock)
+    - costs less per task and per hidden test passed (tokens x price)
+    - the code it leaves is easier to maintain
+
+# Two setups (founder decision 2026-11-08: the first run must be able to reach a statistically
+# significant result, so the budget goes to repeats, not setups): A claude-code-solo (baseline) and
+# D tandem with TANDEM_WORKERS=3 (subject). claude-code-subagents (B) is the planned third setup if
+# budget remains (README "Setups"). The order rotates per round from schedule.order_seed.
+#
+# Comparable setups (plan.md 17.2 rule 4, enforced by validateKitDir): both run the same pinned
+# model (driver.model, passed to Claude Code as CC_MODEL), the same pinned Claude Code
+# (versions.CLAUDE_CODE_VERSION, also the install scripts' default), the same caps, the same token
+# source and no assist only one of them gets (approvals are automatic: human_in_loop.policy auto).
+#
+# Tokens: our own Anthropic key (AB_TOKEN_SOURCE=anthropic_key, the BYOK path), the same for both
+# setups. No Naïve proxy capability switches: Claude Code runs at its default effort with thinking
+# on. The model id is first-party (`claude-opus-5-5`, an undated snapshot id). Every model alias
+# Claude Code resolves points at the same id, so no call goes to a moving alias.
+# Caps: 3 h wall clock and a $25 spend cap per trial (token_cap_micro_usd, enforced by the runner
+# from the stream's usage at Opus 5.5 list prices, packages/bench FIRST_PARTY_TOKEN_PRICES).
+contenders:
+  - id: claude-code-solo
+    name: "A · Claude Code solo"
+    role: baseline
+    source:
+      upload: [adapters/claude-code-solo/CLAUDE.md]
+    install:
+      script: adapters/claude-code/install.sh
+      healthcheck: adapters/claude-code/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/claude-code/driver.sh
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        CC_SETUP: claude-code-solo
+        CC_MODEL: claude-opus-5-5
+        # The driver stops Claude Code 60 s before this so the workspace is always frozen.
+        CC_WALL_CAP_S: "10800"
+        # Our own Anthropic key (ANTHROPIC_API_KEY from the worker's ~/.anybench/env), the same for
+        # every contender: Claude Code's default effort, thinking on.
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+        # Claude Code calls its subagent tool Task in older versions and Agent in newer ones.
+        CC_DISALLOWED_TOOLS: "Task Agent"
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
+    found_by: "researcher: the plain default (subagents removed)"
+
+  - id: tandem
+    name: "D · Tandem ×3"
+    role: subject
+    # v0.2.0 = mcp-v3.2.0 = main on 2026-11-07 (git ls-remote https://github.com/jaximus808/tandem),
+    # the same commit as kits/tandem-vs-claude-code.
+    source:
+      github: jaximus808/tandem
+      ref: 05b4a022651f4823dbe00e2748df5862d9c32164
+    install:
+      script: adapters/tandem/install.sh
+      healthcheck: adapters/tandem/healthcheck.sh
+    driver:
+      type: harness
+      script: adapters/tandem/driver.sh
+      verbs:
+        run: adapters/tandem/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        TANDEM_WORKERS: "3"
+        CC_MODEL: claude-opus-5-5
+        # Our own Anthropic key (ANTHROPIC_API_KEY from the worker's ~/.anybench/env), the same for
+        # every contender: Claude Code's default effort, thinking on.
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+    version: tandem@0.2.0
+    versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0", TANDEM_VERSION: "0.2.0" }
+
+workloads:
+  - id: project-tracker
+    title: Build a whole multi-user project tracker API (12 feature areas)
+    input: workloads/project-tracker/input/
+    instruction: workloads/project-tracker/instruction.md
+    setup: workloads/project-tracker/setup.sh
+    timeout_s: 10800
+    params:
+      shape: whole-app
+      feature_areas: 12
+      hidden_tests: 120
+
+# Collectors are omitted on purpose: each driver type gets its defaults (DRIVER_DEFAULT_COLLECTORS),
+# so A gets stream-json and Tandem also gets tandem-board.
+
+gates:
+  - id: hidden-tests
+    kind: hidden-tests
+    check: gates/hidden-tests/check.sh
+    reference: gates/hidden-tests/
+    description: >-
+      Runs the 120 hidden tests (gates/hidden-tests/project-tracker/, never in the workspace)
+      against a copy of the frozen workspace, offline. Passes only when every hidden test passes;
+      also writes hidden_test_fraction, hidden_tests_passed and hidden_tests_total.
+    timeout_s: 1800
+
+requirements:
+  - id: tests-pass
+    type: measured
+    title: Every hidden test passes (120 tests)
+    metric: gate_pass_rate
+    unit: ratio
+    better: higher
+    target: at least 1.0 (every trial passes all 120 hidden tests)
+    gate_id: hidden-tests
+  - id: tests-fraction
+    type: measured
+    title: Share of the 120 hidden tests passed (partial credit, every trial)
+    metric: hidden_test_fraction
+    unit: ratio
+    better: higher
+    target: higher is better
+    gate_id: hidden-tests
+    aggregate: all_trials
+  - id: wall
+    type: measured
+    title: Wall-clock time to solve (failed trials count at the 3 h cap)
+    metric: wall_s
+    unit: s
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: cost
+    type: measured
+    title: Cost per solved task (tokens × price)
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: cost-per-test
+    type: measured
+    title: Cost per hidden test passed (tokens × price)
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+    aggregate: per_test_passed
+  - id: quality
+    type: reviewed
+    title: "Code quality: follows the repo's patterns, handles errors, tests check real behavior, no dead code"
+    rubric: rubric.md
+    criterion: code-quality
+    scale: { min: 1, max: 4 }
+    gate_id: hidden-tests
+
+proof:
+  # The reference solution (proof/oracle/project-tracker/, ticket 18.4) and the overlay drivers are
+  # the same shape as kits/tandem-vs-claude-code's; PROOF.md has the offline run.
+  oracle:
+    id: reference-solution
+    dir: proof/oracle/
+    contender: tandem
+    driver_patch: proof/oracle/driver.sh
+    gates: [hidden-tests]
+    description: Applies proof/oracle/<workload>/ (the reference solution) instead of running the harness.
+  do_less:
+    - id: do-nothing
+      dir: proof/do_less/do-nothing/
+      contender: tandem
+      driver_patch: proof/do_less/do-nothing/driver.sh
+      description: "No-op harness: leaves the starting repo untouched; must fail every hidden test and show 0 claims."
+  regression:
+    id: skip-tests
+    dir: proof/regression/skip-tests/
+    contender: claude-code-solo
+    env:
+      CLAUDE_MD_OVERLAY: proof/regression/skip-tests/CLAUDE.md
+    description: A CLAUDE.md that says "skip the tests"; must score lower than setup A.
+
+human_in_loop:
+  kind: tandem
+  # Approvals are automatic. An llm-reviewer would be help only Tandem gets (A has no approval
+  # step), which the comparability rules refuse unless every contender gets it.
+  policy: auto
+
+# Our own Anthropic key: the worker writes the run owner's stored BYOK key (apps/server
+# user_secrets, provider anthropic) to ~/.anybench/env for every trial; the drivers read it from
+# there (EVAL_SECRETS) and the runner redacts it from every log and event.
+secrets: [ANTHROPIC_API_KEY]
+
+collect:
+  - stream.jsonl
+  - versions.json
+  - claude.stderr.log
+  - tandem/**
+
+transfer:
+  max_mb: 300
+
+scoring:
+  # The preregistered headline (plan.md 17.2 rules 3 and 6): the founder's prediction is about the
+  # share of hidden tests passed on this whole-app build (README "Pre-registered prediction").
+  primary: tests-fraction
+  weights:
+    tests-fraction: 40
+    tests-pass: 20
+    wall: 10
+    cost: 5
+    cost-per-test: 5
+    quality: 20
+
+# Measured trials per setup. TDM-213 sizes the first run at 5 to 8 per setup from the power plan
+# and the $150 token budget; 5 is the floor it starts from.
+repeats: 5
+
+schedule:
+  # A warm-up would be a whole 3 h trial at up to $25: none. Rotates the setup order per round.
+  warmups: 0
+  order_seed: 212
+
+env:
+  profile: agent-cc
+  resources: { vcpu: 4, memory_gb: 8, disk_gb: 20 }
+  os_packages: [git]
+  toolchains:
+    - { name: node, version: "22" }
+  network:
+    # The agents need the Anthropic API and npm / GitHub (snapshot build only). Gates run offline.
+    allow: [api.anthropic.com, registry.npmjs.org, github.com, "*.githubusercontent.com"]
+  region: us-east
