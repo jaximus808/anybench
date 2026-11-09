@@ -43,7 +43,8 @@ const withLongWorkloadTdm215 = (y: string): string =>
       (_m, head: string) => `${head}10800`,
     );
 
-const horizon = (fs: { check: string }[]) => fs.filter((f) => f.check === "horizon_mismatch");
+const horizon = <F extends { check: string }>(fs: readonly F[]): F[] =>
+  fs.filter((f) => f.check === "horizon_mismatch");
 
 describe("skeptic horizon_mismatch (TDM-215)", () => {
   it("fires on kits/tandem-vs-claude-code: a coordination harness on three short tasks", async () => {
