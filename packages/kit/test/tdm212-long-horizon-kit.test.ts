@@ -184,6 +184,19 @@ describe("kits/tandem-long-horizon anybench.yaml (TDM-212)", () => {
     expect(Object.values(kit.scoring.weights).reduce((a, b) => a + b, 0)).toBe(100);
   });
 
+  it("declares the proof: the oracle, the no-op harness and the planted skip-tests regression on A", () => {
+    expect(kit.proof.oracle).toMatchObject({ dir: "proof/oracle/", gates: ["hidden-tests"] });
+    expect(kit.proof.do_less.map((d) => d.id)).toEqual(["do-nothing"]);
+    expect(kit.proof.regression).toMatchObject({
+      id: "skip-tests",
+      contender: "claude-code-solo",
+      env: { CLAUDE_MD_OVERLAY: "proof/regression/skip-tests/CLAUDE.md" },
+    });
+    expect(existsSync(join(KIT_TDM212, "proof/regression/skip-tests/CLAUDE.md"))).toBe(true);
+    // The driver appends the overlay to CLAUDE.md (the regression's only lever).
+    expect(readTdm212("adapters/claude-code/driver.sh")).toContain("CLAUDE_MD_OVERLAY");
+  });
+
   it("is comparable: no comparability error, token_source_unequal included", () => {
     const issues = comparabilityIssues(kit);
     expect(issues.filter((i) => i.severity === "error")).toEqual([]);

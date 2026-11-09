@@ -83,6 +83,9 @@ gate: hidden-tests project-tracker: pass: 120/120 hidden tests passed
 The workspace was frozen by the driver (not the cap), and the agent wrote its own tests under
 `test/` (10 files, one per area).
 
+The smoke ran on `instruction.md` as of TDM-209 (1ad9703). TDM-211 (34af4a7) later added six
+one-sentence clarifications that no hidden test depends on; the full run uses the newer text.
+
 ## For TDM-213
 
 1. **The task does not stress one session.** Claude Code solo, at default effort with thinking
@@ -109,7 +112,8 @@ The workspace was frozen by the driver (not the cap), and the agent wrote its ow
    is a real risk for the first run.
 4. **The skeptic still blocks the kit**, on work outside this ticket: `solution_leakage` and
    `answer_in_workloads` on `instruction.md` and the byte-identical `tracker-v1.json` (TDM-208 /
-   TDM-209; the fixture copy is identical by design), and `weak_do_less` (partial oracles, 18.4).
+   TDM-209; the fixture copy is identical by design), and `weak_do_less` (no partial oracles yet;
+   TDM-211 shipped the full oracle and the no-op only).
    The curated path does not run the skeptic, but a kit upload would.
 5. **BYOK key not stored yet.** Before a run on the server, store the founder's key once:
    `pnpm tsx scripts/ops/store-byok-key.ts --owner <github-login>` (needs `ANYBENCH_KEK` on the
