@@ -111,18 +111,50 @@ workloads/project-tracker/setup.sh          builds EVAL_WS from input/ (determin
 workloads/project-tracker/areas.json        feature areas, routes and test-count targets (kit-side)
 scripts/setup-workspace.sh                  the deterministic workspace builder setup.sh calls
 scripts/gen-seed-v1.mjs                     regenerates tracker-v1.json (fixed salts and times; --check)
+scripts/ab-run-local.sh                     local stand-in for the gate runner's $AB_RUN (no uid switch)
+gates/hidden-tests/check.sh                 the hidden-tests gate (L5), scoring computer only
+gates/hidden-tests/grade.mjs                copies the tests in, runs them, scores them, writes the verdict and metrics
+gates/hidden-tests/project-tracker/         120 hidden tests, one file per area, tests.json, fixtures/tracker-v1.json
 ```
 
-Still to come in sibling tickets of E18: the hidden tests and their gate (18.2), the kit file
-`anybench.yaml` with the adapters (copied from `kits/tandem-vs-claude-code`), and the reference
-solution and proof (18.4).
+Still to come in sibling tickets of E18: the kit file `anybench.yaml` with the adapters (copied
+from `kits/tandem-vs-claude-code`), and the reference solution and proof (18.4).
+
+## Hidden tests and partial credit
+
+`gates/hidden-tests/project-tracker/` holds 120 tests over HTTP (`node:test`, no dependencies),
+one file per area of `areas.json`, at exactly each area's `tests_target`. `tests.json` lists every
+test with its `area`. Every assertion traces to `instruction.md`. The tests use the contract's own
+controls: a fake `now` clock, small `retryDelaysMs` and `timeoutMs`, webhook receivers on
+127.0.0.1 ephemeral ports, and waits that poll with a deadline instead of fixed sleeps. The
+`migration` tests use the gate's own copy of `tracker-v1.json` (byte-identical to
+`input/fixtures/`), so editing the workspace's copy changes nothing.
+
+The gate (copied from `kits/tandem-vs-claude-code` and extended) puts the tests into
+`<workspace>/.hidden-tests/` before any contender code runs, and scores every test in
+`tests.json`. A test that never reports counts as failed. It writes `hidden-tests.metrics.jsonl`:
+
+| Metric | Value |
+| --- | --- |
+| `hidden_test_fraction` | passed / total, 0..1: the partial-credit correctness metric (TDM-210) |
+| `hidden_tests_passed`, `hidden_tests_total` | counts |
+| `area_pass.<area>` | that area's passed / total, 0..1, one row per area |
+
+The verdict stays **pass only at 100%**. Partial credit is a metric, never a pass.
 
 ## Checks
 
 ```sh
 kits/tandem-long-horizon/workloads/project-tracker/setup.sh /tmp/ws && (cd /tmp/ws && npm test)
 node kits/tandem-long-horizon/scripts/gen-seed-v1.mjs --check
+# the hidden-tests gate on a workspace in <run>/workspace:
+AB_RUN=kits/tandem-long-horizon/scripts/ab-run-local.sh AB_RUN_DIR=<run> \
+  kits/tandem-long-horizon/gates/hidden-tests/check.sh <out> project-tracker <out>/gate.json
 ```
+
+`packages/kit/test/tdm209-long-horizon-hidden-tests.test.ts` checks that `tests.json` matches the
+test files and the area targets, the fixture copy is identical, the metric rows and the
+100%-only verdict, and that the gate on the 18.1 skeleton scores 1/120 (only `GET /health`).
 
 `packages/kit/test/tdm208-long-horizon-workload.test.ts` (in `pnpm -r test`) checks that setup is
 deterministic and yields one commit, the skeleton's own tests pass, `areas.json` and
