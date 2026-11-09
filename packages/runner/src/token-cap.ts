@@ -33,6 +33,14 @@
 // open sessions' estimates, so the cap errs early (the estimate lags by up to one content block,
 // and the chars-per-token ratio is a measurement, not a law). A reported cost needs no margin.
 //
+// One `claude -p` session can write several `result` lines (TDM-239: Tandem workers on 2.1.319
+// wrote 2 to 4 each, all with the same session_id). Each result's `usage` covers only the turns
+// since the previous result, but its `total_cost_usd` is the process's running total. So a named
+// session's reported cost is its LATEST (largest) total, never the sum of its results, and the
+// estimate of the messages that arrived after that result is added on top (open, with margin)
+// until the next result replaces it. Summing the results overstated the TDM-239 Tandem trial by
+// 71% ($17.44 against $10.18).
+//
 // Money is integer micro-USD as bigint throughout.
 
 import type { MicroUsd } from "@anybench/core";
@@ -188,6 +196,9 @@ interface SessionMeter {
   thinkingTokens: number;
   reported: MicroUsd;
   results: number;
+  /** The session's estimate and message count when its latest result arrived. */
+  estimateAtResult: MicroUsd;
+  messagesAtResult: number;
 }
 
 export class TokenMeter {
@@ -226,6 +237,8 @@ export class TokenMeter {
         thinkingTokens: 0,
         reported: 0n,
         results: 0,
+        estimateAtResult: 0n,
+        messagesAtResult: 0,
       };
       this.sessions.set(key, s);
     }
@@ -287,9 +300,13 @@ export class TokenMeter {
       const m = TOTAL_COST_TEXT.exec(text);
       const micro = m ? usdTextToMicroUsd(m[1]!) : null;
       if (micro === null || micro < 0n) return;
+      const named = typeof ev.session_id === "string";
       const s = this.session(ev.session_id);
-      s.reported += micro;
+      // A named session's total is cumulative (see the header); unnamed lines may mix sessions.
+      s.reported = named ? (micro > s.reported ? micro : s.reported) : s.reported + micro;
       s.results++;
+      s.estimateAtResult = estimateMicroUsd(this.sessionTokens(s).tokens, this.prices);
+      s.messagesAtResult = s.byMessage.size;
     } else {
       return;
     }
@@ -346,7 +363,17 @@ export class TokenMeter {
       results += s.results;
       // A named session's own result is its whole bill. Lines without a session id may mix
       // several sessions, so there a result is only a floor.
-      if (s.results > 0 && (key !== NO_SESSION || s.reported >= est)) {
+      if (s.results > 0 && key !== NO_SESSION) {
+        // Turns after the latest result: their estimate, until the next result covers them.
+        const tail =
+          s.byMessage.size > s.messagesAtResult && est > s.estimateAtResult
+            ? est - s.estimateAtResult
+            : 0n;
+        spent += s.reported + tail;
+        openEstimate += tail;
+        if (tail > 0n) byEstimate++;
+        byReported++;
+      } else if (s.results > 0 && s.reported >= est) {
         spent += s.reported;
         byReported++;
       } else {

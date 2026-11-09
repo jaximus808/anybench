@@ -313,3 +313,81 @@ describe("Tandem: parallel sessions through board.ts tap (TDM-231)", () => {
     expect(a).toMatchObject({ sessions: 2, open_sessions: 1, results: 1, messages: 3 });
   });
 });
+
+// TDM-239: one `claude -p` session writes several result lines (Tandem workers on 2.1.319 wrote 2
+// to 4), each with the session's running total_cost_usd. fixtures/tdm239-tandem-tap.jsonl is the
+// TDM-239 docker-local Tandem ×3 trial on project-tracker (planner + 3 workers, $10.18 by each
+// session's last result) passed through `board.ts tap`, one session after another: ids, usage
+// counts, char counts and result costs only (checked for `sk-ant-` before commit).
+describe("Tandem sessions with several results (TDM-239)", () => {
+  const lines = readFileSync(join(HERE_TDM231, "fixtures/tdm239-tandem-tap.jsonl"), "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0);
+  const results = lines
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => l.startsWith('{"type":"result"'))
+    .map(({ l, i }) => ({
+      i,
+      session: /"session_id":"([^"]+)"/.exec(l)![1]!,
+      micro: usdTextToMicroUsd(/"total_cost_usd":([0-9.eE+-]+)/.exec(l)![1]!)!,
+    }));
+  const last = new Map<string, bigint>();
+  for (const r of results) last.set(r.session, r.micro);
+  const real = [...last.values()].reduce((a, b) => a + b, 0n);
+  const summed = results.reduce((a, r) => a + r.micro, 0n);
+
+  it("the fixture: 4 sessions, 10 results; each session's totals only grow", () => {
+    expect(last.size).toBe(4);
+    expect(results).toHaveLength(10);
+    expect(real).toBe(10_177_855n);
+    expect(summed).toBe(17_439_516n);
+    for (const s of last.keys()) {
+      const mine = results.filter((r) => r.session === s).map((r) => r.micro);
+      expect(mine).toEqual([...mine].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    }
+  });
+
+  it("spent is each session's latest total, not the sum of its results", () => {
+    const m = new TokenMeter(100_000_000n, OPUS_TDM231, never);
+    for (const l of lines) m.line(l);
+    const snap = m.snapshot();
+    expect(snap.spent_micro_usd).toBe(real);
+    expect(snap.margin_micro_usd).toBe(0n);
+    expect(snap.source).toBe("reported");
+  });
+
+  it("turns after a result count as an open estimate until the next result", () => {
+    // worker-2's second result: just before it, its first total plus the new turns' estimate.
+    const w2 = results.filter((r) => r.session === results[3]!.session);
+    expect(w2.length).toBeGreaterThan(1);
+    const m = new TokenMeter(100_000_000n, OPUS_TDM231, never);
+    for (const l of lines.slice(0, w2[1]!.i)) m.line(l);
+    const before = m.snapshot();
+    const reportedElsewhere = [
+      ...new Set(results.filter((r) => r.i < w2[0]!.i).map((r) => r.session)),
+    ]
+      .filter((s) => s !== w2[0]!.session)
+      .reduce(
+        (a, s) => a + results.filter((r) => r.session === s && r.i < w2[1]!.i).at(-1)!.micro,
+        0n,
+      );
+    const tail = before.spent_micro_usd - reportedElsewhere - w2[0]!.micro;
+    expect(tail).toBeGreaterThan(0n);
+    // The tail is within 25% of what the result then adds.
+    const added = w2[1]!.micro - w2[0]!.micro;
+    expect(errorBpTdm231(tail, added) < 2_500n && errorBpTdm231(tail, added) > -2_500n).toBe(true);
+    expect(before.margin_micro_usd).toBeGreaterThan(0n);
+    expect(before.source).toBe("mixed");
+    m.line(lines[w2[1]!.i]!);
+    expect(m.snapshot().margin_micro_usd).toBe(0n);
+  });
+
+  it("a $15 cap does not trip on this $10.18 trial (summing the results read $17.44)", () => {
+    let tripped = false;
+    const m = new TokenMeter(15_000_000n, OPUS_TDM231, () => {
+      tripped = true;
+    });
+    for (const l of lines) m.line(l);
+    expect(tripped).toBe(false);
+  });
+});
