@@ -1,0 +1,15 @@
+{
+  "name": "project-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A multi-user project tracker API on node:http. No runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  }
+}

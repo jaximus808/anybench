@@ -1,0 +1,265 @@
+{
+  "workload": "project-tracker",
+  "spec": "instruction.md",
+  "tests_total": 120,
+  "note": "Feature areas of the project-tracker contract. Each hidden test is tagged with exactly one area id. `section` is the instruction.md heading that defines the area (section 0, Conventions, applies to every area: its error order, pagination and validation rules are tested inside the areas). `routes` are the routes the area owns, exactly as instruction.md's route tables spell them. `must_cover` lists behaviours the area's tests should reach; every one of them is written in instruction.md. This file is kit-side: it is not copied into the workspace.",
+  "areas": [
+    {
+      "id": "auth",
+      "title": "Accounts and auth",
+      "section": "## 1. Accounts and auth (`auth`)",
+      "tests_target": 11,
+      "depends_on": [],
+      "routes": [
+        "POST /auth/register",
+        "POST /auth/login",
+        "POST /auth/logout",
+        "GET /me",
+        "PATCH /me",
+        "POST /me/password"
+      ],
+      "must_cover": [
+        "register validation (email, password length, name, handle regex) and the user shape without password",
+        "email_taken (case-insensitive) before handle_taken",
+        "login token >= 20 chars and expiresAt = now + tokenTtlMs; invalid_credentials",
+        "401 unauthorized for missing, malformed, unknown, revoked and expired tokens (fake clock)",
+        "logout revokes only the calling token",
+        "password change: wrong_password; success revokes every token of the user",
+        "PATCH /me handle conflict and own-handle no-op"
+      ]
+    },
+    {
+      "id": "teams",
+      "title": "Teams and roles",
+      "section": "## 2. Teams and roles (`teams`)",
+      "tests_target": 13,
+      "depends_on": ["auth"],
+      "routes": [
+        "POST /teams",
+        "GET /teams",
+        "GET /teams/:teamId",
+        "PATCH /teams/:teamId",
+        "DELETE /teams/:teamId",
+        "GET /teams/:teamId/members",
+        "POST /teams/:teamId/members",
+        "PATCH /teams/:teamId/members/:userId",
+        "DELETE /teams/:teamId/members/:userId",
+        "POST /teams/:teamId/transfer"
+      ],
+      "must_cover": [
+        "creator is owner; myRole per caller; GET /teams lists only the caller's teams",
+        "non-members get 404 not_found, never 403, on every team-scoped route",
+        "role matrix: viewer/member get 403 on admin+ routes; admin gets 403 on owner routes",
+        "add member: user_not_found, already_member, role owner rejected",
+        "owner_required on changing or removing the owner",
+        "self-removal by a member; removal of someone else by a member is 403",
+        "removing a member unassigns their cards",
+        "transfer: target becomes owner, previous owner admin, non-member target 400",
+        "deleting a team removes it for every member"
+      ]
+    },
+    {
+      "id": "projects",
+      "title": "Projects",
+      "section": "## 3. Projects (`projects`)",
+      "tests_target": 9,
+      "depends_on": ["teams"],
+      "routes": [
+        "POST /teams/:teamId/projects",
+        "GET /teams/:teamId/projects",
+        "GET /projects/:projectId",
+        "PATCH /projects/:projectId",
+        "DELETE /projects/:projectId"
+      ],
+      "must_cover": [
+        "key regex and key_taken within a team (archived included); same key allowed in another team",
+        "PATCH with key is 400 invalid_body; updatedAt changes",
+        "?archived=false|true|all and invalid_query",
+        "archived project: writes to boards, columns, cards and comments answer 409 project_archived; unarchive restores writes",
+        "delete cascades (its boards and cards answer 404)"
+      ]
+    },
+    {
+      "id": "boards",
+      "title": "Boards and columns",
+      "section": "## 4. Boards and columns (`boards`)",
+      "tests_target": 11,
+      "depends_on": ["projects"],
+      "routes": [
+        "POST /projects/:projectId/boards",
+        "GET /projects/:projectId/boards",
+        "GET /boards/:boardId",
+        "PATCH /boards/:boardId",
+        "DELETE /boards/:boardId",
+        "POST /boards/:boardId/columns",
+        "PATCH /columns/:columnId",
+        "DELETE /columns/:columnId"
+      ],
+      "must_cover": [
+        "default columns To do / In progress / Done with positions 0..2",
+        "insert a column at a position; positions stay 0..n-1",
+        "move a column with PATCH position; relative order of the others kept",
+        "wipLimit validation (null or 1..1000)",
+        "delete: last_column, column_not_empty, ?moveTo appends cards in order, invalid moveTo is invalid_query",
+        "member is 403 on column and board writes"
+      ]
+    },
+    {
+      "id": "cards",
+      "title": "Cards",
+      "section": "## 5. Cards (`cards`)",
+      "tests_target": 15,
+      "depends_on": ["boards"],
+      "routes": [
+        "POST /columns/:columnId/cards",
+        "GET /boards/:boardId/cards",
+        "GET /cards/:cardId",
+        "PATCH /cards/:cardId",
+        "POST /cards/:cardId/move",
+        "DELETE /cards/:cardId"
+      ],
+      "must_cover": [
+        "card shape; number per project across boards, never reused after delete; key PROJECT-N",
+        "labels normalised: trimmed, lowercased, de-duplicated, sorted; more than 10 is 400",
+        "dueDate validation including impossible dates",
+        "assignee: viewer, non-member and unknown id are invalid_assignee; null clears",
+        "create at a position shifts later cards; delete closes the gap",
+        "move across columns and within a column with exact resulting positions",
+        "move to another board's column is 400 invalid_body",
+        "wip_limit_reached on create and on move into a full column; reorder inside a full column allowed",
+        "GET /boards/:boardId/cards order and ?columnId= filter; foreign columnId is invalid_query",
+        "viewer gets 403 on card writes"
+      ]
+    },
+    {
+      "id": "comments",
+      "title": "Comments and mentions",
+      "section": "## 6. Comments and mentions (`comments`)",
+      "tests_target": 10,
+      "depends_on": ["cards"],
+      "routes": [
+        "POST /cards/:cardId/comments",
+        "GET /cards/:cardId/comments",
+        "GET /comments/:commentId",
+        "PATCH /comments/:commentId",
+        "DELETE /comments/:commentId",
+        "GET /me/mentions"
+      ],
+      "must_cover": [
+        "threaded replies returned as nested trees, oldest first, any depth",
+        "parentId on another card is 400 invalid_body",
+        "mention regex edge cases: email addresses, uppercase, punctuation, 21-char names, non-members, the author",
+        "mentions recomputed on PATCH",
+        "PATCH by a non-author (even the owner) is 403; DELETE by admin allowed, by another member 403",
+        "soft delete keeps replies; PATCH/DELETE/reply on a deleted comment is comment_deleted",
+        "GET /me/mentions newest first with cursor pagination"
+      ]
+    },
+    {
+      "id": "search",
+      "title": "Search",
+      "section": "## 7. Search (`search`)",
+      "tests_target": 12,
+      "depends_on": ["cards", "comments"],
+      "routes": ["GET /teams/:teamId/search"],
+      "must_cover": [
+        "prefix term matching over title, description and non-deleted comments; every term must match",
+        "score 3*t + d + c and its tie-break by creation order",
+        "filters: projectId, boardId, columnId, assigneeId and none, repeated label, dueFrom/dueTo inclusive",
+        "archived projects excluded unless includeArchived=true",
+        "cursor pagination visits every match once; total; invalid limit/cursor/date/includeArchived are invalid_query",
+        "q longer than 200 chars or with more than 10 terms is invalid_query",
+        "results never include another team's cards"
+      ]
+    },
+    {
+      "id": "webhooks",
+      "title": "Webhooks",
+      "section": "## 8. Webhooks (`webhooks`)",
+      "tests_target": 11,
+      "depends_on": ["cards", "comments", "teams"],
+      "routes": [
+        "POST /teams/:teamId/webhooks",
+        "GET /teams/:teamId/webhooks",
+        "GET /webhooks/:webhookId",
+        "PATCH /webhooks/:webhookId",
+        "DELETE /webhooks/:webhookId",
+        "POST /webhooks/:webhookId/rotate-secret",
+        "POST /webhooks/:webhookId/test",
+        "GET /webhooks/:webhookId/deliveries"
+      ],
+      "must_cover": [
+        "secret only on create and rotate; generated secret >= 32 chars",
+        "events validation, de-dup and sort, * normalisation",
+        "a local receiver gets the payload with the documented headers; signature verifies with HMAC-SHA256 of the raw body",
+        "every documented event fires with its data; events filter respected; inactive webhooks get nothing but ping",
+        "retry with small retryDelaysMs: a receiver answering 500 then 200 gives attempts 2 and succeeded; same body bytes, attempt header increments",
+        "exhausted retries give failed; a timeout gives a non-empty lastError and lastStatusCode null",
+        "deliveries newest first; member gets 403 on webhook routes"
+      ]
+    },
+    {
+      "id": "ratelimit",
+      "title": "Rate limiting",
+      "section": "## 9. Rate limiting (`ratelimit`)",
+      "tests_target": 7,
+      "depends_on": ["auth"],
+      "routes": [],
+      "must_cover": [
+        "headers x-ratelimit-limit, -remaining, -reset on counted requests (fake clock)",
+        "429 rate_limited with retry-after and remaining 0, and no side effect",
+        "429s are not counted; budget per token, not per user",
+        "a new window (clock moved) restores the budget",
+        "public routes and 401s carry no headers and are not counted"
+      ]
+    },
+    {
+      "id": "persistence",
+      "title": "Persistence (version 2 data file)",
+      "section": "### 10.1 The data file (`persistence`)",
+      "tests_target": 6,
+      "depends_on": ["auth", "teams", "cards", "comments", "webhooks", "audit"],
+      "routes": [],
+      "must_cover": [
+        "the file exists and is version 2 right after a mutating response (no debounce)",
+        "a new app on the same file sees everything: logins, unexpired and revoked tokens, ids, positions, next card number",
+        "no plain-text password in the file",
+        "missing file is an empty state",
+        "createApp throws on invalid JSON and on an unsupported version"
+      ]
+    },
+    {
+      "id": "migration",
+      "title": "Migration from the 1.x format",
+      "section": "### 10.2 Loading a 1.x file (`migration`)",
+      "tests_target": 8,
+      "depends_on": ["persistence"],
+      "routes": [],
+      "must_cover": [
+        "v1.bak byte-identical and dataFile rewritten as version 2 before createApp returns",
+        "migrated users log in with their 1.x passwords; emails lowercased; derived handles including collisions and short handles",
+        "role mapping manager/editor/reader and member order",
+        "columns, wipLimit from limits, orphan column cards land in the first column, positions from order with ties",
+        "labels from tags, dueDate from UTC timestamps, assignee dropped for viewers and non-members",
+        "card numbers per project by createdAt with ties in file order; next card number continues",
+        "comment parentId kept only for the same card; mentions recomputed with migrated handles"
+      ],
+      "fixture": "input/fixtures/tracker-v1.json (hidden tests must carry their own copy, since the agent can edit the workspace)"
+    },
+    {
+      "id": "audit",
+      "title": "Audit log",
+      "section": "## 11. Audit log (`audit`)",
+      "tests_target": 7,
+      "depends_on": ["teams", "projects", "boards", "cards", "comments", "webhooks"],
+      "routes": ["GET /teams/:teamId/audit"],
+      "must_cover": [
+        "one entry per successful write with the documented action, target and details",
+        "failed requests, reads and cascades add nothing",
+        "fields in *.updated details are the sorted body fields",
+        "newest first with cursor pagination; action and actorId filters",
+        "member and viewer get 403"
+      ]
+    }
+  ]
+}
