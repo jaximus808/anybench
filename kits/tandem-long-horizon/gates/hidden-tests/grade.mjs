@@ -196,13 +196,18 @@ export function runHiddenTests({ workload, ws, out, abRun, timeoutS = 600 }) {
   return summary;
 }
 
-/** Totals and per-area counts for scored tests ({area, status}[]), in the manifest's area order. */
+/**
+ * Totals and per-area counts for scored tests ({area, status}[]), in the manifest's area order.
+ * Only areas that have tests are scored (TDM-236): a manifest written in halves may list an area
+ * before its tests land, and an empty area must not read as area_pass 0.
+ */
 export function summarize({ workload, areas, tests, durationS = 0, timedOut = false, exitCode = null }) {
   const passed = tests.filter((t) => t.status === "pass").length;
   const total = tests.length;
   const byArea = {};
   for (const a of areas) {
     const inArea = tests.filter((t) => t.area === a);
+    if (inArea.length === 0) continue;
     byArea[a] = { passed: inArea.filter((t) => t.status === "pass").length, total: inArea.length };
   }
   return { workload, total, passed, failed: total - passed, fraction: total === 0 ? 0 : passed / total, areas: byArea, duration_s: durationS, timed_out: timedOut, exit_code: exitCode, tests };
