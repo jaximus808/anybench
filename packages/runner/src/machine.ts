@@ -29,6 +29,8 @@ export interface MachineInfo {
   steal_pct: number | null;
   steal_window_ms: number;
   runner_version: string;
+  /** TDM-247: the commit compiled into the runner binary (`runner --version`). */
+  runner_commit: string;
 }
 
 async function run(cmd: string, args: string[]): Promise<string | null> {
@@ -82,6 +84,7 @@ export async function sampleSteal(windowMs: number): Promise<number | null> {
 export async function probeMachine(
   runnerVersion: string,
   stealWindowMs = 1000,
+  runnerCommit = "unknown",
 ): Promise<MachineInfo> {
   const [uname, nprocText, lscpu, meminfoText, steal] = await Promise.all([
     run("uname", ["-a"]),
@@ -110,5 +113,6 @@ export async function probeMachine(
     steal_pct: steal,
     steal_window_ms: stealWindowMs,
     runner_version: runnerVersion,
+    runner_commit: runnerCommit,
   };
 }

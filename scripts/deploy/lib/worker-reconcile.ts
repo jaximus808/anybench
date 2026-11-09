@@ -5,6 +5,7 @@
 //   1. create the successor (tagged ab-infra-worker: the reaper leaves it alone) and provision it:
 //      env file, curl config and manifest by the fs API, then `bootstrap.sh install` (Node ≥ 22,
 //      fetch + sha256-check the release, npm install, systemd units). The worker is not started.
+//      Then `bootstrap.sh runner-version` must report the manifest's runnerCommit (TDM-247).
 //   2. stop the old worker(s) (SIGTERM: graphile drains, in-flight trials re-attach later through
 //      trial.reattach), copy ~/.anybench/generated-kits across (kits.files_url is a file:// path),
 //   3. start the successor and wait for its worker_heartbeats row to tick,
@@ -19,6 +20,7 @@ import {
   envFingerprint,
   HOST_PATHS,
   HostStatusSchema,
+  hostRunnerProblem,
   liveWorkers,
   workerComputerName,
   type Decision,
@@ -175,6 +177,12 @@ export async function provisionSuccessor(
       release: manifest.release.id,
       s: Math.round((deps.now() - t0) / 1000),
     });
+    // TDM-247: the runner this worker will bake into trial images is the deploy's, checked on the
+    // host before anything is stopped (a failure deletes the successor; the old worker keeps going).
+    const version = await run(deps, created.id, "runner-version", [], 60_000);
+    const problem = hostRunnerProblem(version, manifest.runnerCommit);
+    if (problem) throw new Error(`successor ${created.id}: ${problem}`);
+    deps.log("successor runner", { id: created.id, version: version.trim().split("\n").at(-1) });
     return created.id;
   } catch (err) {
     await deps.computers.delete(created.id).catch(() => {});

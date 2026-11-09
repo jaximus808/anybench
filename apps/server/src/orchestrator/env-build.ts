@@ -14,6 +14,7 @@
 //
 // A build failure is OUR failure: the run holds in needs_human with the reason, and nothing is
 // billed (the build computer is infrastructure, tagged ab-infra-envbuild-*, outside the registry).
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,8 +28,11 @@ import {
   KIT_DIR_REL,
   loadRecipeCatalog,
   recipesForProfile,
+  formatRunnerBuild,
+  readRunnerBuild,
   resolvedRecipeVersions,
   runnerFromBytes,
+  runnerSourceBuild,
   runnerFromUrl,
   sha256File,
   uploadFileWithPlan,
@@ -37,6 +41,7 @@ import {
   type EnvBuildInstall,
   type RecipeArch,
   type RecipeCatalog,
+  type RunnerBuild,
   type RunnerInstaller,
   toolchainRecipes,
   withRecipes,
@@ -81,6 +86,8 @@ export interface EnvBuildDetail {
   scoring_snapshot_id?: string;
   cached: boolean;
   build_ms?: number;
+  /** TDM-247: the commit compiled into the image's runner (part of spec_hash). */
+  runner_commit?: string;
 }
 
 /** The kit's computer size (env.resources; Naïve's 2 vCPU / 4 GiB / 20 GB when the kit has no env). */
@@ -106,23 +113,55 @@ export function defaultRunnerBinDir(override?: string): string {
 const ARCHES: RecipeArch[] = ["x64", "arm64"];
 
 /**
+ * TDM-247: the build a worker running from a git checkout must find in packages/runner/dist/bin
+ * (the newest commit that changed the runner's inputs). null when the bin dir is overridden (the
+ * deployed worker: scripts/deploy/worker.ts checked its release's binaries) or there is no checkout.
+ */
+export function checkoutRunnerBuild(binDirOverride?: string): RunnerBuild | null {
+  if (binDirOverride) return null;
+  const repoRoot = path.resolve(defaultRunnerBinDir(), "../../../..");
+  if (!existsSync(path.join(repoRoot, ".git"))) return null;
+  try {
+    return runnerSourceBuild(repoRoot);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The runner for the image. With an artifact store, each binary is uploaded once (keyed by its
  * sha256) and fetched by the computer from a presigned GET; without one it goes by putFile.
+ *
+ * TDM-247: throws (the stage holds with the message) when a binary carries no build stamp (built
+ * before TDM-247, e.g. the Nov 7 runner production ran for two days) or, with `expect`, a build
+ * other than the checkout's: a stale runner must not be baked into a cached image.
  */
 export async function runnerInstaller(opts: {
   binDir: string;
   artifacts?: Pick<ArtifactStore, "createUpload" | "completeUpload" | "createDownload"> | null;
+  expect?: RunnerBuild | null;
 }): Promise<RunnerInstaller | null> {
   const files: Partial<Record<RecipeArch, string>> = {};
   const shas: Partial<Record<RecipeArch, string>> = {};
+  const builds: Partial<Record<RecipeArch, RunnerBuild>> = {};
   for (const arch of ARCHES) {
     const f = path.join(opts.binDir, `runner-linux-${arch}`);
     try {
       shas[arch] = (await sha256File(f)).sha256;
       files[arch] = f;
     } catch {
-      // that arch was not built
+      continue; // that arch was not built
     }
+    const b = await readRunnerBuild(f);
+    const rebuild = "rebuild it: pnpm --filter @anybench/runner build:bin";
+    if (!b)
+      throw new Error(`env build: ${f} carries no build commit (built before TDM-247); ${rebuild}`);
+    if (opts.expect && formatRunnerBuild(b) !== formatRunnerBuild(opts.expect)) {
+      throw new Error(
+        `env build: ${f} was built from ${formatRunnerBuild(b)}, but this checkout's runner is ${formatRunnerBuild(opts.expect)}; ${rebuild}`,
+      );
+    }
+    builds[arch] = b;
   }
   if (Object.keys(files).length === 0) return null;
   const store = opts.artifacts;
@@ -135,6 +174,7 @@ export async function runnerInstaller(opts: {
   }
   return runnerFromUrl({
     sha256: shas,
+    build: builds,
     async url(arch) {
       const sha = shas[arch];
       const file = files[arch];
@@ -333,7 +373,12 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
     if (!tools.ok) return stageHold(`env build: ${tools.reason}`);
     const requested = withRecipes(profileRecipes, tools.recipes);
     const scoringRecipes = withRecipes(SCORING_RECIPES, tools.recipes);
-    const runner = await deps.runner();
+    let runner: RunnerInstaller | null;
+    try {
+      runner = await deps.runner();
+    } catch (err) {
+      return stageHold(err instanceof Error ? err.message : String(err));
+    }
     if (!runner) {
       return stageHold(
         "env build: no runner binary (pnpm --filter @anybench/runner build:bin, or ANYBENCH_RUNNER_BIN_DIR)",
@@ -355,12 +400,24 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         return [];
       }
     });
+    // TDM-247: the runner's commit is in the key too (the sha already changes with it): an image
+    // baked with an older runner is never forked for a trial that needs the current one.
+    const runnerCommits = ARCHES.flatMap((a) => {
+      if (!runnerShas.some((s) => s.startsWith(`${a}:`))) return [];
+      const b = runner.build?.(a);
+      return b ? [`${a}:${formatRunnerBuild(b)}`] : [];
+    });
+    const runnerCommitOn = (arch: RecipeArch) => {
+      const hit = runnerCommits.find((c) => c.startsWith(`${arch}:`));
+      return hit ? { runner_commit: hit.slice(arch.length + 1) } : {};
+    };
     const specHash = envBuildHash({
       v: ENV_BUILD_VERSION,
       provider: deps.provider.name,
       profile,
       recipes,
       runner: runnerShas,
+      ...(runnerCommits.length > 0 ? { runner_commit: runnerCommits } : {}),
       spec,
       subject: subject.sha256,
       installs: subject.installs,
@@ -443,6 +500,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
         path: health.path ?? [],
         kit_dir: KIT_DIR_REL,
         scoring_snapshot_id: scoringSnapshotId,
+        ...runnerCommitOn(health.arch ?? "x64"),
         cached: true,
       };
       return stageOk<EnvBuild>({ env_id: cached.snapshotId, detail: { ...detail } });
@@ -501,6 +559,7 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
       scoring_snapshot_id: scoringSnapshotId,
       cached: false,
       build_ms: built.durationMs,
+      ...runnerCommitOn(built.arch),
     };
     await saveSnapshot(specHash, profile, built.snapshotId, { ...detail });
     return stageOk<EnvBuild>({ env_id: built.snapshotId, detail: { ...detail } });

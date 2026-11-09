@@ -25,6 +25,7 @@ export const MachineJsonSchema = z.looseObject({
   steal_pct: Finite.min(0).max(100).nullable().optional(),
   steal_window_ms: z.int().nonnegative().optional(),
   runner_version: z.string().optional(),
+  runner_commit: z.string().optional(),
 });
 export type MachineJson = z.infer<typeof MachineJsonSchema>;
 

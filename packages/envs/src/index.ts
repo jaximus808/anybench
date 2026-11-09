@@ -4,3 +4,4 @@ export * from "./recipe.js";
 export * from "./registry.js";
 export * from "./build.js";
 export * from "./toolchains.js";
+export * from "./runner-stamp.js";

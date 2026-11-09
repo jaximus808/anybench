@@ -25,6 +25,12 @@ import {
 } from "@anybench/providers";
 import { INFRA_COMPUTER_TAG_PREFIX } from "./registry.js";
 import {
+  formatRunnerBuild,
+  parseRunnerBuild,
+  runnerBuildOf,
+  type RunnerBuild,
+} from "./runner-stamp.js";
+import {
   AGENT_CC_RECIPES,
   BASE_RECIPES,
   resolveRecipeOrder,
@@ -102,6 +108,11 @@ export interface EnvBuildInstall {
 export interface RunnerInstaller {
   /** sha256 of the binary per arch: part of the cache key. */
   sha256(arch: RecipeArch): string;
+  /**
+   * TDM-247: the build compiled into the binary (runner-stamp.ts), when the installer knows it.
+   * The build then checks the installed runner's `--version` reports it and refuses otherwise.
+   */
+  build?(arch: RecipeArch): RunnerBuild | null;
   /** Put the binary at `<home>/.anybench/bin/runner` (0755). */
   install(provider: ComputeProvider, computer: ComputerInfo, arch: RecipeArch): Promise<void>;
 }
@@ -247,6 +258,16 @@ export async function buildEnvSnapshot(opts: BuildEnvSnapshotOptions): Promise<E
       }
       const v = await exec(`"$HOME"/${RUNNER_BIN_REL} --version`, 30_000);
       if (v.exitCode !== 0) throw new EnvBuildError("runner", "runner --version failed", tail(v));
+      const want = opts.runner.build?.(recipes.arch) ?? null;
+      if (want) {
+        const got = parseRunnerBuild(v.stdout);
+        if (!got || got.commit !== want.commit || got.dirty !== want.dirty) {
+          throw new EnvBuildError(
+            "runner",
+            `the installed runner reports '${v.stdout.trim().slice(0, 120)}', not build ${formatRunnerBuild(want)}`,
+          );
+        }
+      }
       log("runner installed", { version: v.stdout.trim() });
     }
     checkAbort();
@@ -366,6 +387,7 @@ export function runnerFromBytes(bins: Partial<Record<RecipeArch, Uint8Array>>): 
   };
   return {
     sha256: (arch) => createHash("sha256").update(get(arch)).digest("hex"),
+    build: (arch) => runnerBuildOf(get(arch)),
     async install(provider, computer, arch) {
       await provider.putFile(computer.id, posix.join(computer.home, RUNNER_BIN_REL), get(arch), {
         mode: 0o755,
@@ -381,6 +403,8 @@ export function runnerFromBytes(bins: Partial<Record<RecipeArch, Uint8Array>>): 
  */
 export function runnerFromUrl(opts: {
   sha256: Partial<Record<RecipeArch, string>>;
+  /** TDM-247: the build stamped into each binary (readRunnerBuild), when known. */
+  build?: Partial<Record<RecipeArch, RunnerBuild | null>>;
   url: (arch: RecipeArch) => Promise<string>;
 }): RunnerInstaller {
   const shaOf = (arch: RecipeArch) => {
@@ -390,6 +414,7 @@ export function runnerFromUrl(opts: {
   };
   return {
     sha256: shaOf,
+    build: (arch) => opts.build?.[arch] ?? null,
     async install(provider, computer, arch) {
       const sha = shaOf(arch);
       const url = await opts.url(arch);

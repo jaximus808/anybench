@@ -56,6 +56,8 @@ export const CodingAgentVersionsSchema = z.strictObject({
   /** CLAUDE_CODE_MODEL_CAPABILITIES from the proxy env (capabilities turned off), or empty. */
   model_capabilities: z.string(),
   do_less: z.boolean(),
+  /** TDM-247: added by the runner at freeze (the commit compiled into it). */
+  runner_commit: z.string().optional(),
 });
 export type CodingAgentVersions = z.infer<typeof CodingAgentVersionsSchema>;
 

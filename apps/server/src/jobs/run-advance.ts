@@ -29,6 +29,7 @@ import {
   proxyDepsFromConfig,
 } from "../lib/compute.js";
 import {
+  checkoutRunnerBuild,
   defaultRunnerBinDir,
   providerEnvBuild,
   runnerInstaller,
@@ -143,6 +144,8 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
               runnerInstaller({
                 binDir: defaultRunnerBinDir(ctx.config.ANYBENCH_RUNNER_BIN_DIR),
                 artifacts: artifactStoreFromEnv(),
+                // TDM-247: a worker running from a checkout refuses a stale dist/bin runner.
+                expect: checkoutRunnerBuild(ctx.config.ANYBENCH_RUNNER_BIN_DIR),
               }),
             kitDir,
             log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),

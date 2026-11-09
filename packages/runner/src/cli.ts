@@ -5,7 +5,7 @@
 
 import { parseArgs, type CliArgs } from "./args.js";
 import { RUNNER_EXIT, runTrial } from "./runner.js";
-import { RUNNER_VERSION } from "./version.js";
+import { RUNNER_VERSION_LINE } from "./version.js";
 
 const USAGE = `usage: runner --trial <id> [--home <dir>]
 
@@ -21,7 +21,7 @@ async function main(): Promise<number> {
     return RUNNER_EXIT.usage;
   }
   if (args.version) {
-    process.stdout.write(`${RUNNER_VERSION}\n`);
+    process.stdout.write(`${RUNNER_VERSION_LINE}\n`);
     return RUNNER_EXIT.ok;
   }
   if (args.help || !args.trial) {

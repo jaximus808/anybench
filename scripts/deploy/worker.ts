@@ -4,7 +4,8 @@
 //   pnpm tsx scripts/deploy/worker.ts [--dry-run] [--status] [--down] [--force]
 //                                     [--skip-build] [--skip-migrate]
 //
-// Steps: read .env (never printed) → build server and its workspace deps → bundle the release
+// Steps: read .env (never printed) → build server and its workspace deps → rebuild the runner
+// binaries unless they carry this checkout's runner commit (TDM-247) → bundle the release
 // (dist/worker.js + dist/rotate.js + kits, recipes, agent roles, runner binaries, package.json) →
 // migrate DATABASE_URL_DIRECT (dev) → put the release tarball in the artifact store (once per
 // release id) → keep the newest worker computer if it runs this release and env and heartbeats,
@@ -16,16 +17,24 @@
 //   --status    list worker computers, their supervisor state and heartbeat; no writes.
 //   --down      stop and delete every worker computer (back to running the worker elsewhere).
 //   --force     replace the worker computer even when nothing changed.
+//   --skip-build  no build; the runner binaries must already carry this checkout's runner commit.
+//
+// TDM-247: the runner commit is the newest commit that changed the runner's build inputs
+// (@anybench/envs runnerSourceBuild). A deploy with uncommitted changes to them is refused; a
+// binary built from another commit is rebuilt, and refused if it still differs. The successor
+// must report the same commit from `runner --version` before the old worker is stopped.
 //
 // Safety: BILLING_MODE must be test or live; the Neon URLs must not be the prod branch's. Secrets reach the
 // computer only as an fs write body (~/.anybench/worker.env, mode 600), never argv or a log line.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatUsd } from "@anybench/core";
+import { formatRunnerBuild, runnerSourceBuild, type RunnerSource } from "@anybench/envs";
 import { findEnvFile, readEnvFile } from "./lib/api-plan.js";
+import { ensureRunnerBins, inspectRunnerBins } from "./lib/runner-bins.js";
 import { bundleWorkerRelease, writeReleaseTarball } from "./lib/worker-bundle.js";
 import {
   liveNaive,
@@ -74,6 +83,24 @@ function sh(cmd: string, argv: string[]): string {
   return r.status === 0 ? r.stdout.trim() : "";
 }
 
+function buildRunnerBins(): void {
+  say("build runner binaries", { cmd: "pnpm --filter @anybench/runner build:bin" });
+  const b = spawnSync("pnpm", ["--filter", "@anybench/runner", "build:bin"], {
+    cwd: repoRoot,
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  if (b.status !== 0) throw new Error(`runner build:bin failed (exit ${b.status})`);
+}
+
+/** TDM-247: rebuild or refuse runner binaries that are not this checkout's runner build. */
+async function ensureRunner(source: RunnerSource, allowBuild: boolean): Promise<void> {
+  await ensureRunnerBins(
+    { inspect: () => inspectRunnerBins(repoRoot), build: buildRunnerBins, log: say },
+    source,
+    { allowBuild },
+  );
+}
+
 function buildWorkspace(): void {
   say("build", { cmd: "pnpm -r --workspace-concurrency=2 --filter server... build" });
   // process.env never holds the .env values (they stay in `raw` below), so nothing leaks here.
@@ -86,18 +113,6 @@ function buildWorkspace(): void {
     },
   );
   if (r.status !== 0) throw new Error(`build failed (exit ${r.status})`);
-  // The env build ships these into every image; they are gitignored build output (needs bun).
-  const bins = ["x64", "arm64"].map((a) =>
-    join(repoRoot, `packages/runner/dist/bin/runner-linux-${a}`),
-  );
-  if (!bins.every((f) => existsSync(f))) {
-    say("build runner binaries", { cmd: "pnpm --filter @anybench/runner build:bin" });
-    const b = spawnSync("pnpm", ["--filter", "@anybench/runner", "build:bin"], {
-      cwd: repoRoot,
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-    if (b.status !== 0) throw new Error(`runner build:bin failed (exit ${b.status})`);
-  }
 }
 
 async function main(): Promise<void> {
@@ -145,11 +160,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  // The env build ships the runner binaries into every trial image (gitignored output, needs bun).
+  const runnerSource = runnerSourceBuild(repoRoot);
+  say("runner source", {
+    commit: formatRunnerBuild(runnerSource),
+    ...(runnerSource.dirty ? { uncommitted: runnerSource.changed } : {}),
+  });
+  if (runnerSource.dirty && !flag("dry-run")) {
+    throw new Error(
+      `uncommitted changes to the runner's inputs (${runnerSource.changed.slice(0, 5).join(", ")}): commit them first, so the runner reports the commit it was built from`,
+    );
+  }
   if (!flag("skip-build")) buildWorkspace();
+  await ensureRunner(runnerSource, !flag("skip-build"));
   const release = await bundleWorkerRelease({
     repoRoot,
     workerEntry: join(repoRoot, "apps/server/dist/worker.js"),
     rotateEntry: join(here, "worker-rotate.ts"),
+    runnerBuild: runnerSource,
   });
   for (const w of release.warnings) say("warning", { bundle: w });
   const files = release.entries.length;
@@ -172,7 +200,11 @@ async function main(): Promise<void> {
       rotate_after_h: env.DEPLOY_WORKER_ROTATE_AFTER_HOURS,
       naive_lifetime_h: 12,
     });
-    say("dry run: release artifact", { ...ref, commit });
+    say("dry run: release artifact", {
+      ...ref,
+      commit,
+      runner_commit: formatRunnerBuild(runnerSource),
+    });
     say("dry run: bootstrap.sh", {
       phases: BOOTSTRAP_PHASES,
       bytes: bootstrap.length,
@@ -185,7 +217,7 @@ async function main(): Promise<void> {
         "migrate DATABASE_URL_DIRECT (dev)",
         `artifact store: upload the release tarball unless ${ref.trialId} exists`,
         "list ab-infra-worker computers; keep the newest if release+env match, age < rotation and it heartbeats",
-        "else: create successor → fs write env/curl/manifest/bootstrap → bootstrap install",
+        "else: create successor → fs write env/curl/manifest/bootstrap → bootstrap install → runner-version must print runner_commit",
         "stop old worker (SIGTERM, 120 s drain) → copy generated kits → start successor",
         "wait for the successor's worker_heartbeats row (ticks ≥ 2, age < 60 s) → delete old computer",
       ],
@@ -235,6 +267,7 @@ async function main(): Promise<void> {
     size,
     rotateAfterMs,
     commit,
+    runnerCommit: formatRunnerBuild(runnerSource),
     builtAt: new Date().toISOString(),
   });
 

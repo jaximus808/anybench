@@ -49,7 +49,8 @@ import {
 import { writeTarGz } from "./tar.js";
 import { TokenMeter, type TokenMeterSnapshot } from "./token-cap.js";
 import { uploadArtifact, type UploadedArtifact } from "./upload.js";
-import { RUNNER_VERSION } from "./version.js";
+import { stampVersionsJson } from "./versions.js";
+import { RUNNER_COMMIT, RUNNER_VERSION } from "./version.js";
 
 export const RUNNER_EXIT = {
   ok: 0,
@@ -232,6 +233,7 @@ class TrialRun {
       run_id: this.job.run_id,
       attempt: this.job.attempt,
       runner_version: RUNNER_VERSION,
+      runner_commit: RUNNER_COMMIT,
       pid: process.pid,
       hostname: hostname(),
       phase: "prepare",
@@ -275,7 +277,7 @@ class TrialRun {
     }
 
     this.log(
-      `runner ${RUNNER_VERSION}: trial ${this.job.trial_id} attempt ${this.job.attempt} pid ${process.pid}`,
+      `runner ${RUNNER_VERSION} (${RUNNER_COMMIT}): trial ${this.job.trial_id} attempt ${this.job.attempt} pid ${process.pid}`,
     );
     try {
       await this.phases();
@@ -433,7 +435,7 @@ class TrialRun {
     // run
     await this.enter("run");
     const [machine] = await Promise.all([
-      probeMachine(RUNNER_VERSION, this.opts.stealWindowMs ?? 1000),
+      probeMachine(RUNNER_VERSION, this.opts.stealWindowMs ?? 1000, RUNNER_COMMIT),
       this.probeNetwork(),
     ]);
     await writeJsonAtomic(p.machineJson, machine);
@@ -481,6 +483,7 @@ class TrialRun {
     await Promise.all([this.stdout.close(), this.stderr.close()]);
     // The last segments go out before the bundle, so their events are in the frozen events.jsonl.
     await this.closeLogChunks();
+    await stampVersionsJson(join(p.outDir, "versions.json"), RUNNER_COMMIT);
     const live = new Set(["status.json", "events.jsonl", "manifest.json"]);
     const files = (await listFiles(p.outDir)).filter((f) => !f.includes(".tmp-"));
     const manifest = [];
@@ -604,6 +607,7 @@ class TrialRun {
       EVAL_TRIAL_ID: this.job.trial_id,
       EVAL_RUN_ID: this.job.run_id,
       EVAL_ATTEMPT: String(this.job.attempt),
+      ANYBENCH_RUNNER_COMMIT: RUNNER_COMMIT,
       ...(iteration !== undefined ? { EVAL_ITERATION: String(iteration) } : {}),
     };
   }

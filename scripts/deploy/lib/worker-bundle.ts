@@ -18,6 +18,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync } fro
 import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { formatRunnerBuild, readRunnerBuild, type RunnerBuild } from "@anybench/envs";
 import { build } from "esbuild";
 import { CREATE_REQUIRE_BANNER, externalNpmPlugin, pickVersions } from "./bundle.js";
 
@@ -44,7 +45,8 @@ export interface WorkerRelease {
 export const KNOWN_RESOURCE_SITES = [
   {
     what: "packages/envs recipes",
-    re: /dirname\(fileURLToPath\d*\(import\.meta\.url\)\), "\.\.", "recipes"\)/,
+    // esbuild renames imports on collision (dirname2, join9), so allow a numeric suffix.
+    re: /dirname\d*\(fileURLToPath\d*\(import\.meta\.url\)\), "\.\.", "recipes"\)/,
   },
   {
     what: "packages/agents roles",
@@ -134,6 +136,8 @@ export async function bundleWorkerRelease(opts: {
   workerEntry: string;
   /** The on-host rotator (scripts/deploy/worker-rotate.ts). */
   rotateEntry: string;
+  /** TDM-247: the build every runner binary must carry (runnerSourceBuild); others are refused. */
+  runnerBuild: RunnerBuild;
   nodeMajor?: number;
 }): Promise<WorkerRelease> {
   const nodeMajor = opts.nodeMajor ?? 22;
@@ -184,7 +188,16 @@ export async function bundleWorkerRelease(opts: {
       "no runner binaries in packages/runner/dist/bin (pnpm --filter @anybench/runner build:bin)",
     );
   }
-  for (const f of bins) entries.push({ path: `bin/${f.split("/").at(-1)}`, mode: 0o755, file: f });
+  for (const f of bins) {
+    const got = await readRunnerBuild(f);
+    const want = formatRunnerBuild(opts.runnerBuild);
+    if (!got || formatRunnerBuild(got) !== want) {
+      throw new Error(
+        `${f} was built from ${got ? formatRunnerBuild(got) : "an unknown commit (pre-TDM-247)"}, not ${want}: refusing to ship a stale runner`,
+      );
+    }
+    entries.push({ path: `bin/${f.split("/").at(-1)}`, mode: 0o755, file: f });
+  }
 
   const { dependencies, warnings } = pickVersions(seen);
   const packageJson = {

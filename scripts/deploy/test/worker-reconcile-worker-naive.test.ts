@@ -27,6 +27,7 @@ import {
 const SECRET = "PW_SECRET_worker_naive_42";
 const PRESIGNED = "https://r2.example.test/release?X-Amz-Signature=SIG_SECRET_wn";
 const H = 3600_000;
+const RUNNER_COMMIT = "2222222222222222222222222222222222222222";
 
 interface Box {
   c: NaiveComputer;
@@ -42,6 +43,8 @@ class FakeNaiveHosts implements WorkerComputersApi {
   events: string[] = [];
   commands: string[] = [];
   failStartOn = new Set<string>();
+  /** What `runner-version` prints on a computer (TDM-247); default: the manifest's commit. */
+  runnerVersion = `0.1.0 ${RUNNER_COMMIT}\n`;
   private n = 0;
   constructor(private readonly clock: { now: number }) {}
 
@@ -154,6 +157,8 @@ class FakeNaiveHosts implements WorkerComputersApi {
         void args;
         return ok();
       }
+      case "runner-version":
+        return ok(this.runnerVersion);
       case "start":
         if (this.failStartOn.has(id)) return ok(); // starts, but never heartbeats
         b.active = true;
@@ -199,6 +204,7 @@ function setup(over: { envFile?: string; release?: string } = {}) {
     size: { vcpu: 1, memoryMb: 2048, diskGb: 10 },
     rotateAfterMs: 10 * H,
     commit: "abc",
+    runnerCommit: RUNNER_COMMIT,
     builtAt: "2026-11-08T05:00:00.000Z",
   };
   const want: WantedWorker = {
@@ -243,7 +249,13 @@ describe("reconcileDeploy", () => {
     const r = await reconcileDeploy(deps, want);
     expect(r.decision).toMatchObject({ kind: "replace", reason: "no worker computer" });
     const id = r.handoff!.successor;
-    expect(api.events).toEqual([`create ${id}`, `install ${id}`, `start ${id}`, `status ${id}`]);
+    expect(api.events).toEqual([
+      `create ${id}`,
+      `install ${id}`,
+      `runner-version ${id}`,
+      `start ${id}`,
+      `status ${id}`,
+    ]);
     const box = api.boxes.get(id)!;
     expect(new TextDecoder().decode(box.files.get("/home/naive/.anybench/worker.env"))).toBe(
       want.envFile,
@@ -281,6 +293,7 @@ describe("reconcileDeploy", () => {
     expect(order).toEqual([
       `create ${s}`,
       `install ${s}`,
+      `runner-version ${s}`,
       `stop ${old}`,
       `pack-kits ${old}`,
       `unpack-kits ${s}`,
@@ -314,6 +327,18 @@ describe("reconcileDeploy", () => {
     api.writeFile = async (id, p, c) =>
       p.endsWith("bundle.curl") ? undefined : origWrite(id, p, c);
     await expect(reconcileDeploy(deps, want)).rejects.toThrow(/install .* exited 1: missing/);
+    expect(api.live()).toEqual([old]);
+    expect(api.activeWorkers()).toEqual([old]);
+  });
+
+  it("TDM-247: a successor whose runner is not the deploy's is deleted before the old worker stops", async () => {
+    const { api, deps, want, name } = setup();
+    const old = api.seed(name(renderEnvFile({ A: "1" })), H);
+    api.runnerVersion = `0.1.0 ${"1".repeat(40)}\n`;
+    await expect(reconcileDeploy(deps, want)).rejects.toThrow(
+      new RegExp(`the host's runner was built from 1{40}, not ${RUNNER_COMMIT}`),
+    );
+    expect(api.events.some((e) => e.startsWith("stop"))).toBe(false);
     expect(api.live()).toEqual([old]);
     expect(api.activeWorkers()).toEqual([old]);
   });

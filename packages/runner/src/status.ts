@@ -62,6 +62,8 @@ export const RunnerStatusSchema = z.object({
   run_id: z.string(),
   attempt: z.int().positive(),
   runner_version: z.string(),
+  /** TDM-247: the commit compiled into the runner binary; absent from runners built before it. */
+  runner_commit: z.string().optional(),
   pid: z.int(),
   hostname: z.string(),
   phase: RunnerPhaseSchema,

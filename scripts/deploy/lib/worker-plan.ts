@@ -7,6 +7,7 @@
 // the computer with the fs API (a request body, never an exec command line, never a log line).
 import { createHash } from "node:crypto";
 import { parseEnv } from "node:util";
+import { parseRunnerBuild } from "@anybench/envs";
 import { NAIVE_COMPUTER_LIMITS, type NaiveComputer } from "@anybench/naive";
 import {
   decodeNaiveComputerName,
@@ -310,7 +311,14 @@ export const WorkerManifestSchema = z.strictObject({
     diskGb: z.number().int().min(1),
   }),
   rotateAfterMs: z.number().int().positive(),
+  /** The deploying checkout's HEAD (12 hex). */
   commit: z.string(),
+  /**
+   * TDM-247: the build compiled into the release's runner binaries (40 hex, the newest commit at
+   * or before `commit` that changed the runner's inputs). The deploy checks the installed host
+   * reports it before the old worker is stopped.
+   */
+  runnerCommit: z.string().regex(/^[0-9a-f]{40}(-dirty)?$/),
   builtAt: z.iso.datetime(),
 });
 export type WorkerManifest = z.infer<typeof WorkerManifestSchema>;
@@ -437,6 +445,7 @@ export const BOOTSTRAP_PHASES = [
   "status",
   "pack-kits",
   "unpack-kits",
+  "runner-version",
 ] as const;
 export type BootstrapPhase = (typeof BOOTSTRAP_PHASES)[number];
 
@@ -474,7 +483,7 @@ export function renderBootstrap(opts: { nodeFallbackVersion?: string } = {}): st
   if (!/^v\d+\.\d+\.\d+$/.test(nodeFallback)) throw new Error("bad node version");
   return `#!/usr/bin/env bash
 # Anybench worker host bootstrap. Rendered by scripts/deploy/lib/worker-plan.ts; do not edit here.
-# Phases: install <release-id> <sha256> | start | stop | status | pack-kits | unpack-kits
+# Phases: install <release-id> <sha256> | start | stop | status | pack-kits | unpack-kits | runner-version
 # Never prints a secret: worker.env is read only by node, bundle.curl only by curl. Never enable xtrace.
 set -euo pipefail
 umask 077
@@ -656,12 +665,33 @@ case "$phase" in
     rm -f "$KITS_TGZ"
     log "generated kits restored"
     ;;
+  runner-version)
+    # TDM-247: the runner the env builds will put on trial computers, as installed on this host.
+    case "$(uname -m)" in x86_64) a=x64 ;; aarch64 | arm64) a=arm64 ;; *) log "unsupported arch $(uname -m)"; exit 3 ;; esac
+    "$ROOT/current/bin/runner-linux-$a" --version
+    ;;
   *)
-    log "usage: bootstrap.sh install <release-id> <sha256> | start | stop | status | pack-kits | unpack-kits"
+    log "usage: bootstrap.sh install <release-id> <sha256> | start | stop | status | pack-kits | unpack-kits | runner-version"
     exit 64
     ;;
 esac
 `;
+}
+
+/**
+ * TDM-247 post-check: what the installed release's runner prints for `--version` must carry the
+ * manifest's runnerCommit. Returns the problem, or null.
+ */
+export function hostRunnerProblem(versionOutput: string, runnerCommit: string): string | null {
+  const got = parseRunnerBuild(versionOutput.trim().split("\n").at(-1) ?? "");
+  const want = parseRunnerBuild(runnerCommit);
+  if (!want) return `manifest runnerCommit '${runnerCommit}' is not a runner build`;
+  if (!got)
+    return `the host's runner reports '${versionOutput.trim().slice(0, 80)}', with no build commit`;
+  if (got.commit !== want.commit || got.dirty !== want.dirty) {
+    return `the host's runner was built from ${got.commit}${got.dirty ? "-dirty" : ""}, not ${runnerCommit}`;
+  }
+  return null;
 }
 
 export const HostStatusSchema = z.object({
