@@ -55,6 +55,8 @@ const GO_REFUSALS: Record<string, string> = {
   account_blocked: "Your account is on hold. Contact support.",
   spend_limit: "This run would take you over the spend limit for new accounts.",
   daily_cap: "You've reached today's spend cap. Try again tomorrow.",
+  managed_tokens_need_card:
+    "This kit uses Anybench's model tokens. Add your own model key or a card to continue.",
 };
 
 export function BillingView({

@@ -1,5 +1,6 @@
 // TDM-242 [20.5]: every run's budget, on local Postgres (skips without it).
-//   - spent_micro_usd tracks each charge type (run fee, compute at billed price, managed tokens),
+//   - spent_micro_usd tracks each charge type (run fee, compute at billed price, managed tokens
+//     at billed price: cost + MANAGED_TOKEN_MARKUP_BPS since TDM-244),
 //     BYOK tokens are reported apart, infra failures never count; terminal = the ledger's charges;
 //   - the launch admission (trial store, under the run's lock) holds a trial whose cap would pass
 //     the budget, and commits the one it admits;
@@ -52,11 +53,15 @@ import { configTdm14 } from "./helpers/server-tdm14.js";
 const available = await pgAvailableTdm11();
 const BASE = "http://api.test";
 
-/** The defaults: $2 fee, +50% compute, $0.0276 a block, $3 proxy ceiling, $10 free-run cap. */
+/**
+ * The defaults: $2 fee, +50% compute, +20% managed tokens, $0.0276 a block, $3 proxy ceiling,
+ * $10 free-run cap.
+ */
 const PRICING: BudgetPricing = {
   runFeeMicroUsd: 2_000_000n,
   uploadedKitRunFeeMicroUsd: 0n,
   computeMarkupBps: 5000n,
+  managedTokenMarkupBps: 2000n,
   blockPriceMicroUsd: 27_600n,
   proxyCapCeilingMicroUsd: 3_000_000n,
   freeRunCapMicroUsd: 10_000_000n,
@@ -169,7 +174,8 @@ describe.skipIf(!available)("run budget (TDM-242, local Postgres)", () => {
 
   it("spent_micro_usd tracks each charge type; BYOK apart; infra failures never count", async () => {
     const s = await seedRun(h.db, { budget: 20_000_000n });
-    // done, on a proxy key: compute (2 blocks) + its Naïve proxy spend (managed tokens).
+    // done, on a proxy key: compute (2 blocks) + its Naïve proxy spend (managed tokens), billed
+    // at cost + 20% (TDM-244): $0.40 of our cost counts $0.48.
     const a = await s.trial("done", {
       proxyKeyId: "key-a",
       metrics: { proxy_cost_micro_usd: 400_000 },
@@ -204,8 +210,8 @@ describe.skipIf(!available)("run budget (TDM-242, local Postgres)", () => {
     expect(b0.spent).toEqual({
       runFee: 2_000_000n,
       compute,
-      managedTokens: 400_000n,
-      total: 2_000_000n + compute + 400_000n,
+      managedTokens: 480_000n,
+      total: 2_000_000n + compute + 480_000n,
     });
     expect(b0.committed).toBe(CAP_BILLED - 82_800n);
     expect(b0.byokTokens).toBe(250_000n);
@@ -247,13 +253,21 @@ describe.skipIf(!available)("run budget (TDM-242, local Postgres)", () => {
         amountMicroUsd: 120_000n,
         idempotencyKey: `computer:${s.runId}:compute`,
       },
+      {
+        userId: s.ownerId,
+        runId: s.runId,
+        trialId: a,
+        type: "managed_tokens",
+        amountMicroUsd: 480_000n,
+        idempotencyKey: `tokens:trial:${a}`,
+      },
     ]);
     const end = await terminalRunBudget(h.db, s.runId, PRICING);
     expect(end!.spent).toEqual({
       runFee: 2_000_000n,
       compute: 120_000n,
-      managedTokens: 400_000n,
-      total: 2_520_000n,
+      managedTokens: 480_000n,
+      total: 2_600_000n,
     });
     expect(end!.committed).toBe(0n);
   });

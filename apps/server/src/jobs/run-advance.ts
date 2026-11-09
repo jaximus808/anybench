@@ -176,7 +176,11 @@ export function orchestratorDeps(
     pipeline: options.pipeline?.(ctx) ?? defaultPipeline(ctx),
     sessions: options.sessions?.(ctx) ?? defaultSessions(ctx),
     billingGate: options.billingGate?.(ctx) ?? defaultBillingGate(ctx.config, ctx.db),
-    charges: options.charges ? options.charges(ctx) : ledgerCharges(ctx.db, ctx.config),
+    charges: options.charges
+      ? options.charges(ctx)
+      : ledgerCharges(ctx.db, ctx.config, {
+          proxySpend: proxyDepsFromConfig(ctx.config)?.spend ?? null,
+        }),
     owner: leaseOwnerBase(ctx.workerId, ctx.workerStartedAt),
     paused: ctx.config.ANYBENCH_PAUSE,
     // TDM-242: every run's budget (a free starter run: FREE_RUN_CAP_MICRO_USD at our cost).

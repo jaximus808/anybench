@@ -3,7 +3,8 @@
 //
 // What a user expects from "budget $20": Anybench never charges more than $20 for this run. The
 // budget limits what WE bill: the run fee, eval computer time at its billed price (our cost +
-// COMPUTE_MARKUP_BPS), and model tokens we pay for (the Naïve proxy, "managed tokens"). Model
+// COMPUTE_MARKUP_BPS), and model tokens we pay for (the Naïve proxy, "managed tokens") at their
+// billed price too (our cost + MANAGED_TOKEN_MARKUP_BPS, TDM-244: what the ledger charges). Model
 // tokens on the user's own key (BYOK) are paid by the user to their provider, not to us, so the
 // budget never stops on them; they are tracked and reported next to it (byok_token_micro_usd).
 // A free starter run (TDM-223/224) is limited the same way, on the free-run basis: compute at OUR
@@ -16,14 +17,15 @@
 //                cost, live = the blocks it has paid so far (created_at → now, at least one), with
 //                the markup per computer as the ledger bills it
 //              + managed tokens: a finished trial's Naïve proxy spend (trials.metrics), or its
-//                cap when the spend could not be read.
+//                cap when the spend could not be read, with the token markup per trial as the
+//                ledger bills it (billed basis).
 //              A computer that served only failed_infra attempts (our infra, our retries) or
 //              cancelled trials never counts, exactly as packages/billing never bills it.
 //   committed  the worst case still to come of the trials launched but not finished (forking …
 //              collecting): each one's compute up to its wall-clock cap (trialCap: every verb at
 //              its timeout, plus the computer's boot) minus what its computer has already spent,
-//              plus its managed-token cap where we pay. Gating trials add their managed-token cap
-//              until their proxy spend is recorded.
+//              plus its managed-token cap where we pay (at its billed price). Gating trials add
+//              their managed-token cap until their proxy spend is recorded.
 //   limit      runs.budget_micro_usd (basis `billed`), or the free-run cap (basis `free_run`).
 //
 // The rules (advance.ts and the trial store in jobs/trial-execute.ts):
@@ -44,7 +46,7 @@
 // ledger's actual charges when the run is terminal), with a `run.budget` event whose
 // cost_delta_micro_usd is the change in spent, so the live page's counter follows it.
 import { trialJobFromKit } from "@anybench/bench";
-import { servedTrials } from "@anybench/billing";
+import { DEFAULT_MANAGED_TOKEN_MARKUP_BPS, servedTrials } from "@anybench/billing";
 import {
   isAgentDriver,
   RunIdSchema,
@@ -91,6 +93,8 @@ export interface BudgetPricing {
   uploadedKitRunFeeMicroUsd: bigint;
   /** COMPUTE_MARKUP_BPS. */
   computeMarkupBps: bigint;
+  /** TDM-244: MANAGED_TOKEN_MARKUP_BPS (default 2000, the config default). */
+  managedTokenMarkupBps?: bigint;
   /** COMPUTER_BLOCK_PRICE_MICRO_USD: what the registry costs one block of a computer at. */
   blockPriceMicroUsd: bigint;
   blockSeconds?: number;
@@ -107,6 +111,7 @@ export function budgetPricingFromConfig(config: Config): BudgetPricing {
     runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
     uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
     computeMarkupBps: config.COMPUTE_MARKUP_BPS,
+    managedTokenMarkupBps: config.MANAGED_TOKEN_MARKUP_BPS,
     blockPriceMicroUsd: config.COMPUTER_BLOCK_PRICE_MICRO_USD,
     proxyCapCeilingMicroUsd: config.TRIAL_PROXY_CAP_MICRO_USD,
     freeRunCapMicroUsd: config.FREE_RUN_CAP_MICRO_USD,
@@ -117,7 +122,7 @@ export function budgetPricingFromConfig(config: Config): BudgetPricing {
 export interface TrialCap {
   /** Its computer, kept for its whole wall-clock cap (every verb at its timeout). */
   compute: bigint;
-  /** Its managed-token cap (Naïve proxy, we pay); 0 for BYOK or no model. */
+  /** Its managed-token cap (Naïve proxy, we pay), in the run's basis; 0 for BYOK or no model. */
   managedTokens: bigint;
   total: bigint;
 }
@@ -196,6 +201,13 @@ function charge(cost: bigint, basis: BudgetBasis, pricing: BudgetPricing): bigin
   return basis === "billed" ? withMarkupBps(cost, pricing.computeMarkupBps) : cost;
 }
 
+/** Managed tokens that cost us `cost`, in the run's basis (billed: + MANAGED_TOKEN_MARKUP_BPS). */
+export function tokenCharge(cost: bigint, basis: BudgetBasis, pricing: BudgetPricing): bigint {
+  return basis === "billed"
+    ? withMarkupBps(cost, pricing.managedTokenMarkupBps ?? DEFAULT_MANAGED_TOKEN_MARKUP_BPS)
+    : cost;
+}
+
 /**
  * The worst case of a trial of `contenderId` × `workloadId` (pure). An unknown contender (a kit
  * that changed under the run) gets the default hour and no managed tokens.
@@ -225,9 +237,13 @@ export function trialCap(
         isAgentDriver(contender.driver) &&
         job.env?.AB_TOKEN_SOURCE === "naive_proxy"
       ) {
-        managed = trialProxyCap(
-          contender.driver,
-          pricing.proxyCapCeilingMicroUsd ?? DEFAULT_TRIAL_PROXY_CAP_MICRO_USD,
+        managed = tokenCharge(
+          trialProxyCap(
+            contender.driver,
+            pricing.proxyCapCeilingMicroUsd ?? DEFAULT_TRIAL_PROXY_CAP_MICRO_USD,
+          ),
+          basis,
+          pricing,
         );
       }
     } catch {
@@ -377,7 +393,8 @@ export async function readRunBudget(
   const queued: { id: string; cap: bigint }[] = [];
   for (const t of rows) {
     if (t.proxyKeyId === null && t.tokenSpend !== null) byok += t.tokenSpend;
-    const proxyCost = micro((t.metrics as Record<string, unknown> | null)?.proxy_cost_micro_usd);
+    const rawProxyCost = micro((t.metrics as Record<string, unknown> | null)?.proxy_cost_micro_usd);
+    const proxyCost = rawProxyCost === null ? null : tokenCharge(rawProxyCost, basis, pricing);
     if (t.state === "queued") {
       queued.push({ id: t.id, cap: capOf(t.id).total });
     } else if (IN_FLIGHT.includes(t.state)) {
@@ -452,10 +469,9 @@ export async function terminalRunBudget(
     const of = (type: string) => BigInt(entries.find((e) => e.type === type)?.sum ?? "0");
     const runFee = of("run_fee");
     const compute = of("compute");
+    // TDM-244: managed tokens are ledgered per trial at cost + markup, like compute.
     const managedTokens = of("managed_tokens");
-    // Managed tokens are not ledgered yet (no MANAGED_TOKEN_MARKUP_BPS): keep the live figure.
-    const managed = managedTokens > 0n ? managedTokens : b.spent.managedTokens;
-    b.spent = { runFee, compute, managedTokens: managed, total: runFee + compute + managed };
+    b.spent = { runFee, compute, managedTokens, total: runFee + compute + managedTokens };
   }
   b.committed = 0n;
   b.inFlight = [];

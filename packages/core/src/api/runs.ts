@@ -247,6 +247,17 @@ export const RunEstimateSchema = z.object({
     }),
     /** run fee + computer time. Model tokens not included. */
     total_micro_usd: NonNegativeMicroUsdSchema,
+    /**
+     * TDM-244: model tokens on Anybench's key (the Naïve proxy), billed as used at our cost +
+     * MANAGED_TOKEN_MARKUP_BPS ("Model tokens (ours): at cost + 20%"). Not in the total: the spend
+     * is only known once the trials ran. Null when no contender uses our tokens.
+     */
+    managed_tokens: z
+      .object({
+        contenders: z.array(z.string()).min(1),
+        markup_bps: z.int().nonnegative(),
+      })
+      .nullable(),
   }),
   tokens: z.object({
     /** Providers of the user's own keys the agent contenders use: that provider bills them. */
@@ -281,6 +292,11 @@ export const RunEstimateSchema = z.object({
     .nullable(),
   /** Go will ask for a card: the run is paid and the account has no card on file. */
   card_needed: z.boolean(),
+  /**
+   * TDM-244: why Go will ask for a card, in plain words, when it is not only the price (a kit on
+   * Anybench's model tokens needs a card or your own key). Null otherwise.
+   */
+  card_message: z.string().min(1).nullable(),
 });
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 

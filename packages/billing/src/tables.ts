@@ -105,6 +105,17 @@ export const trials = pgTable("trials", {
   state: text("state", { enum: TRIAL_STATES }).notNull(),
   /** The computer the trial runs on (packed trials share one); moves on a failed_infra retry. */
   computerId: uuid("computer_id"),
+  /** The current attempt (a failed_infra retry bumps it). */
+  attempt: integer("attempt").notNull().default(1),
+  /** TDM-244: the attempt's Naïve proxy key (our model tokens); null = BYOK or no model. */
+  proxyKeyId: text("proxy_key_id"),
+  /** Which attempt that key belongs to: its spend counts only when it is the current attempt. */
+  proxyKeyAttempt: integer("proxy_key_attempt"),
+  /**
+   * What the trial measured (apps/server orchestrator/trial-metrics.ts). The ledger reads one key:
+   * `proxy_cost_micro_usd`, the current attempt's proxy key spend from Naïve's credits ledger.
+   */
+  metrics: jsonb("metrics"),
 });
 
 /**

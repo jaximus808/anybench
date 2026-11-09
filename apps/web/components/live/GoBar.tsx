@@ -5,7 +5,8 @@
 // comped by the gate (founder demo) and simply start. TDM-224: an account's first starter run is
 // free and starts with no card; when the free run did not apply, the 402's `free_run.message` says
 // why in plain words (a starter limit, free run already used, free runs paused) and is shown
-// instead of the generic card line.
+// instead of the generic card line. TDM-244: a kit on Anybench's model tokens with no card on file
+// gets `managed_tokens_need_card` and the server's own sentence (`message`), shown as is.
 import { ApiClientError, type RunId } from "@anybench/core";
 import { useState } from "react";
 import { apiErrorMessage } from "../../lib/api";
@@ -21,6 +22,8 @@ export type GoFailure =
       reason: string;
       /** Why the free run did not apply (the 402's free_run.message), when it was in play. */
       freeRun?: string;
+      /** The 402's own plain-words reason (`message`), when the server sent one. */
+      message?: string;
     }
   | { kind: "message"; text: string };
 
@@ -31,6 +34,8 @@ const PAYMENT_WORDS: Record<string, string> = {
   account_blocked: "Your account is on hold. Contact support.",
   spend_limit: "This run would pass the spend limit for new accounts.",
   daily_cap: "You've reached today's spend cap.",
+  managed_tokens_need_card:
+    "This kit uses Anybench's model tokens. Add your own model key or a card to continue.",
 };
 
 /** The 402's link when it is https on any host, else our own billing page for this run. */
@@ -72,6 +77,7 @@ export function useGoAction(runId: string): GoAction {
           ...(err.paymentRequired.free_run
             ? { freeRun: err.paymentRequired.free_run.message }
             : {}),
+          ...(err.paymentRequired.message ? { message: err.paymentRequired.message } : {}),
         });
       } else {
         setFailure({ kind: "message", text: apiErrorMessage(err) });
@@ -90,6 +96,7 @@ export function GoFailureText({ failure }: { failure: GoFailure | null }) {
     return (
       <>
         {(failure.reason === "no_payment_method" ? failure.freeRun : undefined) ??
+          failure.message ??
           PAYMENT_WORDS[failure.reason] ??
           "Billing needs attention before this run can start."}{" "}
         <a href={failure.href}>Add a card</a>

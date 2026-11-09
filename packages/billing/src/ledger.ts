@@ -3,7 +3,10 @@
 // What it bills (cost-plus, pricing.ts), once the run is terminal:
 //   - delivered or subject-failed run: one `run_fee` (`run:<id>:fee`) plus one `compute` entry
 //     per eval computer at the registry's cost + COMPUTE_MARKUP_BPS (`computer:<id>:compute`);
-//   - user-cancelled run: the compute it consumed, no run fee;
+//   - and (TDM-244) one `managed_tokens` entry per trial that ran on our Naïve proxy key
+//     (`tokens:trial:<id>`): the key's spend (trials.metrics, from Naïve's credits ledger) at cost +
+//     MANAGED_TOKEN_MARKUP_BPS, under the compute rules (pricing.ts managedTokensDecision);
+//   - user-cancelled run: the compute it consumed (and the tokens of its billed trials), no run fee;
 //   - run that failed in infra or our pipeline (or that we cancelled): nothing;
 //   - run not terminal yet: nothing yet (skipped with `run_not_final`).
 // Inside a billable run, a computer that only served failed_infra attempts is never billed. Every
@@ -12,7 +15,8 @@
 //
 // Caller contract (the worker, 5.x / 10.x):
 //   1. When a run reaches a terminal state, call `recordRunCharges` (run fee, then every computer
-//      of the run). Computers still being destroyed skip with `computer_not_final`.
+//      of the run, then every trial's managed tokens). Computers still being destroyed skip with
+//      `computer_not_final`.
 //   2. When the registry destroys a computer whose run is already terminal (a late destroy, or the
 //      reaper), call `recordComputerUsage` for it from that destroy hook.
 // Every call is idempotent, so calling both, or retrying either, never bills twice.
@@ -57,7 +61,7 @@ import {
   type MicroUsd,
   type RunState,
 } from "@anybench/core";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { applyNetDelta, balanceFromNet } from "./balance.js";
@@ -67,6 +71,8 @@ import {
   computeChargeMicroUsd,
   computeDecision,
   CostPlusPricingSchema,
+  managedTokensChargeMicroUsd,
+  managedTokensDecision,
   runFeeDecision,
   type CancelCause,
 } from "./pricing.js";
@@ -173,6 +179,25 @@ export const RecordManagedTokensInputSchema = z.object({
 });
 export type RecordManagedTokensInput = z.input<typeof RecordManagedTokensInputSchema>;
 
+/**
+ * TDM-244: one trial's model tokens on our Naïve proxy key, billed once per trial
+ * (`tokens:trial:<id>`) at cost + MANAGED_TOKEN_MARKUP_BPS. Billability and the cost come from the
+ * stored rows (pricing.ts managedTokensDecision; the cost is `trials.metrics.proxy_cost_micro_usd`,
+ * written from the key's spend when the trial ended). `cost` is only a fallback for a trial whose
+ * stored metrics have no spend (the read failed when it ended): the caller's fresh read of the same
+ * key (packages/naive trialProxySpend). Stored metrics always win.
+ */
+export const RecordTrialTokensInputSchema = z.object({
+  trialId: TrialIdSchema,
+  userId: UserIdSchema,
+  /** MANAGED_TOKEN_MARKUP_BPS. The user is billed cost + floor(cost * bps / 10_000). */
+  markupBps: BpsSchema,
+  /** The key's spend read now, used only when trials.metrics has none. */
+  cost: NonNegativeMicroUsdSchema.nullish(),
+  comped: CompAssertionSchema,
+});
+export type RecordTrialTokensInput = z.input<typeof RecordTrialTokensInputSchema>;
+
 export const ApplyGrantInputSchema = z.object({
   userId: UserIdSchema,
   amount: NonNegativeMicroUsdSchema.refine((v) => v > 0n, { message: "grant must be > 0" }),
@@ -209,7 +234,13 @@ export type CreditGrant = typeof creditGrants.$inferSelect;
  * registry has not destroyed it yet, bill it from the destroy hook. `not_billable` and
  * `zero_cost` are final.
  */
-export type SkipReason = "run_not_final" | "not_billable" | "computer_not_final" | "zero_cost";
+export type SkipReason =
+  | "run_not_final"
+  | "not_billable"
+  | "computer_not_final"
+  | "zero_cost"
+  /** TDM-244: a trial on our tokens whose proxy key spend could not be read: nothing billed. */
+  | "spend_unknown";
 
 export type RecordUsageResult =
   | { status: "recorded"; entry: UsageEntry }
@@ -219,8 +250,13 @@ export type RecordUsageResult =
 export const RecordRunChargesInputSchema = z.object({
   runId: RunIdSchema,
   userId: UserIdSchema,
-  /** RUN_FEE_MICRO_USD and COMPUTE_MARKUP_BPS from config. */
+  /** RUN_FEE_MICRO_USD, COMPUTE_MARKUP_BPS and MANAGED_TOKEN_MARKUP_BPS from config. */
   pricing: CostPlusPricingSchema,
+  /**
+   * TDM-244: proxy key spend read now (trialProxySpend), by trial id, for trials on our tokens
+   * whose stored metrics have none. Only a fallback: stored metrics win.
+   */
+  managedTokenCosts: z.record(z.string(), NonNegativeMicroUsdSchema).optional(),
   comped: CompAssertionSchema,
 });
 export type RecordRunChargesInput = z.input<typeof RecordRunChargesInputSchema>;
@@ -229,6 +265,8 @@ export interface RecordRunChargesResult {
   runFee: RecordUsageResult;
   /** One per computer of the run, oldest first. */
   computers: { computerId: string; result: RecordUsageResult }[];
+  /** TDM-244: one per trial that had our Naïve proxy key (managed tokens), oldest first. */
+  managedTokens: { trialId: string; result: RecordUsageResult }[];
   /** TDM-223: the free starter run settle that follows the charges (`not_free_run` for most runs). */
   freeRun: SettleFreeRunResult;
 }
@@ -291,6 +329,14 @@ export interface Ledger {
    */
   recordRunCharges(input: RecordRunChargesInput): Promise<RecordRunChargesResult>;
   recordManagedTokens(input: RecordManagedTokensInput): Promise<RecordUsageResult>;
+  /**
+   * TDM-244: one trial's managed tokens (`tokens:trial:<id>`), at the key's spend + markup, if the
+   * stored rows say it is billable (pricing.ts managedTokensDecision: the compute rules, per
+   * trial). recordRunCharges calls it for every trial of the run that had a proxy key. Once
+   * recorded, a trial's tokens are never billed again (a repeat is `duplicate`, whatever figure
+   * it carries). A charge on a free starter run is covered right after (settleFreeRun).
+   */
+  recordTrialManagedTokens(input: RecordTrialTokensInput): Promise<RecordUsageResult>;
   applyGrant(input: ApplyGrantInput): Promise<ApplyGrantResult>;
   getAccountSummary(userId: string): Promise<AccountSummary>;
   /** Record that these entries were sent to Stripe as these meter events (same order). */
@@ -314,6 +360,18 @@ export function computeIdempotencyKey(computerId: string): string {
 
 export function managedTokensIdempotencyKey(key: string): string {
   return `tokens:${key}`;
+}
+
+/** TDM-244: a trial's managed tokens are billed once: `tokens:trial:<id>`. */
+export function trialTokensIdempotencyKey(trialId: string): string {
+  return managedTokensIdempotencyKey(`trial:${trialId}`);
+}
+
+/** trials.metrics.proxy_cost_micro_usd as stored (a safe non-negative integer), else null. */
+export function storedProxyCost(metrics: unknown): MicroUsd | null {
+  if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) return null;
+  const v = (metrics as Record<string, unknown>).proxy_cost_micro_usd;
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
 }
 
 /** Create the account row if missing, then lock it for the rest of the transaction. */
@@ -513,6 +571,90 @@ export function createLedger(db: LedgerDb): Ledger {
     });
   }
 
+  /** recordTrialManagedTokens without the free-run settle (recordRunCharges settles once). */
+  async function trialTokens(raw: RecordTrialTokensInput): Promise<RecordUsageResult> {
+    const input = parse(RecordTrialTokensInputSchema, raw);
+    const key = trialTokensIdempotencyKey(input.trialId);
+    return db.transaction(async (tx) => {
+      // Unlocked peek for the run id, so the run can be locked first (the lock order).
+      const [peek] = await tx
+        .select({ runId: trials.runId })
+        .from(trials)
+        .where(eq(trials.id, input.trialId));
+      if (!peek) {
+        throw new LedgerError("trial_mismatch", `trial ${input.trialId} is not visible`);
+      }
+      const run = await lockRun(tx, peek.runId, input.userId, input.comped);
+      const runTrials = await lockRunTrials(tx, peek.runId, input.userId);
+      const [trial] = await tx
+        .select({
+          id: trials.id,
+          runId: trials.runId,
+          state: trials.state,
+          attempt: trials.attempt,
+          proxyKeyId: trials.proxyKeyId,
+          proxyKeyAttempt: trials.proxyKeyAttempt,
+          metrics: trials.metrics,
+        })
+        .from(trials)
+        .where(eq(trials.id, input.trialId))
+        .for("share");
+      if (!trial || trial.runId !== peek.runId) {
+        throw new LedgerError(
+          "trial_mismatch",
+          `trial ${input.trialId} moved off run ${peek.runId} while being billed`,
+        );
+      }
+      // Billed once: the first recorded figure stands (a later backfill never re-bills).
+      const [existing] = await tx
+        .select()
+        .from(usageEntries)
+        .where(eq(usageEntries.idempotencyKey, key));
+      if (existing) {
+        if (existing.userId !== input.userId || existing.type !== "managed_tokens") {
+          throw new LedgerError(
+            "idempotency_conflict",
+            `usage entry ${key} already exists for another user or type`,
+          );
+        }
+        return { status: "duplicate", entry: existing };
+      }
+      const cost = storedProxyCost(trial.metrics) ?? input.cost ?? null;
+      const decision = managedTokensDecision(
+        trial,
+        run.state,
+        runTrials.map((t) => t.state),
+        run.cancelCause,
+        cost,
+      );
+      if (!decision.billable) {
+        return { status: "skipped", reason: decision.reason, detail: decision.detail };
+      }
+      return insertEntry(
+        tx,
+        {
+          userId: input.userId,
+          runId: peek.runId,
+          trialId: trial.id,
+          type: "managed_tokens",
+          amount: managedTokensChargeMicroUsd(decision.cost, input.markupBps),
+          idempotencyKey: key,
+          comped: run.comp,
+        },
+        // Our COGS for the same tokens, written once with the entry (comped or not: we paid it).
+        async () => {
+          await tx.insert(costEntries).values({
+            id: uuidv7(),
+            source: "naive",
+            runId: peek.runId,
+            amountMicroUsd: decision.cost,
+            ref: `${key}:${trial.proxyKeyId ?? "?"}`,
+          });
+        },
+      );
+    });
+  }
+
   const ledger: Ledger = {
     async recordRunFee(raw) {
       const input = parse(RecordRunFeeInputSchema, raw);
@@ -581,8 +723,35 @@ export function createLedger(db: LedgerDb): Ledger {
           }),
         });
       }
+      // TDM-244: every trial that had our proxy key, under the same rules as its compute.
+      const tokenTrials = await db
+        .select({ id: trials.id })
+        .from(trials)
+        .where(and(eq(trials.runId, input.runId), isNotNull(trials.proxyKeyId)))
+        .orderBy(asc(trials.id));
+      const managedTokens: RecordRunChargesResult["managedTokens"] = [];
+      for (const { id } of tokenTrials) {
+        managedTokens.push({
+          trialId: id,
+          result: await trialTokens({
+            trialId: id,
+            userId: input.userId,
+            markupBps: input.pricing.managedTokenMarkupBps,
+            cost: input.managedTokenCosts?.[id] ?? null,
+            comped: input.comped,
+          }),
+        });
+      }
       const freeRun = await settleFreeRun(db, { runId: input.runId });
-      return { runFee, computers: results, freeRun };
+      return { runFee, computers: results, managedTokens, freeRun };
+    },
+
+    async recordTrialManagedTokens(raw) {
+      const result = await trialTokens(raw);
+      if (result.status === "recorded" && result.entry.runId) {
+        await settleFreeRun(db, { runId: result.entry.runId });
+      }
+      return result;
     },
 
     async recordManagedTokens(raw) {

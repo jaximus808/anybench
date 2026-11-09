@@ -17,17 +17,23 @@
 //          usage + the estimate stays under the spend limit (the account's spend_limit_micro_usd,
 //          else NEW_ACCOUNT_SPEND_LIMIT_MICRO_USD). `blocked` and `past_due` refuse with their
 //          own reason;
+//       3b. TDM-244: a kit with a contender on OUR model tokens (AB_TOKEN_SOURCE=naive_proxy; billed
+//          as used at cost + MANAGED_TOKEN_MARKUP_BPS, so no estimate bounds it) needs a card on
+//          file, credit or not: refused `managed_tokens_need_card` with a plain-words `message`
+//          (add your own model key or a card). Blocked and past-due accounts keep their own
+//          reason. Comped and admin runs (above) and BILLING_MODE=off are never refused for it;
 //       4. everyone else is refused with a link to the web app's billing page (`?run=<id>` so the
 //          page can press Go after the card is saved): the route answers the contract's 402
 //          `{reason, link_card_url}` and the run waits in `awaiting_go` (an auto-go run starts on
 //          the next sweep once the card lands).
 //     Without the database the gate only refuses.
 // [10.6] replaces it by passing its own `billingGate` in AppDeps; the route does not change.
-import type { PaymentRequired } from "@anybench/core";
+import { kitTokenUse } from "@anybench/billing";
+import { safeParseKitSpec, type PaymentRequired } from "@anybench/core";
 import { and, eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
-import { billingAccounts, interventions, runs, users } from "../db/schema/index.js";
+import { billingAccounts, interventions, kits, runs, users } from "../db/schema/index.js";
 import { isAdminLogin } from "./admin.js";
 
 export interface BillingActor {
@@ -108,6 +114,46 @@ export function accountGateDecision(
   return null;
 }
 
+/** TDM-244: the 402's words when a kit on our model tokens meets an account with no card. */
+export const MANAGED_TOKENS_NEED_CARD_MESSAGE =
+  "This kit uses Anybench's model tokens. Add your own model key or a card to continue.";
+
+/** A card on file: what Stripe Checkout leaves (payment_status ok + a payment method). */
+export function hasCardOnFile(
+  account:
+    Pick<typeof billingAccounts.$inferSelect, "paymentStatus" | "hasPaymentMethod"> | undefined,
+): boolean {
+  return account?.paymentStatus === "ok" && account.hasPaymentMethod;
+}
+
+/**
+ * TDM-244: the contenders of the run's kit that run on our model tokens (AB_TOKEN_SOURCE=
+ * naive_proxy, packages/billing kitTokenUse). Empty for a run with no readable kit.
+ */
+export async function runManagedTokenContenders(db: Database, runId: string): Promise<string[]> {
+  const [row] = await db
+    .select({ spec: kits.spec })
+    .from(runs)
+    .innerJoin(kits, eq(kits.id, runs.kitId))
+    .where(eq(runs.id, runId))
+    .limit(1);
+  const spec = row ? safeParseKitSpec(row.spec) : null;
+  return spec?.success ? kitTokenUse(spec.data).managed : [];
+}
+
+/**
+ * Rule 3b as a pure function: a kit on our tokens (`managed` contenders) and no card on file is
+ * refused, unless the account's own reason (blocked, past due) comes first.
+ */
+export function managedTokensGateDecision(
+  account: AccountGateRow | undefined,
+  managed: readonly string[],
+): "managed_tokens_need_card" | null {
+  if (managed.length === 0 || hasCardOnFile(account)) return null;
+  if (account?.paymentStatus === "blocked" || account?.paymentStatus === "past_due") return null;
+  return "managed_tokens_need_card";
+}
+
 export type AdminAutoCompResult =
   { comped: true; already: boolean; interventionId: string } | { comped: false };
 
@@ -176,6 +222,17 @@ export function defaultBillingGate(config: GateConfig, db?: Database): BillingGa
         .from(billingAccounts)
         .where(eq(billingAccounts.userId, actor.userId))
         .limit(1);
+      if (actor.runId) {
+        const managed = await runManagedTokenContenders(db, actor.runId);
+        if (managedTokensGateDecision(account, managed) !== null) {
+          return {
+            allowed: false,
+            reason: "managed_tokens_need_card",
+            link_card_url: linkCardUrl(config, actor.runId),
+            message: MANAGED_TOKENS_NEED_CARD_MESSAGE,
+          };
+        }
+      }
       const decision = accountGateDecision(
         account,
         estimateMicroUsd,

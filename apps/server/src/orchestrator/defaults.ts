@@ -8,16 +8,18 @@
 //   kitTrialSource      trial.execute's TrialSource: the run's kit → TrialJob (trialJobFromKit).
 //   billingEstimate     PipelinePort.estimate: packages/billing estimateRunCost ([10.12]).
 //   ledgerCharges       the run-terminal billing hook: packages/billing ledger.recordRunCharges.
-import { createLedger, estimateRunCost, runFeeForKit } from "@anybench/billing";
+import { createLedger, estimateRunCost, runFeeForKit, storedProxyCost } from "@anybench/billing";
 import { IngestError, ingestGitHubRepo } from "@anybench/kit";
-import type { NaiveClient } from "@anybench/naive";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import type { NaiveClient, ProxySpendSource } from "@anybench/naive";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
 import type { Database } from "../db/client.js";
 import { agentSessions } from "../db/schema/agent_sessions.js";
+import { trials } from "../db/schema/trials.js";
 import type { Config } from "../config.js";
 import type { JobsPort, RunChargesHook } from "./advance.js";
 import { writeRepoIngestCache } from "./repo-ingest-cache.js";
+import { attemptProxySpend } from "./trial-metrics.js";
 import {
   isUploadedKitRun,
   stageFail,
@@ -174,6 +176,7 @@ type PricingConfig = Pick<
   | "UPLOADED_KIT_RUN_FEE_MICRO_USD"
   | "COMPUTE_MARKUP_BPS"
   | "COMPUTER_BLOCK_PRICE_MICRO_USD"
+  | "MANAGED_TOKEN_MARKUP_BPS"
 >;
 
 /**
@@ -198,15 +201,26 @@ export function billingEstimate(config: PricingConfig): PipelinePort["estimate"]
 }
 
 /**
- * The run-terminal hook: ledger.recordRunCharges (run fee when owed, then every computer).
+ * The run-terminal hook: ledger.recordRunCharges (run fee when owed, then every computer, then
+ * TDM-244 every trial's managed tokens at cost + MANAGED_TOKEN_MARKUP_BPS).
  * The ledger reads runs.state and runs.cancel_cause itself, so a cancel by us bills nothing.
  * Idempotent: a retried finalize never bills twice.
+ *
+ * Managed tokens are billed from each trial's stored proxy spend (trials.metrics, written from the
+ * key's Naïve spend when the trial ended). A trial whose spend could not be read then is read once
+ * more here (`proxySpend`, packages/naive trialProxySpend through attemptProxySpend); if it still
+ * cannot be read, nothing is billed for its tokens (the ledger skips it with `spend_unknown`).
  */
-export function ledgerCharges(db: Database, config: PricingConfig): RunChargesHook {
+export function ledgerCharges(
+  db: Database,
+  config: PricingConfig,
+  options: { proxySpend?: ProxySpendSource | null } = {},
+): RunChargesHook {
   const ledger = createLedger(db);
   return {
-    recordRunCharges: (input) =>
-      ledger.recordRunCharges({
+    recordRunCharges: async (input) => {
+      const managedTokenCosts = await unreadProxySpend(db, input.runId, options.proxySpend);
+      return ledger.recordRunCharges({
         runId: input.runId,
         userId: input.userId,
         pricing: {
@@ -216,7 +230,40 @@ export function ledgerCharges(db: Database, config: PricingConfig): RunChargesHo
             uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
           }),
           computeMarkupBps: config.COMPUTE_MARKUP_BPS,
+          managedTokenMarkupBps: config.MANAGED_TOKEN_MARKUP_BPS,
         },
-      }),
+        ...(Object.keys(managedTokenCosts).length > 0 ? { managedTokenCosts } : {}),
+      });
+    },
   };
+}
+
+/**
+ * The proxy spend, read now, of the run's trials that had our key but no stored spend (the read
+ * failed when the trial ended). Only the current attempt's key (attemptProxySpend). Never throws.
+ */
+async function unreadProxySpend(
+  db: Database,
+  runId: string,
+  source: ProxySpendSource | null | undefined,
+): Promise<Record<string, bigint>> {
+  const out: Record<string, bigint> = {};
+  if (!source) return out;
+  const rows = await db
+    .select({
+      id: trials.id,
+      attempt: trials.attempt,
+      metrics: trials.metrics,
+      proxyKeyId: trials.proxyKeyId,
+      proxyKeyCreatedAt: trials.proxyKeyCreatedAt,
+      proxyKeyAttempt: trials.proxyKeyAttempt,
+    })
+    .from(trials)
+    .where(and(eq(trials.runId, runId), isNotNull(trials.proxyKeyId)));
+  for (const t of rows) {
+    if (storedProxyCost(t.metrics) !== null) continue;
+    const r = await attemptProxySpend(source, t);
+    if (r.status === "ok") out[t.id] = r.spend.spentMicroUsd;
+  }
+  return out;
 }

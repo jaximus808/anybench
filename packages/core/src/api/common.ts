@@ -90,6 +90,11 @@ export const PAYMENT_REQUIRED_REASONS = [
   "account_blocked",
   "spend_limit",
   "daily_cap",
+  /**
+   * TDM-244: the kit runs a contender on Anybench's model tokens (Naïve proxy), billed at cost +
+   * markup as used, and the account has no card on file: add your own model key or a card.
+   */
+  "managed_tokens_need_card",
 ] as const;
 export const PaymentRequiredReasonSchema = z.enum(PAYMENT_REQUIRED_REASONS);
 
@@ -141,6 +146,8 @@ export const PaymentRequiredSchema = z.object({
    * (a comped run, BILLING_MODE=off).
    */
   free_run: FreeRunRefusalSchema.optional(),
+  /** TDM-244: the refusal in plain words, when the server has one (the Go screen shows it as is). */
+  message: z.string().min(1).optional(),
 });
 export type PaymentRequired = z.infer<typeof PaymentRequiredSchema>;
 

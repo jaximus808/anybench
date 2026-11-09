@@ -42,6 +42,12 @@
 // reserved and then fails to leave awaiting_go releases the reservation (releaseFreeRun) before it
 // answers; a crash in between leaves the run awaiting_go holding its reservation, and the next Go
 // finds it (`duplicate`) and goes on free.
+//
+// TDM-244: a kit with a contender on Anybench's model tokens (billed as used at cost + markup)
+// needs a card on file: the gate answers 402 `managed_tokens_need_card` with a plain-words
+// `message` ("This kit uses Anybench's model tokens. Add your own model key or a card to
+// continue."), credit or not. Comped and admin runs are unaffected. The free run never applies to
+// such a kit (TDM-223), so its refusal (`managed_tokens`) rides along in `free_run`.
 import {
   AlertIdSchema,
   apiRoutes,
@@ -678,6 +684,8 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
           reason: gate.reason,
           link_card_url: gate.link_card_url,
           ...(free.kind === "refused" ? { free_run: free.refusal } : {}),
+          // TDM-244: e.g. a kit on our model tokens with no card on file, in plain words.
+          ...(gate.message ? { message: gate.message } : {}),
         };
         return c.json(route.errors[402].parse(body), 402);
       }

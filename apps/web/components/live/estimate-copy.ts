@@ -8,11 +8,14 @@
 // Model tokens on the user's own key are never part of our price: their provider bills them, and
 // we show the bound we have (each trial at its spend cap) next to the price, never inside it.
 // The starter limits come from the API (estimate.free_run.limits), never from this file.
+// TDM-244: model tokens on Anybench's key are a real charge, billed as used at our cost + markup:
+// a "Model tokens (ours): at cost + 20%" line (the markup from the API), and when Go needs a card
+// for them, the server's own sentence (card_message).
 import type { RunEstimate } from "@anybench/core";
 import { usd } from "./format";
 
 export interface EstimateLine {
-  key: "run_fee" | "compute" | "total";
+  key: "run_fee" | "compute" | "total" | "managed_tokens";
   label: string;
   detail: string | null;
   amount: string;
@@ -29,9 +32,9 @@ export interface EstimateCopy {
   lines: EstimateLine[];
   /** Model tokens on the user's own key: billed by their provider. Null when none. */
   tokens: string | null;
-  /** Contenders on Anybench's tokens: metered as used, not in this estimate. Null when none. */
+  /** Contenders on Anybench's tokens: billed as used at cost + markup, not in this total. */
   managed: string | null;
-  /** "A card is needed to start it." when Go will ask for one. */
+  /** "A card is needed to start it." (or the server's reason) when Go will ask for one. */
   card: string | null;
 }
 
@@ -42,6 +45,14 @@ const PROVIDER: Record<RunEstimate["tokens"]["byok_providers"][number], string> 
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Basis points as a percentage: 2000 -> "20%", 1250 -> "12.5%" (no float arithmetic). */
+export function bpsPercent(bps: number): string {
+  const whole = Math.trunc(bps / 100);
+  const rest = bps % 100;
+  if (rest === 0) return `${whole}%`;
+  return `${whole}.${String(rest).padStart(2, "0").replace(/0$/, "")}%`;
 }
 
 function blockLength(seconds: number): string {
@@ -117,6 +128,15 @@ export function estimateCopy(e: RunEstimate): EstimateCopy {
       amount: usd(e.normal.total_micro_usd),
     },
   ];
+  const ours = e.normal.managed_tokens;
+  if (ours) {
+    lines.push({
+      key: "managed_tokens",
+      label: "Model tokens (ours)",
+      detail: `${ours.contenders.join(", ")}: billed as used`,
+      amount: `at cost + ${bpsPercent(ours.markup_bps)}`,
+    });
+  }
 
   const providers = e.tokens.byok_providers.map((p) => PROVIDER[p]);
   const ceiling = e.tokens.byok_ceiling_micro_usd;
@@ -128,9 +148,10 @@ export function estimateCopy(e: RunEstimate): EstimateCopy {
             : ""
         }.`
       : null;
+  const markup = ours ? ` at cost + ${bpsPercent(ours.markup_bps)}` : "";
   const managed =
     e.tokens.managed_contenders.length > 0
-      ? `${e.tokens.managed_contenders.join(", ")} ${e.tokens.managed_contenders.length === 1 ? "runs" : "run"} on Anybench's model tokens: metered as used, on top of this estimate.`
+      ? `${e.tokens.managed_contenders.join(", ")} ${e.tokens.managed_contenders.length === 1 ? "runs" : "run"} on Anybench's model tokens: billed as used${markup}, on top of this estimate.`
       : null;
 
   return {
@@ -141,6 +162,6 @@ export function estimateCopy(e: RunEstimate): EstimateCopy {
     lines,
     tokens,
     managed,
-    card: e.card_needed ? "A card is needed to start it." : null,
+    card: e.card_needed ? (e.card_message ?? "A card is needed to start it.") : null,
   };
 }

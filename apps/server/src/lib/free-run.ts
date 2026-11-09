@@ -28,7 +28,10 @@
 //                                         never in our price), and whether the free run covers this
 //                                         run: the same rules Go applies (isStarterRun on the same
 //                                         estimate, the account's eligibility, the pool). `null`
-//                                         when the run has no readable kit yet.
+//                                         when the run has no readable kit yet. TDM-244: a kit on
+//                                         our model tokens adds `normal.managed_tokens` (at cost +
+//                                         MANAGED_TOKEN_MARKUP_BPS, as used) and, with no card on
+//                                         file, card_needed + card_message (the Go gate's rule).
 //
 // All of them run on the privileged pool role (the tenant role cannot write these tables).
 import {
@@ -60,6 +63,7 @@ import { computers, kits, runs, userSecrets, users } from "../db/schema/index.js
 import { loadBillingAccount } from "./stripe-billing.js";
 import { isUploadedKitRun } from "../orchestrator/ports.js";
 import { isAdminLogin } from "./admin.js";
+import { MANAGED_TOKENS_NEED_CARD_MESSAGE, managedTokensGateDecision } from "./billing-gate.js";
 
 type FreeRunConfigKeys =
   | "FREE_RUN_POOL_MICRO_USD"
@@ -145,6 +149,7 @@ export interface FreeRunGoDeps {
     | "UPLOADED_KIT_RUN_FEE_MICRO_USD"
     | "COMPUTE_MARKUP_BPS"
     | "COMPUTER_BLOCK_PRICE_MICRO_USD"
+    | "MANAGED_TOKEN_MARKUP_BPS"
   >;
 }
 
@@ -344,13 +349,24 @@ export async function runEstimateFor(
         charge_micro_usd: estimate.compute.chargeMicroUsd,
       },
       total_micro_usd: estimate.totalMicroUsd,
+      // TDM-244: our model tokens are real charges now: at cost + MANAGED_TOKEN_MARKUP_BPS.
+      managed_tokens:
+        tokens.managed.length > 0
+          ? {
+              contenders: tokens.managed,
+              markup_bps: Number(config.MANAGED_TOKEN_MARKUP_BPS),
+            }
+          : null,
     },
     tokens: {
       byok_providers: byokProviders,
       byok_ceiling_micro_usd: byokTokenCeilingMicroUsd(spec.data),
       managed_contenders: tokens.managed,
     },
-  } satisfies Omit<RunEstimate, "price" | "total_micro_usd" | "free_run" | "card_needed">;
+  } satisfies Omit<
+    RunEstimate,
+    "price" | "total_micro_usd" | "free_run" | "card_needed" | "card_message"
+  >;
   const paid = { price: "paid" as const, total_micro_usd: estimate.totalMicroUsd };
 
   // Not in play: nothing is billed (BILLING_MODE=off), or the run is comped (an admin's run is
@@ -365,7 +381,7 @@ export async function runEstimateFor(
     run.compedBy !== null ||
     (owner && isAdminLogin(config, owner.githubLogin))
   ) {
-    return { ...base, ...paid, free_run: null, card_needed: false };
+    return { ...base, ...paid, free_run: null, card_needed: false, card_message: null };
   }
 
   const status = await freeRunStatusFor(db, config, input.userId);
@@ -406,10 +422,25 @@ export async function runEstimateFor(
     setups,
   };
   if (applies) {
-    return { ...base, price: "free", total_micro_usd: 0n, free_run: freeRun, card_needed: false };
+    return {
+      ...base,
+      price: "free",
+      total_micro_usd: 0n,
+      free_run: freeRun,
+      card_needed: false,
+      card_message: null,
+    };
   }
   const account = await loadBillingAccount(db, input.userId);
   const card = account.paymentStatus === "ok" && account.hasPaymentMethod;
   const covered = account.grantedRemainingMicroUsd >= estimate.totalMicroUsd;
-  return { ...base, ...paid, free_run: freeRun, card_needed: !card && !covered };
+  // TDM-244: the same rule as the Go gate: our model tokens need a card on file, credit or not.
+  const managedNeedsCard = managedTokensGateDecision(account, tokens.managed) !== null;
+  return {
+    ...base,
+    ...paid,
+    free_run: freeRun,
+    card_needed: (!card && !covered) || managedNeedsCard,
+    card_message: managedNeedsCard ? MANAGED_TOKENS_NEED_CARD_MESSAGE : null,
+  };
 }

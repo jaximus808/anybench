@@ -39,10 +39,18 @@ const SECONDS_PER_HOUR = 3600n;
 /** Basis points are not money: a bigint or a safe JS integer (unsafe integers are rejected). */
 export const BpsSchema = z.union([z.bigint().nonnegative(), z.number().int().safe().nonnegative()]);
 
-/** The two cost-plus knobs, from config (RUN_FEE_MICRO_USD, COMPUTE_MARKUP_BPS). */
+/** MANAGED_TOKEN_MARKUP_BPS's default: our model tokens are billed at Naïve cost + 20%. */
+export const DEFAULT_MANAGED_TOKEN_MARKUP_BPS = 2000n;
+
+/**
+ * The cost-plus knobs, from config (RUN_FEE_MICRO_USD, COMPUTE_MARKUP_BPS,
+ * MANAGED_TOKEN_MARKUP_BPS).
+ */
 export const CostPlusPricingSchema = z.object({
   runFeeMicroUsd: NonNegativeMicroUsdSchema,
   computeMarkupBps: BpsSchema,
+  /** TDM-244: our model tokens (Naïve proxy) are billed at cost + this. */
+  managedTokenMarkupBps: BpsSchema.default(DEFAULT_MANAGED_TOKEN_MARKUP_BPS),
 });
 export type CostPlusPricing = z.output<typeof CostPlusPricingSchema>;
 export type CostPlusPricingInput = z.input<typeof CostPlusPricingSchema>;
@@ -304,4 +312,81 @@ export function computeDecision(
   const entryTrialId =
     computer.trialId !== null && ids.includes(computer.trialId) ? computer.trialId : null;
   return { billable: true, billedTrialIds: ids, entryTrialId };
+}
+
+// ---- Managed tokens (TDM-244) -------------------------------------------------------------------
+
+/** The `trials` columns the managed-token decision needs (the trial being billed). */
+export interface TrialTokensForBilling {
+  id: string;
+  state: TrialState;
+  attempt: number;
+  /** The attempt's Naïve proxy key; null = the trial ran on the user's own key (BYOK) or no model. */
+  proxyKeyId: string | null;
+  proxyKeyAttempt: number | null;
+}
+
+export type ManagedTokensDecision =
+  | { billable: true; cost: MicroUsd }
+  | {
+      billable: false;
+      reason: "run_not_final" | "not_billable" | "spend_unknown" | "zero_cost";
+      detail: string;
+    };
+
+/**
+ * Whether one trial's model tokens on OUR Naïve proxy key are billed, and at what cost to us.
+ * The same rules as its compute (computeRunDecision): only inside a delivered, subject-failed or
+ * user-cancelled run, and only for a trial in a state the run bills (done, failed_subject; plus
+ * cancelled in a user-cancelled run). A failed_infra trial, a run that failed in our infra or
+ * pipeline and a cancel by us never bill tokens. Only the CURRENT attempt's key counts: an earlier
+ * attempt (a failed_infra retry) was ours. `cost` is that key's spend (Naïve credits ledger),
+ * null when it could not be read: then nothing is billed (`spend_unknown`), never a guess.
+ */
+export function managedTokensDecision(
+  trial: TrialTokensForBilling,
+  runState: RunState,
+  runTrialStates: readonly TrialState[],
+  cancelCause: CancelCause,
+  cost: MicroUsd | null,
+): ManagedTokensDecision {
+  const run = computeRunDecision(runState, runTrialStates, cancelCause);
+  if (!run.billable) return { billable: false, reason: run.reason, detail: run.detail };
+  if (trial.proxyKeyId === null) {
+    return {
+      billable: false,
+      reason: "not_billable",
+      detail: `trial ${trial.id} used no Anybench model tokens (its own key, or no model)`,
+    };
+  }
+  if (!run.trialStates.includes(trial.state)) {
+    return {
+      billable: false,
+      reason: "not_billable",
+      detail: `trial ${trial.id} is ${trial.state}, not a billed state (${run.trialStates.join(", ")})`,
+    };
+  }
+  if (trial.proxyKeyAttempt !== trial.attempt) {
+    return {
+      billable: false,
+      reason: "spend_unknown",
+      detail: `trial ${trial.id}: its proxy key belongs to attempt ${String(trial.proxyKeyAttempt)}, not ${trial.attempt}`,
+    };
+  }
+  if (cost === null) {
+    return {
+      billable: false,
+      reason: "spend_unknown",
+      detail: `trial ${trial.id}: its proxy key spend could not be read`,
+    };
+  }
+  if (cost === 0n) {
+    return { billable: false, reason: "zero_cost", detail: `trial ${trial.id}: no model tokens` };
+  }
+  return { billable: true, cost };
+}
+
+/** What the user pays for model tokens that cost us `cost`: cost + floor(cost x bps / 10_000). */
+export function managedTokensChargeMicroUsd(cost: MicroUsd, markupBps: bigint | number): MicroUsd {
+  return withMarkupBps(cost, markupBps);
 }

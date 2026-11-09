@@ -286,6 +286,7 @@ function estimate(over: Partial<RunEstimate> = {}): RunEstimate {
         charge_micro_usd: 496_800n,
       },
       total_micro_usd: 2_496_800n,
+      managed_tokens: null,
     },
     tokens: {
       byok_providers: ["anthropic"],
@@ -300,6 +301,7 @@ function estimate(over: Partial<RunEstimate> = {}): RunEstimate {
       setups: 2,
     },
     card_needed: false,
+    card_message: null,
     ...over,
   };
 }
@@ -317,6 +319,7 @@ const pastLimits = estimate({
       charge_micro_usd: 2_100_000n,
     },
     total_micro_usd: 4_100_000n,
+    managed_tokens: null,
   },
   free_run: {
     status: "available",
