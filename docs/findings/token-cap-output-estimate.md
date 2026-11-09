@@ -64,3 +64,12 @@ session's result line; the TDM-160 meter would only have stopped on the result.
 Limits: a content block is visible only once it is complete, so the estimate lags by up to one
 block (a large Write); the ratio is two samples on one model. Recheck it when the model or Claude
 Code version changes (the same sums against a new transcript's `result`).
+
+## Sessions with several results (TDM-239)
+
+One `claude -p` session can write several `result` lines with the same `session_id` (Tandem
+workers on 2.1.319: up to 4, numbered by `result_index`). Each line's `usage` covers only the turns
+since the previous result; `total_cost_usd` is the running total. The meter summed them and read
+$17.44 on a $10.18 Tandem trial. It now takes a session's latest total plus the estimate of the
+turns after it (open, with margin). Details and the replay test are in
+`docs/findings/long-horizon-calibration.md`.
