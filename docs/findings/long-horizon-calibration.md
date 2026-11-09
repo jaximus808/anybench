@@ -168,7 +168,7 @@ the same or shorter, Tandem's most of all (four Claude Code processes and their 
 
 ## Infra found and fixed (own commits)
 
-### 1. The xl instruction did not fit on argv: every xl trial exited 126 (24fecec)
+### 1. The xl instruction did not fit on argv: every xl trial exited 126 (d3c6246)
 
 The first xl solo attempt failed in 1 s, `failed_subject: run exited 126`, 1/600, $0.
 `instruction.md` for xl is 153,646 bytes. Both drivers passed the task as one argument
@@ -191,11 +191,12 @@ Fix: `adapters/claude-code/driver.sh` and `adapters/tandem/run.sh` pass `-p` wit
 argument and feed the prompt file on stdin, so the bytes are the same. The fake-claude test in
 `packages/kit/test/tdm212-long-horizon-kit.test.ts` now runs the driver on the real xl
 instruction. It asserts the prompt arrives on stdin byte for byte with no argument over 1 KiB,
-and that neither driver puts the task on argv. The retry ran clean (trial 3 above). The
-short-task kit (`kits/tandem-vs-claude-code`) still uses argv. Its tasks are a few KB, so it is
-not affected.
+and that neither driver puts the task on argv. The retry ran clean (trial 3 above).
+`kits/harness-league` (TDM-227) carries byte-for-byte copies of these adapters; its
+`scripts/sync-shared.mjs` copied the fix and `--check` is clean. The short-task kit
+(`kits/tandem-vs-claude-code`) still uses argv. Its tasks are a few KB, so it is not affected.
 
-### 2. The BYOK cap meter summed a session's cumulative cost (46f82a5)
+### 2. The BYOK cap meter summed a session's cumulative cost (e3e4b93)
 
 The Tandem project-tracker trial ended with the runner at 17,439,516 µ$ ($17.44). Claude Code's own
 numbers add up to $10.18. One `claude -p` session can write several `result` lines: workers wrote
@@ -224,7 +225,7 @@ of what the next result adds. A $15 cap does not trip.
 The collectors were already right: `packages/kit` `summarizeSession` and the stream-json
 collector take the last result's cost. The xl Tandem trial ran on the fixed binary.
 
-### 3. Trial traces kept only the last result's tokens (b893c50)
+### 3. Trial traces kept only the last result's tokens (8085032, typing fix 9e14794)
 
 `apps/server/src/lib/trial-trace/parse.ts` kept the last result's `usage` and `duration_ms`. For a
 multi-result session that is only the final segment. The trace now sums them and keeps the latest
