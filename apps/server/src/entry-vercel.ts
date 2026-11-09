@@ -35,6 +35,7 @@ export async function buildServerlessApp(
     config,
     db: dbh.db,
     artifacts,
+    ...(artifacts ? { kitFiles: artifacts } : {}), // TDM-217 kit uploads
     ...(trialLogs ? { trialLogs } : {}),
     ...(artifacts ? { traces: artifactTraceStore(artifacts) } : {}),
     ...runtime,

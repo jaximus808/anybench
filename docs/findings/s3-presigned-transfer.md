@@ -31,3 +31,15 @@ Code: `packages/envs/src/storage.ts`. Tested against MinIO in Docker, not yet ag
 
 - Vultr Object Storage is Ceph RGW. Check that it also rejects a length mismatch on a presigned PUT with a
   signed `content-length`, and that it keeps `x-amz-meta-sha256` on multipart objects.
+
+## Kit uploads (TDM-217, 19.1)
+
+- Keys: `kits/uploads/<owner>/<upload>.tar.gz` (the user's presigned PUT, `ArtifactStore.createKitUpload`) and
+  `kits/files/<owner>/<kit>.tar.gz` (written by the server after validation, `putKitFiles`; never presigned for PUT).
+  Both sit outside `runs/`, so no runner plan can reach them. `kits.files_url` is `artifact:<kits/files/... key>`.
+- The kit PUT reuses the trial single-PUT signing (signed `content-length` + `x-amz-checksum-sha256`), so the URL
+  cannot store other bytes; `getKitUpload` also re-hashes the bytes against `x-amz-meta-sha256`.
+- Offline check: `pnpm --filter @anybench/envs exec vitest run test/storage-kits-tdm217.test.ts` printed
+  `Tests 7 passed (7)`: `X-Amz-SignedHeaders` contains `content-length`, and the plan carries the three headers.
+- Not yet tried against live R2. Open: add an R2 lifecycle rule expiring `kits/uploads/` after 1 day, so a PUT that
+  is never completed does not linger (the complete route deletes the object itself, on success and on refusal).

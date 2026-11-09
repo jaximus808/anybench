@@ -109,3 +109,6 @@ export const OUTREACH_REPLY_CATEGORIES = [
   "unclear",
 ] as const;
 export const OUTREACH_REPLY_CLASSIFIERS = ["rules", "model"] as const;
+
+/** TDM-217 [19.1]: where a kit came from (core KIT_ORIGINS). `uploaded` kits may have no run. */
+export const KIT_ORIGINS = ["generated", "curated", "uploaded"] as const;

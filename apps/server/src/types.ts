@@ -9,6 +9,7 @@ import type { BillingGate } from "./lib/billing-gate.js";
 import type { EventFanout } from "./lib/events.js";
 import type { GitHubOAuth } from "./lib/github-oauth.js";
 import type { JobQueue } from "./lib/job-queue.js";
+import type { KitFileStore } from "./lib/kit-upload/store.js";
 import type { Logger } from "./lib/logger.js";
 import type { TrialLogReader } from "./lib/trial-logs.js";
 import type { TrialTraceStore } from "./lib/trial-trace/store.js";
@@ -39,6 +40,11 @@ export interface AppDeps {
   events?: EventsWriter;
   /** Trial artifact storage (`@anybench/envs` ArtifactStore). Upload routes answer 503 without it. */
   artifacts?: TrialArtifactStore;
+  /**
+   * Uploaded kit tarballs (TDM-217 [19.1], lib/kit-upload/store.ts). Default in the entries: the
+   * same `@anybench/envs` ArtifactStore. The kit upload and download routes answer 503 without it.
+   */
+  kitFiles?: KitFileStore;
   /**
    * Server-side ranged reads of trial log segments (TDM-74). Default in the entries:
    * lib/trial-logs.ts artifactLogReader over the ArtifactStore. Log routes answer 503 without it.

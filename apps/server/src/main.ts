@@ -36,6 +36,7 @@ const app = createApp({
   db: dbh.db,
   sentry,
   artifacts,
+  ...(artifacts ? { kitFiles: artifacts } : {}), // TDM-217 kit uploads
   ...(artifacts ? { trialLogs: artifactLogReader(artifacts) } : {}), // TDM-74 log reads
   ...(artifacts ? { traces: artifactTraceStore(artifacts) } : {}), // trial traces
   ...(eventFanout ? { eventFanout } : {}),

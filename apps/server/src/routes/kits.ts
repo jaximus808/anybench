@@ -3,7 +3,16 @@
 //   GET  /kits/:id             one version: spec, proof results, repairs used
 //   POST /kits/validate        validate a parsed anybench.yaml (core safeParseKitSpec); never stores
 //   POST /kits/:id/versions    save an edited spec as a new version of that kit's run
-//   GET  /kits/:id/download    501 until uploads ([7.4]) can presign the kit folder
+//   GET  /kits/:id/download    a presigned GET for an uploaded kit's tarball (409 for a kit whose
+//                              files are a worker-local file:// directory)
+//   POST /kits/uploads                  TDM-217 [19.1]: a presigned PUT for a kit tarball
+//   POST /kits/uploads/:id/complete     download it, unpack it safely (lib/kit-upload/archive.ts),
+//                                       run validateKitDir, and store an `uploaded` kit (no run,
+//                                       no proof) or return the issues
+//
+// Uploaded kits: the caller owns the row (RLS), it has no run until POST /runs uses it, and it is
+// unproven: the orchestrator reruns the six proof checks before any billed run. An API key
+// limited to specific runs cannot upload, and cannot see a kit that has no run (403).
 //
 // Editing a kit (here, or PATCH /runs/:id/kit in runs.ts) is allowed only while the run is in
 // `kit_draft` or `awaiting_go` (else 409). The new version starts with no proof results, so it is
@@ -21,18 +30,26 @@ import { createHash } from "node:crypto";
 import {
   apiRoutes,
   formatSchemaIssues,
+  KIT_UPLOAD_CONTENT_TYPE,
+  KIT_UPLOAD_EXPIRES_SECONDS,
+  KIT_UPLOAD_LIMITS,
   KitIdSchema,
   newId,
+  UploadIdSchema,
+  uuidv7,
   PROOF_CHECKS,
   ProofCheckResultSchema,
   safeParseKitSpec,
   toJsonValue,
   type KitDetail,
+  type KitIssueBody,
   type KitSpec,
   type KitSummary,
   type ProofCheckResult,
   type RunState,
 } from "@anybench/core";
+import { ArtifactTransferError } from "@anybench/envs";
+import type { KitIssue } from "@anybench/kit";
 import { and, desc, eq, inArray, max, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -46,9 +63,11 @@ import {
   decodeCursor,
   encodeCursor,
   fail,
+  isUniqueViolation,
   iso,
   parseOrFail,
   runAllowed,
+  runLimited,
   send,
   type ActorContext,
   type ActorEnv,
@@ -56,6 +75,9 @@ import {
 } from "../lib/api-route.js";
 import { requireScope, runIdsOf } from "../lib/auth-key.js";
 import type { JobQueue } from "../lib/job-queue.js";
+import { KitArchiveError, readKitArchive } from "../lib/kit-upload/archive.js";
+import { checkKitArchive } from "../lib/kit-upload/extract.js";
+import { kitFilesKeyOf, kitFilesUrl } from "../lib/kit-upload/store.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
 import type { AppDeps } from "../types.js";
 
@@ -63,6 +85,9 @@ const contract = apiRoutes.kits;
 
 /** Body limit for routes that carry a kit spec (validate, versions, PATCH /runs/:id/kit). */
 export const KIT_BODY_LIMIT_BYTES = 1024 * 1024;
+
+/** Body limit for POST /kits/uploads (a few small fields). */
+export const KIT_UPLOAD_BODY_LIMIT_BYTES = 16 * 1024;
 
 /** Run states in which a kit may be edited. */
 export const KIT_EDITABLE_STATES = ["kit_draft", "awaiting_go"] as const satisfies RunState[];
@@ -112,6 +137,7 @@ export function toKitSummary(row: KitRow): KitSummary {
   return {
     id: row.id as KitSummary["id"],
     run_id: row.runId as KitSummary["run_id"],
+    origin: row.origin,
     version: row.version,
     name: kitName(row.spec),
     hash: row.hash,
@@ -121,7 +147,8 @@ export function toKitSummary(row: KitRow): KitSummary {
 }
 
 /** Proof repairs so far: `run.state_changed` events with command `repair` (proof → kit_draft). */
-async function repairsOf(tx: DbTx, runId: string): Promise<number> {
+async function repairsOf(tx: DbTx, runId: string | null): Promise<number> {
+  if (runId === null) return 0;
   const [row] = await tx
     .select({ n: sql<number>`count(*)::int` })
     .from(events)
@@ -217,6 +244,27 @@ export function kitSpecIssues(
     : { ok: false, issues: formatSchemaIssues(r.error).map((l) => `body.spec.${l}`) };
 }
 
+/**
+ * May this actor see a kit of `runId`? A kit with no run (an upload) is visible to every key of
+ * its owner except one limited to specific runs.
+ */
+export function kitAllowed(actor: RouteActor, runId: string | null): boolean {
+  return runId === null ? !runLimited(actor) : runAllowed(actor, runId);
+}
+
+/** KitIssue → the contract's KitIssueSchema shape. */
+function issueBody(i: KitIssue): KitIssueBody {
+  return {
+    severity: i.severity,
+    code: i.code,
+    file: i.file,
+    ...(i.line !== undefined ? { line: i.line } : {}),
+    ...(i.col !== undefined ? { col: i.col } : {}),
+    ...(i.path !== undefined ? { path: i.path } : {}),
+    message: i.message,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 
 export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
@@ -224,6 +272,152 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
   const read = requireScope(deps, "runs:read");
   const write = requireScope(deps, "runs:write");
   const wrongRun = (c: ActorContext) => fail(c, "forbidden", "API key is not valid for this run");
+  const noStore = (c: ActorContext) =>
+    fail(c, "unavailable", "kit uploads need the artifact store (S3_BUCKET is not configured)");
+
+  // ----- uploads (TDM-217 [19.1]); registered before /:id so `uploads` is never read as a kit id
+
+  r.post("/uploads", bodyLimitOf(KIT_UPLOAD_BODY_LIMIT_BYTES), write, async (c) => {
+    const route = contract.uploadsCreate;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const actor = c.get("actor");
+    if (runLimited(actor))
+      return fail(c, "forbidden", "an API key limited to specific runs cannot upload kits");
+    const { body } = parsed.request;
+    if (body.size_bytes > KIT_UPLOAD_LIMITS.maxBytes) {
+      return fail(
+        c,
+        "payload_too_large",
+        `a kit tarball may be at most ${KIT_UPLOAD_LIMITS.maxBytes} bytes; this one is ${body.size_bytes}`,
+      );
+    }
+    const store = deps.kitFiles;
+    if (!store) return noStore(c);
+    const uploadId = UploadIdSchema.parse(uuidv7());
+    const put = await store.createKitUpload({
+      ownerId: actor.userId,
+      uploadId,
+      sizeBytes: body.size_bytes,
+      sha256: body.sha256,
+      maxBytes: KIT_UPLOAD_LIMITS.maxBytes,
+      expiresInSec: KIT_UPLOAD_EXPIRES_SECONDS,
+    });
+    return send(c, route, {
+      upload: {
+        id: uploadId,
+        size_bytes: body.size_bytes,
+        sha256: body.sha256,
+        content_type: KIT_UPLOAD_CONTENT_TYPE,
+        expires_at: put.expiresAt,
+      },
+      plan: { method: "PUT", url: put.url, headers: put.headers },
+    });
+  });
+
+  r.post("/uploads/:id/complete", write, async (c) => {
+    const route = contract.uploadsComplete;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const actor = c.get("actor");
+    if (runLimited(actor))
+      return fail(c, "forbidden", "an API key limited to specific runs cannot upload kits");
+    const store = deps.kitFiles;
+    if (!store) return noStore(c);
+    const uploadId = parsed.request.params.id;
+    const scoped = scopedDb(actor, deps.db);
+    const byUpload = (tx: DbTx) =>
+      tx.select().from(kits).where(eq(kits.uploadId, uploadId)).limit(1);
+    const stored = async (row: KitRow) =>
+      send(c, route, {
+        ok: true,
+        kit: await scoped.transaction((tx) => toKitDetail(tx, row)),
+        warnings: [],
+      });
+
+    // Completing the same upload again returns the kit it made (RLS: only the caller's).
+    const [prior] = await scoped.transaction(byUpload);
+    if (prior) return stored(prior);
+
+    // The key carries the caller's id, so another user's upload id is simply not found.
+    let upload: { bytes: Uint8Array } | null;
+    try {
+      upload = await store.getKitUpload(actor.userId, uploadId, KIT_UPLOAD_LIMITS.maxBytes);
+    } catch (err) {
+      if (err instanceof ArtifactTransferError && err.code === "too_large")
+        return fail(c, "payload_too_large", err.message);
+      if (err instanceof ArtifactTransferError && err.code === "checksum_mismatch")
+        return fail(c, "validation_failed", "the uploaded bytes do not match the declared sha256", [
+          "archive: the uploaded bytes do not match the declared sha256",
+        ]);
+      throw err;
+    }
+    if (!upload) return fail(c, "not_found", "kit upload not found (PUT the tarball first)");
+    const discard = () =>
+      store.deleteKitUpload(actor.userId, uploadId).catch((err: unknown) => {
+        c.get("log").warn({ err, uploadId }, "kit upload: could not delete the uploaded tarball");
+      });
+
+    let checked: Awaited<ReturnType<typeof checkKitArchive>>;
+    try {
+      checked = await checkKitArchive(readKitArchive(upload.bytes));
+    } catch (err) {
+      if (!(err instanceof KitArchiveError)) throw err;
+      await discard();
+      return err.status === 413
+        ? fail(c, "payload_too_large", err.message)
+        : fail(c, "validation_failed", `the kit archive was refused: ${err.message}`, [
+            `archive: ${err.message}`,
+          ]);
+    }
+    const { validation, treeHash } = checked;
+    const warnings = validation.warnings.map(issueBody);
+    if (!validation.ok || !validation.kit) {
+      await discard();
+      return send(c, route, {
+        ok: false,
+        issues: validation.errors.map(issueBody),
+        warnings,
+        lines: validation.lines,
+      });
+    }
+
+    const kitId = newId(KitIdSchema);
+    const files = await store.putKitFiles(actor.userId, kitId, upload.bytes);
+    let row: KitRow;
+    try {
+      [row] = (await scoped.transaction((tx) =>
+        tx
+          .insert(kits)
+          .values({
+            id: kitId,
+            ownerId: actor.userId,
+            runId: null,
+            version: 1,
+            // jsonb: bigints (micro-USD caps) are stored as decimal strings.
+            spec: toJsonValue(validation.kit!.spec),
+            filesUrl: kitFilesUrl(files.key),
+            proof: null,
+            hash: treeHash,
+            origin: "uploaded",
+            uploadId,
+          })
+          .returning(),
+      )) as [KitRow];
+    } catch (err) {
+      // A concurrent complete of the same upload won the race: answer with its kit.
+      if (!isUniqueViolation(err, "kits_upload_id_uq")) throw err;
+      const [winner] = await scoped.transaction(byUpload);
+      if (!winner) throw err;
+      return stored(winner);
+    }
+    await discard();
+    return send(c, route, {
+      ok: true,
+      kit: await scoped.transaction((tx) => toKitDetail(tx, row)),
+      warnings,
+    });
+  });
 
   r.get("/", read, async (c) => {
     const route = contract.list;
@@ -284,7 +478,7 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
         .where(eq(kits.id, parsed.request.params.id))
         .limit(1);
       if (!row) return undefined;
-      return runAllowed(actor, row.runId) ? toKitDetail(tx, row) : ("wrong_run" as const);
+      return kitAllowed(actor, row.runId) ? toKitDetail(tx, row) : ("wrong_run" as const);
     });
     if (!detail) return fail(c, "not_found", "kit not found");
     if (detail === "wrong_run") return wrongRun(c);
@@ -305,8 +499,15 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
           .where(eq(kits.id, params.id))
           .limit(1);
         if (!base) return { ok: false, code: "not_found", message: "kit not found" };
-        if (!runAllowed(actor, base.runId))
+        if (!kitAllowed(actor, base.runId))
           return { ok: false, code: "forbidden", message: "API key is not valid for this run" };
+        if (base.runId === null)
+          return {
+            ok: false,
+            code: "conflict",
+            message:
+              "an uploaded kit has no run to version: start a run from it, or upload the edited kit",
+          };
         return insertKitVersion(tx, actor, deps.jobs, base.runId, body.spec, body.files_upload_id);
       },
     );
@@ -315,19 +516,36 @@ export function kitsRoutes(deps: AppDeps & { jobs: JobQueue }): Hono<ActorEnv> {
   });
 
   r.get("/:id/download", read, async (c) => {
-    const parsed = await parseOrFail(c, contract.download);
+    const route = contract.download;
+    const parsed = await parseOrFail(c, route);
     if (!parsed.ok) return parsed.response;
     const actor = c.get("actor");
     const [row] = await scopedDb(actor, deps.db).transaction((tx) =>
       tx
-        .select({ runId: kits.runId })
+        .select({ runId: kits.runId, filesUrl: kits.filesUrl })
         .from(kits)
         .where(eq(kits.id, parsed.request.params.id))
         .limit(1),
     );
     if (!row) return fail(c, "not_found", "kit not found");
-    if (!runAllowed(actor, row.runId)) return wrongRun(c);
-    return fail(c, "not_implemented", "kit download needs the artifact store (uploads, [7.4])");
+    if (!kitAllowed(actor, row.runId)) return wrongRun(c);
+    const key = kitFilesKeyOf(row.filesUrl);
+    if (!key)
+      return fail(
+        c,
+        "conflict",
+        "this kit's files are not in the artifact store (only uploaded kits download for now)",
+      );
+    const store = deps.kitFiles;
+    if (!store) return noStore(c);
+    try {
+      const ticket = await store.createKitDownload(key);
+      return send(c, route, { url: ticket.url, expires_at: ticket.expiresAt });
+    } catch (err) {
+      if (err instanceof ArtifactTransferError && err.code === "not_found")
+        return fail(c, "not_found", "the kit's files are missing from the artifact store");
+      throw err;
+    }
   });
 
   return r;

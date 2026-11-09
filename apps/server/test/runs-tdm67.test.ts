@@ -382,7 +382,8 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     expect(await a.kits.validate({ body: { spec } })).toMatchObject({ ok: true });
     const invalid = await a.kits.validate({ body: { spec: { schema_version: 1 } } });
     expect(invalid.ok).toBe(false);
-    await expectApiError(a.kits.download({ params: { id: k1.id } }), 501, "not_implemented");
+    // TDM-217: only uploaded kits (files in the artifact store) download; this one has none.
+    await expectApiError(a.kits.download({ params: { id: k1.id } }), 409, "conflict");
   });
 
   it("POST /runs/:id/go answers the contract's 402 in test mode and leaves the run waiting", async () => {

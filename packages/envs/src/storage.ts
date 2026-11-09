@@ -30,6 +30,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  DeleteObjectCommand,
   ListPartsCommand,
   PutObjectCommand,
   S3Client,
@@ -160,6 +161,26 @@ export function trialArtifactKey(runId: string, trialId: string, name: string): 
 export function serverArtifactKey(runId: string, name: string): string {
   return `runs/${artifactIdSchema.parse(runId)}/server/${artifactNameSchema.parse(name)}`;
 }
+
+/**
+ * TDM-217 [19.1]: a user's kit tarball as uploaded (untrusted, written by a presigned PUT):
+ * `kits/uploads/<owner>/<upload>.tar.gz`. The owner is in the key, so completing an upload id
+ * looks only under the caller's own prefix.
+ */
+export function kitUploadKey(ownerId: string, uploadId: string): string {
+  return `kits/uploads/${artifactIdSchema.parse(ownerId)}/${artifactIdSchema.parse(uploadId)}.tar.gz`;
+}
+
+/**
+ * TDM-217 [19.1]: a validated kit's tarball, written by the server only:
+ * `kits/files/<owner>/<kit>.tar.gz`. No presigned PUT is ever made for this prefix.
+ */
+export function kitFilesKey(ownerId: string, kitId: string): string {
+  return `kits/files/${artifactIdSchema.parse(ownerId)}/${artifactIdSchema.parse(kitId)}.tar.gz`;
+}
+
+const KIT_FILES_KEY_RE =
+  /^kits\/files\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.tar\.gz$/;
 
 // ---------------------------------------------------------------------------------------------
 // Plans (these cross the orchestrator → computer boundary, so they have schemas)
@@ -330,32 +351,8 @@ export class ArtifactStore {
     };
 
     if (req.sizeBytes <= MULTIPART_THRESHOLD_BYTES) {
-      const url = await getSignedUrl(
-        this.client,
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-          ContentLength: req.sizeBytes,
-          Metadata: { [SHA256_METADATA_KEY]: req.sha256 },
-          ChecksumSHA256: hexToBase64(req.sha256),
-        }),
-        {
-          expiresIn: req.expiresInSec,
-          signableHeaders: new Set(["content-length", CHECKSUM_SHA256_HEADER]),
-          unhoistableHeaders: new Set([SHA256_HEADER, CHECKSUM_SHA256_HEADER]),
-        },
-      );
-      return uploadPlanSchema.parse({
-        kind: "single",
-        ...base,
-        method: "PUT",
-        url,
-        headers: {
-          "content-length": String(req.sizeBytes),
-          [SHA256_HEADER]: req.sha256,
-          [CHECKSUM_SHA256_HEADER]: hexToBase64(req.sha256),
-        },
-      });
+      const put = await this.presignSinglePut(key, req.sizeBytes, req.sha256, req.expiresInSec);
+      return uploadPlanSchema.parse({ kind: "single", ...base, method: "PUT", ...put });
     }
 
     const created = await this.client.send(
@@ -581,6 +578,151 @@ export class ArtifactStore {
       token = res.IsTruncated ? res.NextContinuationToken : undefined;
     } while (token);
     return out;
+  }
+
+  /**
+   * One presigned PUT signed for exactly `sizeBytes` (content-length) and `sha256` (the recorded
+   * metadata and the store-verified checksum), so it cannot store any other bytes.
+   */
+  private async presignSinglePut(
+    key: string,
+    sizeBytes: number,
+    sha256: string,
+    expiresInSec: number,
+  ): Promise<{ url: string; headers: Record<string, string> }> {
+    const url = await getSignedUrl(
+      this.client,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentLength: sizeBytes,
+        Metadata: { [SHA256_METADATA_KEY]: sha256 },
+        ChecksumSHA256: hexToBase64(sha256),
+      }),
+      {
+        expiresIn: expiresInSec,
+        signableHeaders: new Set(["content-length", CHECKSUM_SHA256_HEADER]),
+        unhoistableHeaders: new Set([SHA256_HEADER, CHECKSUM_SHA256_HEADER]),
+      },
+    );
+    return {
+      url,
+      headers: {
+        "content-length": String(sizeBytes),
+        [SHA256_HEADER]: sha256,
+        [CHECKSUM_SHA256_HEADER]: hexToBase64(sha256),
+      },
+    };
+  }
+
+  // ----- kit uploads (TDM-217 [19.1]) -----
+
+  /** A presigned PUT for a user's kit tarball at kitUploadKey (single PUT; caps at `maxBytes`). */
+  async createKitUpload(input: {
+    ownerId: string;
+    uploadId: string;
+    sizeBytes: number;
+    sha256: string;
+    maxBytes: number;
+    expiresInSec: number;
+  }): Promise<{ key: string; url: string; headers: Record<string, string>; expiresAt: string }> {
+    sha256Schema.parse(input.sha256);
+    byteCountSchema.parse(input.sizeBytes);
+    if (input.sizeBytes > input.maxBytes || input.sizeBytes > MULTIPART_THRESHOLD_BYTES) {
+      throw new ArtifactTransferError(
+        "too_large",
+        `kit tarball is ${input.sizeBytes} bytes, over the ${input.maxBytes} byte cap`,
+      );
+    }
+    const expiresInSec = Math.min(Math.max(1, input.expiresInSec), MAX_PRESIGN_SECONDS);
+    const key = kitUploadKey(input.ownerId, input.uploadId);
+    const put = await this.presignSinglePut(key, input.sizeBytes, input.sha256, expiresInSec);
+    const expiresAt = new Date(this.now().getTime() + expiresInSec * 1000).toISOString();
+    return { key, ...put, expiresAt };
+  }
+
+  /**
+   * The uploaded kit tarball's bytes, or null when nothing was uploaded under that id for that
+   * owner. Refuses one over `maxBytes` without reading it, and one whose bytes do not hash to the
+   * sha256 recorded at upload.
+   */
+  async getKitUpload(
+    ownerId: string,
+    uploadId: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Uint8Array; sha256: string } | null> {
+    const key = kitUploadKey(ownerId, uploadId);
+    const head = await this.head(key);
+    if (!head) return null;
+    if (head.sizeBytes > maxBytes) {
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    if ((res.ContentLength ?? 0) > maxBytes) {
+      await res.Body?.transformToWebStream().cancel();
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    const bytes = res.Body ? await res.Body.transformToByteArray() : new Uint8Array(0);
+    if (bytes.byteLength > maxBytes) {
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (sha256 !== head.sha256) {
+      throw new ArtifactTransferError(
+        "checksum_mismatch",
+        `${key}: bytes differ from the recorded sha256`,
+      );
+    }
+    return { bytes, sha256 };
+  }
+
+  /** Remove an uploaded kit tarball (after it was stored as a kit, or refused). */
+  async deleteKitUpload(ownerId: string, uploadId: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: kitUploadKey(ownerId, uploadId) }),
+    );
+  }
+
+  /** Store a validated kit's tarball at kitFilesKey (the server's own write). */
+  async putKitFiles(ownerId: string, kitId: string, body: Uint8Array): Promise<StoredArtifact> {
+    const key = kitFilesKey(ownerId, kitId);
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    const res = await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: body,
+        ContentType: "application/gzip",
+        ContentLength: body.byteLength,
+        Metadata: { [SHA256_METADATA_KEY]: sha256 },
+      }),
+    );
+    return { key, sizeBytes: body.byteLength, sha256, ...(res.ETag ? { etag: res.ETag } : {}) };
+  }
+
+  /** A presigned GET for a stored kit tarball (a kitFilesKey only). */
+  async createKitDownload(
+    key: string,
+    expiresInSec = DEFAULT_PRESIGN_SECONDS,
+  ): Promise<DownloadTicket> {
+    if (!KIT_FILES_KEY_RE.test(key)) {
+      throw new ArtifactTransferError("not_found", `${key} is not a stored kit`);
+    }
+    const head = await this.head(key);
+    if (!head) throw new ArtifactTransferError("not_found", `${key} does not exist`);
+    const seconds = Math.min(Math.max(1, expiresInSec), MAX_PRESIGN_SECONDS);
+    const url = await getSignedUrl(
+      this.client,
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      { expiresIn: seconds },
+    );
+    return downloadTicketSchema.parse({
+      key,
+      url,
+      sizeBytes: head.sizeBytes,
+      sha256: head.sha256,
+      expiresAt: new Date(this.now().getTime() + seconds * 1000).toISOString(),
+    });
   }
 
   private async listAllParts(key: string, uploadId: string): Promise<Part[]> {

@@ -17,7 +17,7 @@ export const UPLOAD_MAX_BYTES: Readonly<Record<UploadPurpose, number>> = {
   binary: 1024 * MiB,
   docs: 100 * MiB,
   claude_setup: 25 * MiB,
-  kit: 25 * MiB,
+  kit: 50 * MiB, // = KIT_UPLOAD_LIMITS.maxBytes (kits.ts)
 };
 
 const Sha256Schema = z
