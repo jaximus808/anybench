@@ -1,4 +1,4 @@
-import { DriverTypeSchema } from "@anybench/core";
+import { DriverTypeSchema, MCP_SETUP_COMMAND, MCP_TOOLS } from "@anybench/core";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -91,29 +91,36 @@ describe("docs pages (TDM-106)", () => {
     }
   });
 
-  it("/docs/mcp lists the planned tools", () => {
-    const { container } = render(<McpDocsPage />);
-    expect(container.textContent).toContain("Planned");
-    const table = screen.getByRole("table", { name: "Planned MCP tools" });
-    const tools = within(table)
-      .getAllByRole("rowheader")
-      .map((th) => th.textContent);
+  it("/docs/mcp lists exactly the tools the MCP server registers (TDM-220)", () => {
+    render(<McpDocsPage />);
+    const rows = (caption: string) =>
+      within(screen.getByRole("table", { name: caption }))
+        .getAllByRole("rowheader")
+        .map((th) => th.textContent);
+    const author = rows("Kit-authoring tools");
+    const observe = rows("Run tools");
+    expect([...author, ...observe]).toEqual(MCP_TOOLS.map((t) => t.name));
     for (const t of [
-      "list_runs",
-      "get_run",
+      "get_kit_guide",
+      "scaffold_kit",
+      "validate_kit",
+      "run_local_proof",
+      "push_kit",
+      "start_run",
+    ])
+      expect(author).toContain(t);
+    for (const t of ["list_runs", "get_run", "watch_run", "list_trials", "get_trial", "get_report"])
+      expect(observe).toContain(t);
+    // Nothing documented that the server does not register.
+    for (const gone of [
       "get_run_events",
-      "watch_run",
-      "get_trial",
       "tail_trial_log",
       "get_transcript",
       "get_computer",
-      "list_alerts",
       "ack_alert",
-      "cancel_run",
-      "answer_agent",
-      "get_report",
     ])
-      expect(tools).toContain(t);
+      expect(screen.queryByText(gone)).toBeNull();
+    expect(screen.getAllByText(MCP_SETUP_COMMAND).length).toBeGreaterThan(0);
   });
 
   it("/docs/badges is marked planned and shows badge and embed snippets", () => {

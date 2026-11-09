@@ -25,3 +25,5 @@ export * from "./skeptic/index.js";
 export * from "./scaffold.js";
 export * from "./archive.js";
 export * from "./local-proof/index.js";
+// TDM-220 [19.4]: validate, pack and upload a kit (anybench kit push and the MCP push_kit tool).
+export * from "./push.js";

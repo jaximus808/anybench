@@ -4,7 +4,7 @@
 //
 // Exit codes: 0 run created · 1 the API refused it · 2 usage or missing API key.
 import { randomUUID } from "node:crypto";
-import { KitIdSchema, MICRO_USD_PER_USD, formatUsd } from "@anybench/core";
+import { KitIdSchema, formatUsd, parseUsdBudget as parseUsdBudgetCore } from "@anybench/core";
 import { apiFromEnv, describeApiError, type ApiDeps } from "./api.js";
 import { defaultIo, parseFlags, type CliIo } from "./args.js";
 
@@ -23,16 +23,9 @@ Options:
 
 Env: ANYBENCH_API_KEY (required, scope runs:write), ANYBENCH_API_URL, ANYBENCH_WEB_URL.`;
 
-/** "25", "$12.50", "0.000001" → integer micro-USD. No floats: the decimal string is split. */
+/** "25", "$12.50", "0.000001" → integer micro-USD (shared with the MCP server: @anybench/core). */
 export function parseUsdBudget(s: string): bigint | { error: string } {
-  const m = /^\$?(\d{1,9})(?:\.(\d{1,6}))?$/.exec(s.trim());
-  if (!m)
-    return {
-      error: `--budget must be US dollars like 25 or 12.50 (at most 6 decimals), not '${s}'`,
-    };
-  const micro = BigInt(m[1]!) * MICRO_USD_PER_USD + BigInt((m[2] ?? "").padEnd(6, "0"));
-  if (micro <= 0n) return { error: "--budget must be more than $0" };
-  return micro;
+  return parseUsdBudgetCore(s, "--budget");
 }
 
 export async function runRun(

@@ -24,3 +24,5 @@ export * from "./invites.js";
 export * from "./registry.js";
 export * from "./server.js";
 export * from "./client.js";
+export * from "./env-client.js";
+export * from "./mcp-tools.js";

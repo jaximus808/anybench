@@ -318,8 +318,11 @@ importers:
       '@anybench/core':
         specifier: workspace:*
         version: link:../core
+      '@anybench/kit':
+        specifier: workspace:*
+        version: link:../kit
       '@modelcontextprotocol/sdk':
-        specifier: ^1.32.2
+        specifier: 1.32.2
         version: 1.32.2(zod@4.6.7)
       zod:
         specifier: ^4.6.7

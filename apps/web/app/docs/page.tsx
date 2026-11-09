@@ -153,7 +153,8 @@ export default function DocsOverviewPage() {
             <Link href="/docs/cli">CLI</Link>: start, watch and publish runs from a terminal.
           </li>
           <li>
-            <Link href="/docs/mcp">MCP tools</Link>: let an agent look into a running eval.
+            <Link href="/docs/mcp">MCP tools</Link>: let your coding agent build, prove and
+            push a kit, then follow its runs.
           </li>
           <li>
             <Link href="/docs/badges">Badges and embeds</Link>: put a signed result on your site
