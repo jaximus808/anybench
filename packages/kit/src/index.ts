@@ -20,3 +20,8 @@ export * from "./mine/index.js";
 export * from "./generate/index.js";
 // TDM-187 [16.16]: the skeptic's deterministic checks, finding shape and model-family rule.
 export * from "./skeptic/index.js";
+// TDM-219 [19.3]: bring-your-own-kit helpers shared by the CLI and the MCP server: scaffold a kit
+// folder, run the oracle / do-nothing proof locally in Docker, pack the upload tarball.
+export * from "./scaffold.js";
+export * from "./archive.js";
+export * from "./local-proof/index.js";
