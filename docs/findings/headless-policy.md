@@ -157,3 +157,37 @@ same events, in each (`packages/bench/test/tdm228-headless-policy.test.ts`).
 
 Token spend for this ticket: AskUserQuestion probe and resume $0.0499, entrypoint probe $0.0372,
 smoke 1 $0.7853, smoke 2 $0.2892, smoke 3 $0.2188: **$1.38**.
+
+## TDM-249: why run 1's trials ran without the policy
+
+Run 1 (TDM-229, `docs/findings/harness-league-run-1.md`) had no `system/anybench_headless_policy`
+in any stream. Cause, confirmed from the code: git has `adapters/headless-policy/bin/claude` as
+`100755`, every provider's `putFile` (Naïve, docker, fake) applies the mode it is given, the kit
+tarball unpack and the worker bundle keep `x` bits, but apps/server `subjectPlan` staged every
+kit file `f.path.endsWith(".sh") ? 0o755 : 0o644`. So `bin/claude` landed 0644. The docker-local
+smokes above did not catch it: `healthcheck-docker-local.ts` stages the kit with `tar`, which
+keeps the mode.
+
+What bash does with a 0644 file first on PATH (run here on macOS bash 3.2.57):
+
+```sh
+# a/claude is 0644 ("wrapper"), b/claude is 0755 ("real")
+PATH="$PWD/a:$PWD/b:/usr/bin:/bin" bash -c 'command -v claude; claude'
+# → .../b/claude
+# → real
+PATH="$PWD/a:/usr/bin:/bin" bash -c 'command -v claude; claude; echo "exit $?"'
+# → .../a/claude
+# → bash: .../a/claude: Permission denied
+# → exit 126
+```
+
+With the real Claude Code further down PATH (a trial computer), bash skips the wrapper and runs
+the real one: no policy, no error. Fixed: `subjectPlan` stages each file 0755 when it has any `x`
+bit in the kit (or is a `.sh`), the image's cache key covers the staged modes (a mode change
+builds a new snapshot; images built before the fix are not reused), and `driver.sh` exits 2 when
+`bin/claude` is not executable or `command -v claude` is not it. The report states headless-v1
+only for setups whose trial streams carry the start event (`harnessLeagueDisclosure`); the shim
+writes that event before the first `claude` process, so "ran, 0 answers" and "did not run" differ.
+Test: `apps/server/test/headless-policy-staging-tdm249.test.ts` (stages the league through
+`subjectPlan` and `buildEnvSnapshot` on FakeProvider, forks, lays the files out with their modes
+and runs A's driver with the recorded never-asking session).

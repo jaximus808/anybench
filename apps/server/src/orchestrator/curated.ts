@@ -657,10 +657,11 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       const id = await curatedKitOfSpec(input.kit, kitsDir);
       // A spec that matches neither kit keeps the older (Naïve-proxy) wording: proof holds an
       // edited kit before it gets here, so this is a run stored before TDM-233.
-      return summaryAnalyst({ disclosure: curatedDisclosure(id ?? CURATED_TANDEM_KIT) })(
-        ctx,
-        input,
-      );
+      // TDM-249: the league's report states the headless policy only where trial streams show it ran.
+      return summaryAnalyst({
+        disclosure: curatedDisclosure(id ?? CURATED_TANDEM_KIT),
+        ...(id === CURATED_HARNESS_LEAGUE_KIT ? { headlessPolicy: true } : {}),
+      })(ctx, input);
     },
   };
 }

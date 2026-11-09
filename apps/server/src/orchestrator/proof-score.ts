@@ -646,6 +646,12 @@ export interface SummaryInput {
   proofLabel?: string;
   /** Disclosure line about how the setups ran (e.g. the Naïve proxy and simulated approvals). */
   disclosure?: string;
+  /**
+   * TDM-249: the kit runs its Claude Code setups under the harness league's headless policy. The
+   * disclosure is then harnessLeagueDisclosure() of the trials (it replaces `disclosure`): the
+   * policy is stated only for the setups whose trial streams carry its start event.
+   */
+  headlessPolicy?: boolean;
 }
 
 /**
@@ -723,7 +729,10 @@ export function buildSummary(
     input.proofLabel ??
     (isProven(input.proof) ? "proof: all six checks passed" : "proof: not all six checks passed");
   lines.push(proofLine);
-  if (input.disclosure) lines.push(input.disclosure);
+  const disclosure = input.headlessPolicy
+    ? harnessLeagueDisclosure(kit, input.trials, nameOf)
+    : input.disclosure;
+  if (disclosure) lines.push(disclosure);
   // TDM-246: say when the cost rows include model tokens (rule 5's exception).
   const costBasis = costBasisDisclosure(kitCostBasis(input.kit));
   if (costBasis) lines.push(costBasis);
@@ -881,7 +890,7 @@ export function buildSummary(
       if (gates.some((g) => g.applicable !== false && !g.pass)) failures.gate++;
     }
   }
-  const answer = [sentence, proofLine, input.disclosure].filter(Boolean).join(" ");
+  const answer = [sentence, proofLine, disclosure].filter(Boolean).join(" ");
   return {
     ok: true,
     analysis: {
@@ -930,8 +939,89 @@ export const HEADLESS_POLICY_MAX = 8;
 /** The metric bench's stream-json collector writes per trial when the policy ran. */
 export const QUESTIONS_AUTO_ANSWERED_METRIC = "questions_auto_answered";
 
-/** The harness league's setups (kits/harness-league): E18's disclosure plus the headless policy. */
-export const HARNESS_LEAGUE_DISCLOSURE = `${LONG_HORIZON_DISCLOSURE}; headless policy ${HEADLESS_POLICY_ID} for every Claude Code setup: a session that stops to ask is resumed with "${HEADLESS_POLICY_REPLY}" (at most ${HEADLESS_POLICY_MAX} times per trial, counted as ${QUESTIONS_AUTO_ANSWERED_METRIC}); Tandem's approvals automatic`;
+const HEADLESS_POLICY_TERMS = `a session that stops to ask is resumed with "${HEADLESS_POLICY_REPLY}" (at most ${HEADLESS_POLICY_MAX} times per trial, counted as ${QUESTIONS_AUTO_ANSWERED_METRIC})`;
+const TANDEM_APPROVALS = "Tandem's approvals automatic";
+
+/**
+ * The harness league's setups (kits/harness-league): E18's disclosure plus the headless policy.
+ * The plan's wording (the run's kit line); a report prints it only when the policy ran in every
+ * trial of every Claude Code setup (harnessLeagueDisclosure).
+ */
+export const HARNESS_LEAGUE_DISCLOSURE = `${LONG_HORIZON_DISCLOSURE}; headless policy ${HEADLESS_POLICY_ID} for every Claude Code setup: ${HEADLESS_POLICY_TERMS}; ${TANDEM_APPROVALS}`;
+
+/** The league drivers that run Claude Code under the headless policy (A, B; G, S via tool-home). */
+export const HEADLESS_POLICY_DRIVERS: readonly string[] = [
+  "adapters/headless-policy/driver.sh",
+  "adapters/tool-home/driver.sh",
+];
+
+/** The kit's contenders whose driver applies the headless policy, in kit order. */
+export function headlessPolicySetups(kit: KitSpec): string[] {
+  return kit.contenders
+    .filter(
+      (c) => c.driver.script !== undefined && HEADLESS_POLICY_DRIVERS.includes(c.driver.script),
+    )
+    .map((c) => c.id);
+}
+
+/**
+ * TDM-249: did the policy run in this trial? The stream-json collector writes
+ * `questions_auto_answered` (0 when it never fired) only when the stream carries the policy's
+ * start event (`system/anybench_headless_policy`), so its presence is the answer.
+ */
+export function headlessPolicyRan(t: StageTrial): boolean {
+  return numbersOf(t.metrics)[QUESTIONS_AUTO_ANSWERED_METRIC] !== undefined;
+}
+
+/**
+ * TDM-249: the league's disclosure from what the trials' streams show, not from the plan. Over
+ * the measured trials that ran the agent (done or failed_subject) of each policy setup: the
+ * policy is stated for the setups where it ran (with "in only k of n trials" when not in all of
+ * them), and the setups where no trial's stream has the start event are named as "did not run".
+ * When it ran in every such trial of every policy setup, this is HARNESS_LEAGUE_DISCLOSURE.
+ */
+export function harnessLeagueDisclosure(
+  kit: KitSpec,
+  trials: readonly StageTrial[],
+  nameOf: (contender: string) => string,
+): string {
+  const applied: string[] = [];
+  const partial: string[] = [];
+  const didNot: string[] = [];
+  for (const id of headlessPolicySetups(kit)) {
+    const ran = trials.filter(
+      (t) =>
+        t.contender === id && t.repeat >= 0 && (t.state === "done" || t.state === "failed_subject"),
+    );
+    if (ran.length === 0) continue; // nothing to tell from
+    const k = ran.filter(headlessPolicyRan).length;
+    if (k === 0) didNot.push(nameOf(id));
+    else {
+      applied.push(nameOf(id));
+      if (k < ran.length) partial.push(`${k} of ${ran.length} trials of ${nameOf(id)}`);
+    }
+  }
+  if (didNot.length === 0 && partial.length === 0 && applied.length > 0) {
+    return HARNESS_LEAGUE_DISCLOSURE;
+  }
+  const clauses = [LONG_HORIZON_DISCLOSURE];
+  if (applied.length > 0) {
+    clauses.push(
+      `headless policy ${HEADLESS_POLICY_ID} for ${applied.join(", ")}: ${HEADLESS_POLICY_TERMS}${
+        partial.length > 0
+          ? `, but it ran in only ${partial.join(", ")} (the other trials' streams have no policy start event)`
+          : ""
+      }`,
+    );
+  }
+  if (didNot.length > 0) {
+    clauses.push(
+      `headless policy ${HEADLESS_POLICY_ID} did not run for ${didNot.join(", ")} (no trial's stream has the policy start event)`,
+    );
+  }
+  clauses.push(TANDEM_APPROVALS);
+  return clauses.join("; ");
+}
 
 /**
  * TDM-228: "questions auto-answered (headless policy): A · Claude Code solo 0 in 5 trials; ..."
@@ -962,7 +1052,9 @@ export function autoAnswerLine(
  * AgentStagePort.analyze without an LLM ([6.8] analyst not built): the summary from the score.
  * The orchestrator sets run_id, kit_id and comped.
  */
-export function summaryAnalyst(opts: { disclosure?: string } = {}): AgentStagePort["analyze"] {
+export function summaryAnalyst(
+  opts: { disclosure?: string; headlessPolicy?: boolean } = {},
+): AgentStagePort["analyze"] {
   return async (ctx, input) => {
     const basis = input.proof_basis ?? null;
     const built = buildSummary({
@@ -972,6 +1064,7 @@ export function summaryAnalyst(opts: { disclosure?: string } = {}): AgentStagePo
       trials: input.trials,
       ...(basis && basis.kit_id === input.kit_id ? { proofLabel: basis.label } : {}),
       ...(opts.disclosure ? { disclosure: opts.disclosure } : {}),
+      ...(opts.headlessPolicy ? { headlessPolicy: true } : {}),
     });
     if (!built.ok) return stageHold(built.reason);
     await say(ctx, "analyst", `summary (no LLM): ${built.analysis.report.answer}`);

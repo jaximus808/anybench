@@ -10,10 +10,12 @@
 //
 // Snapshot cache: `envs` (spec_hash, provider). The hash covers the provider, the profile's
 // recipes with their pinned versions, the runner binary's sha256, the build size and the subject
-// files + installs (their sha256s), so a kit re-run with nothing changed forks the cached image.
+// files + installs (their sha256s and staged modes), so a kit re-run with nothing changed forks
+// the cached image.
 //
 // A build failure is OUR failure: the run holds in needs_human with the reason, and nothing is
 // billed (the build computer is infrastructure, tagged ab-infra-envbuild-*, outside the registry).
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -211,7 +213,20 @@ async function exists(p: string): Promise<boolean> {
   );
 }
 
-/** The kit's subject files (adapters/), staged under ~/kit, and its contenders' installs. */
+/**
+ * The mode a kit file is staged with (TDM-249): 0755 when it is executable in the kit (any `x`
+ * bit: the git checkout's 100755, an uploaded tarball's mode) or is a `.sh` script, else 0644.
+ * Every file keeps its bit, whatever its name: `adapters/headless-policy/bin/claude` (a bash
+ * script with no suffix) was staged 0644 by the suffix rule alone, so PATH skipped it.
+ */
+export function stagedMode(relPath: string, fsMode: number): 0o755 | 0o644 {
+  return (fsMode & 0o111) !== 0 || relPath.endsWith(".sh") ? 0o755 : 0o644;
+}
+
+/**
+ * The kit's subject files (adapters/), staged under ~/kit with their modes, and its contenders'
+ * installs. `sha256` (the snapshot cache key's subject part) covers the bytes and the modes.
+ */
 export async function subjectPlan(
   kitDir: string,
   spec: KitSpec,
@@ -233,16 +248,20 @@ export async function subjectPlan(
     );
   }
   const files: EnvBuildFile[] = [];
+  const modes: string[] = [];
   for (const f of hash.files) {
     for (const bad of [KIT_LAYOUT.gatesDir, KIT_LAYOUT.referenceDir, KIT_LAYOUT.proofDir]) {
       if (f.path === bad || f.path.startsWith(`${bad}/`)) {
         throw new Error(`refusing to put ${f.path} on a subject computer`);
       }
     }
+    const abs = path.join(kitDir, f.path);
+    const mode = stagedMode(f.path, (await stat(abs)).mode);
+    modes.push(`${mode.toString(8)}  ${f.path}\n`);
     files.push({
       path: `${KIT_DIR_REL}/${f.path}`,
-      content: new Uint8Array(await readFile(path.join(kitDir, f.path))),
-      mode: f.path.endsWith(".sh") ? 0o755 : 0o644,
+      content: new Uint8Array(await readFile(abs)),
+      mode,
     });
   }
   const installs: EnvBuildInstall[] = [];
@@ -268,7 +287,12 @@ export async function subjectPlan(
       env,
     });
   }
-  return { files, installs, sha256: hash.sha256 };
+  // The kit hash leaves modes out (a copy hashes the same anywhere); the image's does not, so a
+  // file that gains or loses its executable bit builds a new snapshot (TDM-249).
+  const sha256 = createHash("sha256")
+    .update(`${hash.sha256}\nmodes\n${modes.join("")}`)
+    .digest("hex");
+  return { files, installs, sha256 };
 }
 
 /** The scoring image: base recipes (Node for the gates), no runner, no kit file, ever. */

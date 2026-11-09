@@ -114,7 +114,14 @@ one-sided assist. So every Claude Code setup (A, B, G, S) runs under one policy:
   approved. Proceed with your recommended option and complete the task." (at most 8 times per
   trial, counted as questions_auto_answered); Tandem's approvals automatic`
   (`HARNESS_LEAGUE_DISCLOSURE` in apps/server `proof-score.ts`), plus a per-setup line
-  `questions auto-answered (headless policy): <setup> <n> in <trials> trials; ...`.
+  `questions auto-answered (headless policy): <setup> <n> in <trials> trials; ...`. The report
+  prints that wording only when every measured trial of every Claude Code setup has the policy's
+  start event in its stream (`harnessLeagueDisclosure`, TDM-249); a setup whose trials have none
+  is named as "headless policy headless-v1 did not run for <setup>", and one where only some do
+  gets "in only k of n trials".
+- **Staged executable:** the env build stages every kit file with its executable bit
+  (`bin/claude` has no `.sh` suffix; run 1 staged it 0644 and no trial ran the policy), and
+  `driver.sh` exits 2 when `claude` on `PATH` is not its own executable wrapper.
 
 ## Shared with E18, byte for byte
 

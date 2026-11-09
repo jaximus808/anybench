@@ -22,4 +22,9 @@ fi
   { echo "AB_REAL_CLAUDE is the headless-policy wrapper itself, not Claude Code" >&2; exit 2; }
 export AB_REAL_CLAUDE
 export PATH="$here/bin:$PATH"
+# TDM-249: `claude` must now be the wrapper. PATH lookup skips a bin/claude staged without its
+# executable bit (for the real Claude Code further down PATH), and the trial would then run with
+# no policy, silently.
+[[ -x "$here/bin/claude" && "$(command -v claude || true)" -ef "$here/bin/claude" ]] ||
+  { echo "headless policy: claude on PATH is '$(command -v claude || true)', not $here/bin/claude (is it executable?)" >&2; exit 2; }
 exec "$kit/adapters/claude-code/driver.sh" "$@"
