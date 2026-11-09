@@ -1,8 +1,8 @@
 // TDM-44 [4.12]: PipelinePort.prove for every kit (contract C3).
 //
-//   the curated Tandem kit  (files_url = kits/tandem-vs-claude-code, or no files_url at all, as
-//                           kits drafted before contract C1) → curatedProof, unchanged: its
-//                           committed, signed-off offline proof.
+//   a curated Tandem kit    (files_url = kits/tandem-long-horizon or kits/tandem-vs-claude-code,
+//                           or no files_url at all, as kits drafted before contract C1) →
+//                           curatedProof: that kit's committed, signed-off offline proof.
 //   any other kit           → load the kit from kits.files_url (file://), run the six proof checks
 //                           (@anybench/kit runProofSuite) on the run's env: trials fork env.env_id,
 //                           gates fork env.detail.scoring_snapshot_id (apps/server/src/jobs/
@@ -31,7 +31,7 @@ import type { Database } from "../db/client.js";
 import { kits } from "../db/schema/kits.js";
 import { drizzleComputerStore } from "../lib/computer-store.js";
 import { kitSpecHash } from "../routes/kits.js";
-import { CURATED_TANDEM_KIT, defaultKitsDir } from "../orchestrator/curated.js";
+import { CURATED_KIT_IDS, defaultKitsDir } from "../orchestrator/curated.js";
 import {
   stageHold,
   stageOk,
@@ -117,7 +117,9 @@ function filesUrlFromDb(db: Database) {
 
 export function proofStage(opts: ProofStageOptions): PipelinePort["prove"] {
   const curated = curatedProof(opts.kitsDir ? { kitsDir: opts.kitsDir } : {});
-  const curatedDir = real(path.join(defaultKitsDir(opts.kitsDir), CURATED_TANDEM_KIT));
+  const curatedDirs = new Set(
+    CURATED_KIT_IDS.map((id) => real(path.join(defaultKitsDir(opts.kitsDir), id))),
+  );
   const log = opts.log ?? (() => undefined);
 
   return async (ctx, input) => {
@@ -125,7 +127,7 @@ export function proofStage(opts: ProofStageOptions): PipelinePort["prove"] {
     // The curated kit keeps its signed-off offline proof (and so does a pre-C1 kit row).
     if (
       filesUrl === null ||
-      (filesUrl.startsWith("file://") && real(fileURLToPath(filesUrl)) === curatedDir)
+      (filesUrl.startsWith("file://") && curatedDirs.has(real(fileURLToPath(filesUrl))))
     ) {
       return curated(ctx, input);
     }

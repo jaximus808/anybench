@@ -14,7 +14,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { events, kits, reports, runs, trials } from "../src/db/schema/index.js";
 import type { JobDef } from "../src/jobs/types.js";
 import { appendEvents } from "../src/lib/events.js";
-import { CURATED_TANDEM_KIT, defaultKitsDir, smokeProfile } from "../src/orchestrator/curated.js";
+import {
+  CURATED_LONG_HORIZON_KIT,
+  CURATED_TANDEM_KIT,
+  curatedDisclosure,
+  curatedKitOfSpec,
+  defaultKitsDir,
+  longHorizonSmokeProfile,
+  smokeProfile,
+} from "../src/orchestrator/curated.js";
 import { FakeAgentStages, FakePipeline } from "../src/orchestrator/fake.js";
 import { curatedKitStages } from "../src/orchestrator/curated.js";
 import {
@@ -23,6 +31,8 @@ import {
   kitScore,
   PROOF_SUITE_UNAVAILABLE,
   proofAccepted,
+  LONG_HORIZON_DISCLOSURE,
+  LONG_HORIZON_PROOF_SIGNOFF,
   TANDEM_DISCLOSURE,
   TANDEM_PROOF_SIGNOFF,
 } from "../src/orchestrator/proof-score.js";
@@ -179,7 +189,7 @@ describe.skipIf(!available)("demo proof, scoring and summary", () => {
   it("the Tandem repo: curated proof, fake trials, scoreKit, the summary, delivered; GET /runs/:id/report", async () => {
     const { w, queue } = worker(() => curatedKitStages(), pipeline());
     const id = await createRun(queue, {
-      question: "Smoke test: does Tandem beat Claude Code?",
+      question: "Smoke test on tandem-vs-claude-code: does Tandem beat Claude Code?",
       source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
       // New users don't auto-start (auto_start_runs defaults off): ask for auto-go explicitly,
       // as the New run form's "start automatically" does. The billing gate still applies.
@@ -271,6 +281,74 @@ describe.skipIf(!available)("demo proof, scoring and summary", () => {
       console.log(`[demo evidence] GET /runs/${id}/report answer: ${body.report.answer}\n`);
     }
   }, 120_000);
+
+  it("TDM-233: the Tandem repo's default long-horizon kit: its own sign-off, its disclosure, delivered", async () => {
+    const { w, queue } = worker(() => curatedKitStages(), pipeline());
+    const id = await createRun(queue, {
+      question: "Smoke test: does Tandem beat Claude Code on a whole app?",
+      source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+      auto_go: true,
+    });
+    await drainTdm54(w, queue);
+    const [run] = await h.db.select().from(runs).where(eq(runs.id, id));
+    expect(run!.state, run!.pausedReason ?? "").toBe("delivered");
+    const [kit] = await h.db.select().from(kits).where(eq(kits.id, run!.kitId!));
+    expect(kit!.filesUrl).toContain(`kits/${CURATED_LONG_HORIZON_KIT}`);
+    const proof = kit!.proof as { check: string; pass: boolean; reason: string }[];
+    const label = `proof: curated (verified offline at ${LONG_HORIZON_PROOF_SIGNOFF.commit.slice(0, 7)})`;
+    expect(proof.filter((p) => p.pass).map((p) => [p.check, p.reason])).toEqual([
+      ["oracle_passes", `${label}: oracle 120/120, 120/120, 120/120 hidden tests passed (3 runs)`],
+      [
+        "do_less_fails",
+        `${label}: do-nothing 1/120 passed; partial-oracle 106/120 passed, gate failed`,
+      ],
+    ]);
+    const outputs = run!.stageOutputs as {
+      proof_basis: { source: string; commit: string };
+      score: { trials: { scored: number; infra: number } };
+    };
+    expect(outputs.proof_basis).toMatchObject({
+      source: LONG_HORIZON_PROOF_SIGNOFF.source,
+      commit: LONG_HORIZON_PROOF_SIGNOFF.commit,
+    });
+    // The long-horizon smoke plans A solo and Tandem ×3 on project-tracker × 1 repeat. Its
+    // setups buy tokens with the owner's stored Anthropic key (AB_TOKEN_SOURCE=anthropic_key);
+    // this worker has no ANYBENCH_KEK, so both trials fail closed at prepare (TDM-212's rule) and
+    // none is scored. What this test proves is the kit, its proof sign-off and its disclosure.
+    expect(outputs.score.trials).toMatchObject({ scored: 0, infra: 2 });
+    const [rep] = await h.db.select().from(reports).where(eq(reports.runId, id));
+    expect(rep!.md).toContain(LONG_HORIZON_DISCLOSURE);
+    expect(rep!.md).not.toContain(TANDEM_DISCLOSURE);
+    expect(LONG_HORIZON_DISCLOSURE).toBe("tokens: anthropic-key, effort: default, thinking: on");
+  }, 120_000);
+
+  it("TDM-233: the long-horizon sign-off covers the kit and its smoke cut, not an edited copy", async () => {
+    const spec = (await loadKit(path.join(defaultKitsDir(), CURATED_LONG_HORIZON_KIT))).spec;
+    const ctx = { emit: async () => {} } as unknown as StageContext;
+    const smoke = longHorizonSmokeProfile(spec);
+    expect(smoke.ok).toBe(true);
+    for (const kit of [spec, smoke.ok ? smoke.spec : spec]) {
+      const r = await curatedProof()(ctx, { kit_id: "k", kit, env: null });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value).toMatchObject({
+          basis: "curated",
+          source: LONG_HORIZON_PROOF_SIGNOFF.source,
+        });
+      }
+    }
+    const edited = await curatedProof()(ctx, {
+      kit_id: "k",
+      kit: { ...spec, repeats: 2 },
+      env: null,
+    });
+    expect(edited).toEqual({ ok: false, outcome: "needs_human", reason: PROOF_SUITE_UNAVAILABLE });
+    // The analyst's disclosure follows the kit the spec came from.
+    expect(await curatedKitOfSpec(spec)).toBe(CURATED_LONG_HORIZON_KIT);
+    const short = (await loadKit(path.join(defaultKitsDir(), CURATED_TANDEM_KIT))).spec;
+    expect(await curatedKitOfSpec(short)).toBe(CURATED_TANDEM_KIT);
+    expect(curatedDisclosure(CURATED_TANDEM_KIT)).toBe(TANDEM_DISCLOSURE);
+  });
 
   it("a non-curated kit holds at proof: proof suite not available yet", async () => {
     const stages = new FakeAgentStages({ kit: kitTdm54() });

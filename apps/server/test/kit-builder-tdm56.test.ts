@@ -362,7 +362,8 @@ describe.skipIf(!available)("kitBuilderStages on Postgres + FakeNaive (TDM-56)",
     });
     expect(kit.ok).toBe(true);
     expect(naive.calls.slice(before)).toEqual([]);
-    expect(texts(ctx)).toContain("using the curated Tandem kit");
+    // TDM-233: the Tandem repo's default is the long-horizon kit.
+    expect(texts(ctx)).toContain("using the curated Tandem kit (tandem-long-horizon)");
   });
 
   it("research is a pass-through and designKit delegates (TDM-60's seam) for other repos", async () => {

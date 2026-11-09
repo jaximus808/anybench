@@ -381,7 +381,8 @@ describe.skipIf(!available)("kit designer stage (TDM-60)", () => {
       previous: null,
     });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.files_dir).toMatch(/kits\/tandem-vs-claude-code$/);
+    // TDM-233: the Tandem repo's default curated kit is the long-horizon one.
+    if (r.ok) expect(r.value.files_dir).toMatch(/kits\/tandem-long-horizon$/);
     expect(designerCreates().length).toBe(before);
   });
 });

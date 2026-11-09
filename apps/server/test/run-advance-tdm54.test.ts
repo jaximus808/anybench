@@ -39,8 +39,11 @@ import {
 } from "../src/jobs/run-advance.js";
 import type { RunChargesHook } from "../src/orchestrator/advance.js";
 import {
+  CURATED_DEFAULT_KIT,
   CURATED_KIT_UNAVAILABLE,
+  CURATED_LONG_HORIZON_KIT,
   CURATED_TANDEM_KIT,
+  curatedKitFor,
   curatedKitStages,
   defaultKitsDir,
   isTandemRepo,
@@ -563,7 +566,7 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       }) as never,
     );
     const id = await createRun(r.queue, {
-      question: "Smoke: does Tandem beat Claude Code?",
+      question: "Smoke on tandem-vs-claude-code: does Tandem beat Claude Code?",
       source: { kind: "github", github: "https://github.com/Jaximus808/Tandem.git", ref: "main" },
     });
     await drainTdm54(w, r.queue);
@@ -584,9 +587,9 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
       .orderBy(asc(events.seq));
     const texts = said.map((e) => (e.payload as { text: string }).text);
     expect(texts.slice(0, 3)).toEqual([
-      "using the curated Tandem kit",
-      "using the curated Tandem kit: its contenders are the baselines",
       `using the curated Tandem kit (${CURATED_TANDEM_KIT})`,
+      "using the curated Tandem kit: its contenders are the baselines",
+      `using the curated Tandem kit (${CURATED_TANDEM_KIT}); leave out "${CURATED_TANDEM_KIT}" for the default long-horizon kit (${CURATED_LONG_HORIZON_KIT})`,
     ]);
     expect(texts[3]).toMatch(/^smoke profile: \d+ trials/);
     expect((await stateEdges(id)).map((e) => e[1])).toEqual([
@@ -618,7 +621,14 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     });
     await drainTdm54(w, r.queue);
     const run = await runRow(id);
-    const valid = await validateKitDir(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
+    // No question: the Tandem repo's default, the long-horizon kit (TDM-233).
+    const valid = await validateKitDir(path.join(defaultKitsDir(), CURATED_DEFAULT_KIT));
+    if (valid.ok) {
+      const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
+      expect(kit!.filesUrl).toBe(
+        pathToFileURL(path.join(defaultKitsDir(), CURATED_LONG_HORIZON_KIT)).href,
+      );
+    }
     expect(run.state).toBe("needs_human");
     if (valid.ok) {
       expect((run.stageOutputs as { held_from?: string }).held_from).toBe("env_build");
@@ -628,7 +638,71 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     }
   }, 60_000);
 
-  it("CuratedKitStage: the Tandem kit defaults to head-to-head (36 trials); 'smoke' gets 3 trials, 'full benchmark' all of it", async () => {
+  it("CuratedKitStage (TDM-233): the Tandem repo defaults to the long-horizon kit; the short-task kit stays selectable", async () => {
+    expect(CURATED_DEFAULT_KIT).toBe("tandem-long-horizon");
+    expect(curatedKitFor("Does Tandem beat Claude Code?")).toBe(CURATED_LONG_HORIZON_KIT);
+    expect(curatedKitFor("")).toBe(CURATED_LONG_HORIZON_KIT);
+    expect(curatedKitFor("smoke")).toBe(CURATED_LONG_HORIZON_KIT);
+    expect(curatedKitFor("Run tandem-vs-claude-code")).toBe(CURATED_TANDEM_KIT);
+    expect(curatedKitFor("the three Short Tasks, please")).toBe(CURATED_TANDEM_KIT);
+    expect(curatedKitFor("Null pilot: is Claude Code any different from itself?")).toBe(
+      CURATED_TANDEM_KIT,
+    );
+    const lh = await loadKit(path.join(defaultKitsDir(), CURATED_LONG_HORIZON_KIT));
+    const lhTrials = trialCount(lh.spec);
+    for (const [question, expected, trials] of [
+      [
+        "Does Tandem beat Claude Code on a whole app?",
+        `long-horizon profile: ${lhTrials} trials`,
+        lhTrials,
+      ],
+      ["smoke: does the long-horizon run work?", "smoke profile: 2 trials", 2],
+    ] as const) {
+      const r = rig();
+      const { w } = r.worker();
+      const pipeline = new FakePipeline({ digest: digestTdm54() });
+      pipeline.buildEnv = async () => stageHold("env build stops this test");
+      w.handlers.set(
+        "run.advance",
+        createRunAdvanceJob({
+          jobs: () => r.queue,
+          agents: () => curatedKitStages(),
+          pipeline: () => pipeline,
+          timing: { leaseRefreshMs: 50 },
+        }) as never,
+      );
+      const id = await createRun(r.queue, {
+        question,
+        source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+      });
+      await drainTdm54(w, r.queue);
+      const run = await runRow(id);
+      expect((run.stageOutputs as { held_from?: string }).held_from, run.pausedReason ?? "").toBe(
+        "env_build",
+      );
+      const [kit] = await h.db.select().from(kits).where(eq(kits.id, run.kitId!));
+      expect(kit!.filesUrl).toBe(
+        pathToFileURL(path.join(defaultKitsDir(), CURATED_LONG_HORIZON_KIT)).href,
+      );
+      const said = (
+        await h.db
+          .select({ payload: events.payload })
+          .from(events)
+          .where(and(eq(events.runId, id), eq(events.type, "agent.message")))
+          .orderBy(asc(events.seq))
+      ).map((e) => (e.payload as { text: string }).text);
+      // The run page says which kit, why, the disclosure, and how to get the other one.
+      expect(said).toContain(
+        `using the curated Tandem kit (${CURATED_LONG_HORIZON_KIT}): the Tandem repo's default, a whole-app build (tokens: anthropic-key, effort: default, thinking: on); name "${CURATED_TANDEM_KIT}" in the question for the three short tasks`,
+      );
+      expect(said.some((t) => t.startsWith(expected))).toBe(true);
+      const stored = safeParseKitSpec(kit!.spec);
+      expect(stored.success && trialCount(stored.data)).toBe(trials);
+      expect(stored.success && stored.data.workloads.map((x) => x.id)).toContain("project-tracker");
+    }
+  }, 60_000);
+
+  it("CuratedKitStage: the short-task kit defaults to head-to-head (36 trials); 'smoke' gets 3 trials, 'full benchmark' all of it", async () => {
     const full = await loadKit(path.join(defaultKitsDir(), CURATED_TANDEM_KIT));
     const smoke = smokeProfile(full.spec);
     expect(smoke.ok).toBe(true);
@@ -656,11 +730,11 @@ describe.skipIf(!available)("run orchestrator (TDM-54)", () => {
     expect(trialCount(h2h.spec)).toBe(36);
 
     for (const [question, expected] of [
-      ["smoke: does Tandem run?", "smoke profile: 3 trials"],
-      ["Does Tandem beat Claude Code?", "head-to-head profile: 36 trials"],
+      ["smoke on tandem-vs-claude-code: does Tandem run?", "smoke profile: 3 trials"],
+      ["Does Tandem beat Claude Code on the short tasks?", "head-to-head profile: 36 trials"],
       ["Null pilot: is Claude Code any different from itself?", "null pilot profile: 60 trials"],
       [
-        "full benchmark: does Tandem beat Claude Code?",
+        "full benchmark of tandem-vs-claude-code: does Tandem beat Claude Code?",
         `full profile: ${trialCount(full.spec)} trials`,
       ],
     ] as const) {

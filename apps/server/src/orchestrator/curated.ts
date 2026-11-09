@@ -2,16 +2,23 @@
 //
 //   understand  pass-through: the subject from the digest (or the curated kit), with an event.
 //   research    pass-through: no new baselines (the curated kit names its own), with an event.
-//   designKit   github.com/jaximus808/tandem (any case, with or without .git) → the curated kit
-//               `kits/tandem-vs-claude-code` from this repo's kits/ directory, validated by
-//               packages/kit loadKit, then cut by the question: "null pilot" → the A/A null
-//               pilot (E18 18.1: Claude Code solo vs an identical copy of itself, repeats from
-//               the power plan); "full benchmark" → the whole kit; "smoke" → the 3-trial cut
-//               (todo-api, 1 repeat, no warm-up, TANDEM_WORKERS 3); otherwise head-to-head.
+//   designKit   github.com/jaximus808/tandem (any case, with or without .git) → one of the two
+//               curated kits from this repo's kits/ directory, validated by packages/kit loadKit
+//               (curatedKitFor picks it from the question; the run page says which and how to
+//               pick the other):
+//                 kits/tandem-long-horizon (the default, E18 / TDM-233): one whole-app build, our
+//                   own Anthropic key. The whole kit; "smoke" → 1 repeat per setup on the first task.
+//                 kits/tandem-vs-claude-code (three short tasks on the Naïve proxy) when the
+//                   question names it, says "short tasks", or asks for the "null pilot" (the A/A
+//                   pilot is defined on it, E18 18.1). Cut by the question: "null pilot" → Claude
+//                   Code solo vs an identical copy of itself, repeats from the power plan; "full
+//                   benchmark" → the whole kit; "smoke" → the 3-trial cut (todo-api, 1 repeat, no
+//                   warm-up, TANDEM_WORKERS 3); otherwise head-to-head.
 //               Any other repo → needs_human with CURATED_KIT_UNAVAILABLE.
 //               TODO([6.6] TDM-60 kit designer): design kits for any repo on Naïve.
 //   analyze     the Tandem repo: the deterministic summary (proof-score.ts summaryAnalyst, no LLM)
-//               with the Naïve-proxy disclosure; any other repo: not built ([6.8]).
+//               with the kit's disclosure (long-horizon: `tokens: anthropic-key, effort: default,
+//               thinking: on`; short tasks: the Naïve-proxy one); any other repo: not built ([6.8]).
 //
 // Events: each stage writes an `agent.message` (source_id `curated:<role>`) so the live run page
 // shows what happened; the orchestrator writes run.state_changed for every transition.
@@ -34,9 +41,36 @@ import {
   type StageContext,
   type Understanding,
 } from "./ports.js";
-import { summaryAnalyst, TANDEM_DISCLOSURE } from "./proof-score.js";
+import { LONG_HORIZON_DISCLOSURE, summaryAnalyst, TANDEM_DISCLOSURE } from "./proof-score.js";
 
+/** The three-short-task curated kit (E14/E16). Still selectable; no longer the default. */
 export const CURATED_TANDEM_KIT = "tandem-vs-claude-code";
+/** The whole-app build curated kit (E18), the Tandem repo's default (TDM-233). */
+export const CURATED_LONG_HORIZON_KIT = "tandem-long-horizon";
+/** The curated kit the Tandem repo gets unless the question asks for the other one. */
+export const CURATED_DEFAULT_KIT = CURATED_LONG_HORIZON_KIT;
+export const CURATED_KIT_IDS = [CURATED_LONG_HORIZON_KIT, CURATED_TANDEM_KIT] as const;
+export type CuratedKitId = (typeof CURATED_KIT_IDS)[number];
+
+/** The short-task kit when the question names it or says "short tasks" (any case). */
+export function wantsShortTaskKit(question: string): boolean {
+  return /tandem-vs-claude-code|\bshort[\s-]+tasks?\b/i.test(question);
+}
+
+/**
+ * Which curated kit a Tandem run gets: the short-task kit when the question asks for it, or for
+ * the null pilot (the A/A pilot is that kit's profile, E18 18.1); otherwise the long-horizon kit.
+ */
+export function curatedKitFor(question: string): CuratedKitId {
+  return wantsShortTaskKit(question) || wantsNullPilot(question)
+    ? CURATED_TANDEM_KIT
+    : CURATED_DEFAULT_KIT;
+}
+
+/** The disclosure the report carries for a curated kit's setups (how tokens were bought). */
+export function curatedDisclosure(id: CuratedKitId): string {
+  return id === CURATED_LONG_HORIZON_KIT ? LONG_HORIZON_DISCLOSURE : TANDEM_DISCLOSURE;
+}
 export const CURATED_KIT_UNAVAILABLE =
   "automatic kit design for this repo isn't available yet; we'll set it up for you";
 
@@ -153,6 +187,39 @@ export function headToHeadProfile(
   return { ok: true, spec: r.data };
 }
 
+/** The long-horizon kit's smoke workload (its first task). */
+export const LONG_HORIZON_SMOKE_WORKLOAD = "project-tracker";
+
+/**
+ * The long-horizon kit's smoke profile: only `project-tracker`, 1 repeat, no warm-up, every setup
+ * (2 trials: A solo and Tandem ×3). Still up to 3 h and the $25 cap per trial: it checks the
+ * pipeline end to end, it answers nothing. Re-validated after the cut.
+ */
+export function longHorizonSmokeProfile(
+  spec: KitSpec,
+): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
+  const cut = {
+    ...spec,
+    workloads: spec.workloads.filter((w) => w.id === LONG_HORIZON_SMOKE_WORKLOAD),
+    repeats: 1,
+    schedule: { ...spec.schedule, warmups: 0 },
+  };
+  if (cut.workloads.length === 0) {
+    return {
+      ok: false,
+      reason: `the curated long-horizon kit has no ${LONG_HORIZON_SMOKE_WORKLOAD} workload`,
+    };
+  }
+  const r = safeParseKitSpec(cut);
+  if (!r.success) {
+    return {
+      ok: false,
+      reason: `the long-horizon smoke profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
+    };
+  }
+  return { ok: true, spec: r.data };
+}
+
 /** The A/A null pilot when the question says "null pilot" (any case). */
 export function wantsNullPilot(question: string): boolean {
   return /\bnull[\s-]+pilot\b/i.test(question);
@@ -254,19 +321,40 @@ async function say(ctx: StageContext, role: string, text: string): Promise<void>
   ]);
 }
 
+/**
+ * Which curated kit a spec came from (its workloads are all that kit's), loaded from `kitsDir`;
+ * null when it matches neither. The analyst picks the disclosure by it.
+ */
+export async function curatedKitOfSpec(
+  spec: KitSpec,
+  kitsDir?: string,
+): Promise<CuratedKitId | null> {
+  const dir = defaultKitsDir(kitsDir);
+  const ids = spec.workloads.map((w) => w.id);
+  for (const id of CURATED_KIT_IDS) {
+    try {
+      const own = new Set((await loadKit(path.join(dir, id))).spec.workloads.map((w) => w.id));
+      if (ids.length > 0 && ids.every((w) => own.has(w))) return id;
+    } catch (err) {
+      if (!(err instanceof KitLoadError)) throw err;
+    }
+  }
+  return null;
+}
+
 export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePort {
   const kitsDir = defaultKitsDir(opts.kitsDir);
   /** The curated kit, or why it does not validate (the run then holds for a human). */
-  const tandemKit = async (): Promise<
-    { ok: true; kit: LoadedKit } | { ok: false; reason: string }
-  > => {
+  const tandemKit = async (
+    id: CuratedKitId,
+  ): Promise<{ ok: true; kit: LoadedKit } | { ok: false; reason: string }> => {
     try {
-      return { ok: true, kit: await loadKit(path.join(kitsDir, CURATED_TANDEM_KIT)) };
+      return { ok: true, kit: await loadKit(path.join(kitsDir, id)) };
     } catch (err) {
       if (!(err instanceof KitLoadError)) throw err;
       return {
         ok: false,
-        reason: `the curated Tandem kit does not validate: ${err.message}`.slice(0, 1900),
+        reason: `the curated Tandem kit does not validate (${id}): ${err.message}`.slice(0, 1900),
       };
     }
   };
@@ -274,10 +362,11 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
   return {
     async understand(ctx, { digest }) {
       if (isTandemRepo(ctx.run.intake.source)) {
-        const loaded = await tandemKit();
+        const id = curatedKitFor(ctx.run.question);
+        const loaded = await tandemKit(id);
         if (!loaded.ok) return stageHold(loaded.reason);
         const kit = loaded.kit;
-        await say(ctx, "understander", "using the curated Tandem kit");
+        await say(ctx, "understander", `using the curated Tandem kit (${id})`);
         const u: Understanding = {
           kind: kit.spec.subject.kind,
           summary: kit.spec.subject.summary,
@@ -320,9 +409,12 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       }
       if (previous) {
         const failed = previous.proof.filter((p) => !p.pass).map((p) => p.check);
-        return stageHold(`the curated Tandem kit failed its proof (${failed.join(", ")})`);
+        return stageHold(
+          `the curated Tandem kit (${curatedKitFor(ctx.run.question)}) failed its proof (${failed.join(", ")})`,
+        );
       }
-      const loaded = await tandemKit();
+      const id = curatedKitFor(ctx.run.question);
+      const loaded = await tandemKit(id);
       if (!loaded.ok) {
         await say(ctx, "kit_designer", loaded.reason);
         return stageHold(loaded.reason);
@@ -330,7 +422,34 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       const kit = loaded.kit;
       // The kit's files on disk (contract C1): kits.files_url = file://<dir> for env_build/proof.
       const files_dir = kit.dir;
-      await say(ctx, "kit_designer", `using the curated Tandem kit (${CURATED_TANDEM_KIT})`);
+      if (id === CURATED_LONG_HORIZON_KIT) {
+        await say(
+          ctx,
+          "kit_designer",
+          `using the curated Tandem kit (${id}): the Tandem repo's default, a whole-app build (${curatedDisclosure(id)}); name "${CURATED_TANDEM_KIT}" in the question for the three short tasks`,
+        );
+        if (wantsSmoke(ctx.run.question)) {
+          const smoke = longHorizonSmokeProfile(kit.spec);
+          if (!smoke.ok) return stageHold(smoke.reason);
+          await say(
+            ctx,
+            "kit_designer",
+            `smoke profile: ${trialCount(smoke.spec)} trials (${LONG_HORIZON_SMOKE_WORKLOAD}, 1 repeat per setup, no warm-up; each up to 3 h); leave out "smoke" for the whole kit`,
+          );
+          return stageOk({ spec: smoke.spec, files_dir });
+        }
+        await say(
+          ctx,
+          "kit_designer",
+          `long-horizon profile: ${trialCount(kit.spec)} trials (${kit.spec.contenders.map((c) => c.name).join(" vs ")}, ${kit.spec.workloads.length} task(s) × ${kit.spec.repeats} repeats, no warm-up); say "smoke" for one trial per setup`,
+        );
+        return stageOk({ spec: kit.spec, files_dir });
+      }
+      await say(
+        ctx,
+        "kit_designer",
+        `using the curated Tandem kit (${id})${wantsShortTaskKit(ctx.run.question) ? "" : ": the null pilot runs on the three short tasks"}; leave out "${CURATED_TANDEM_KIT}" for the default long-horizon kit (${CURATED_LONG_HORIZON_KIT})`,
+      );
       if (wantsNullPilot(ctx.run.question)) {
         const pilot = nullPilotProfile(kit.spec);
         if (!pilot.ok) return stageHold(pilot.reason);
@@ -368,7 +487,13 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
     async analyze(ctx, input) {
       // TODO([6.8] analyst): the Naïve analyst for any kit.
       if (!isTandemRepo(ctx.run.intake.source)) return unbuiltAgentStages.analyze(ctx, input);
-      return summaryAnalyst({ disclosure: TANDEM_DISCLOSURE })(ctx, input);
+      const id = await curatedKitOfSpec(input.kit, kitsDir);
+      // A spec that matches neither kit keeps the older (Naïve-proxy) wording: proof holds an
+      // edited kit before it gets here, so this is a run stored before TDM-233.
+      return summaryAnalyst({ disclosure: curatedDisclosure(id ?? CURATED_TANDEM_KIT) })(
+        ctx,
+        input,
+      );
     },
   };
 }
