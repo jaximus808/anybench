@@ -1,0 +1,620 @@
+{
+  "workload": "project-tracker",
+  "source": "written for this kit from workloads/project-tracker/instruction.md only (TDM-209 [18.2]); areas are the ids of workloads/project-tracker/areas.json",
+  "areas": [
+    "auth",
+    "teams",
+    "projects",
+    "boards",
+    "cards",
+    "comments",
+    "search",
+    "webhooks",
+    "ratelimit",
+    "persistence",
+    "migration",
+    "audit"
+  ],
+  "tests": [
+    {
+      "file": "auth.test.ts",
+      "name": "register returns the user with a trimmed, lowercased email and never a password or hash",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "register rejects invalid emails, passwords, names, handles and bodies",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "register accepts boundary values: password 8 and 200 chars, name 100 chars, handle 3 and 20 chars",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "email_taken is case-insensitive and is checked before handle_taken",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "login returns a fresh token of at least 20 chars with expiresAt = now + tokenTtlMs",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "login answers 401 invalid_credentials for a wrong password or unknown email, 400 for non-string fields",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "authenticated routes answer 401 unauthorized for a missing, malformed or unknown token",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "a token expires when now() >= issuedAt + tokenTtlMs",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "logout answers 204 with no body and revokes only the calling token",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "POST /me/password validates both fields first, then wrong_password; success revokes every token",
+      "area": "auth"
+    },
+    {
+      "file": "auth.test.ts",
+      "name": "PATCH /me updates name and handle; another user's handle is 409 handle_taken, one's own is fine",
+      "area": "auth"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "POST /teams makes the caller owner; GET /teams lists only the caller's teams, in team creation order, with myRole",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "non-members get 404 not_found, never 403, on every team route",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "role checks: member and viewer get 403 on admin+ routes, admin gets 403 on owner-only routes",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "GET members lists the member shape, oldest joinedAt first",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "adding a member: bad email or role is 400, unknown email 404 user_not_found, an existing member 409 already_member",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "PATCH a member's role: admin, member or viewer only; a userId that is not a member is 404",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "changing the owner's role or removing the owner is 409 owner_required, even by the owner",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "members may remove themselves; removing someone else needs admin+; admins remove other admins",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "removing a member unassigns their cards across the team, archived projects included, without touching updatedAt",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "transfer makes the target owner and the caller admin, and answers the team as the caller now sees it",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "transfer to a non-member, an unknown id, oneself or without userId is 400 invalid_body",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "an admin can promote, demote and remove; the outsider is never affected",
+      "area": "teams"
+    },
+    {
+      "file": "teams.test.ts",
+      "name": "deleting a team removes it and everything in it for every member",
+      "area": "teams"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "POST project answers the project shape with archived false and description defaulting to empty",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "a key must match ^[A-Z][A-Z0-9]{1,5}$ exactly",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "keys are unique within a team, archived projects included; another team may reuse a key",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "PATCH updates name, description and archived and moves updatedAt; a key in the body is 400",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "GET projects filters by ?archived=false|true|all (default false), oldest first; other values are 400 invalid_query",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "an archived project answers 409 project_archived on board, column and card writes; reads still work",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "an archived project rejects comment writes; renaming and unarchiving it still work and restore writes",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "project_archived is checked after visibility, role and validation (steps 5-8)",
+      "area": "projects"
+    },
+    {
+      "file": "projects.test.ts",
+      "name": "DELETE project removes its boards, cards and comments; members cannot delete",
+      "area": "projects"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "a new board gets the default columns To do, In progress, Done at positions 0..2",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "columns given on create keep array order; 0 or 21 columns or a bad name is 400 invalid_body",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "boards list oldest first; PATCH renames a board",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "adding a column at a position shifts the later columns right; default is the end",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "PATCH a column's position moves it and keeps the others' relative order",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "wipLimit is null or an integer from 1 to 1000; it may be lowered below the current card count",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "DELETE column: the last column is 409 last_column; a column with cards is 409 column_not_empty; an empty one goes",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "DELETE column ?moveTo appends its cards to the end of the target, in order, ignoring the WIP limit",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "an invalid ?moveTo is 400 invalid_query, even for an empty column or a board's last column",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "members and viewers get 403 on board and column writes; viewers can read",
+      "area": "boards"
+    },
+    {
+      "file": "boards.test.ts",
+      "name": "DELETE board removes its columns and cards",
+      "area": "boards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "a card has the documented shape, key <project key>-<number> and createdBy",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "card numbers count per project across its boards and are never reused after a delete",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "labels are trimmed, lowercased, de-duplicated and sorted; more than 10 distinct is 400",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "title, description and dueDate validation, including impossible calendar dates",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "assigneeId must be an owner, admin or member: viewer, outsider and unknown ids are 400 invalid_assignee",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "creating at a position shifts later cards down; deleting closes the gap; neighbours keep updatedAt",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "moving a card to another column puts it at the requested index and closes the gap behind it",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "moving within a column reorders it; the other cards keep their relative order",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "moving to a column of another board, an unknown column or without columnId is 400 invalid_body",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "creating in or moving into a full column is 409 wip_limit_reached; reordering inside it is allowed",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "GET board cards orders by column position then card position; ?columnId filters; a foreign column is 400",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "PATCH changes only the given fields and updatedAt; a body without an updatable field is 400",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "viewers get 403 on every card write; members create, update, move and delete",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "the card create error order: 404 unseen column, 403 role, 400 body, 400 invalid_assignee, then 409",
+      "area": "cards"
+    },
+    {
+      "file": "cards.test.ts",
+      "name": "deleting a card deletes its comments",
+      "area": "cards"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "comments come back as trees: top-level oldest first, direct replies oldest first, to any depth",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "parentId must be a comment on the same card; body is trimmed and 1 to 5000 chars; viewers cannot comment",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "mentions follow the regex and membership rules, in order of first appearance, without duplicates",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "mentions are recomputed on PATCH; a handle change only affects mentions written after it",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "PATCH is for the author only (403 even for the owner); an author demoted to viewer can still edit and delete",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "DELETE is for the author or admin+; another member gets 403",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "delete is soft: the comment stays in its thread with its replies; PATCH, DELETE and replies then answer 409 comment_deleted",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "GET /me/mentions lists the caller's live mentions newest first, across teams",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "GET /me/mentions pages with limit and cursor (default 20); a bad limit or cursor is 400 invalid_query",
+      "area": "comments"
+    },
+    {
+      "file": "comments.test.ts",
+      "name": "a handle counts only while its user is a current member of the card's team, in any role",
+      "area": "comments"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "q matches term prefixes in titles, descriptions and non-deleted comments; every term must match",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "score is the sum over terms of 3*t + d + c, highest first, ties by creation order",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "without q, and between equal scores, results come in card creation order",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "tokenizing lowercases and splits on every non-alphanumeric character; a q with no terms is no condition",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "projectId, boardId and columnId narrow the results; ids from elsewhere simply match nothing",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "assigneeId filters by assignee, and assigneeId=none means unassigned",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "label may repeat; values are trimmed and lowercased and the card must have every label",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "dueFrom and dueTo are inclusive and exclude cards without a dueDate; bad dates are 400 invalid_query",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "cards of archived projects are searched only with includeArchived=true",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "cursor pagination visits every match exactly once, in order, with total on every page",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "invalid queries answer 400 invalid_query: limit, cursor, q length and term count",
+      "area": "search"
+    },
+    {
+      "file": "search.test.ts",
+      "name": "search never returns another team's cards; viewers may search, non-members get 404",
+      "area": "search"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "create returns the secret; no other route does; a generated secret has at least 32 chars",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "url and events are validated; events are de-duplicated and sorted, and any list with * is stored as [*]",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "PATCH and rotate-secret move updatedAt; rotate returns a new secret; DELETE removes the webhook",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "a delivery POSTs the documented body and headers, signed with HMAC-SHA256 of the exact body",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "every documented event fires exactly once with its data, and cascades emit nothing",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "the events filter is respected; inactive webhooks get nothing but test pings",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "a failed attempt is retried after retryDelaysMs with the same body bytes and an incremented attempt header",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "exhausted retries mark the delivery failed after 1 + retryDelaysMs.length attempts",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "a timeout or a connection error fails the attempt with lastStatusCode null and a non-empty lastError",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "after rotate-secret, deliveries are signed with the new secret",
+      "area": "webhooks"
+    },
+    {
+      "file": "webhooks.test.ts",
+      "name": "deliveries are listed newest first with cursor pages; members and viewers get 403 on every webhook route",
+      "area": "webhooks"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "GET /health answers { ok: true } without auth and carries no rate-limit headers",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "counted requests carry x-ratelimit-limit, -remaining and -reset for the fixed window",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "the spec example: limit 2, windowMs 60000, clock at 1000000",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "a 429 has no other effect and is not counted",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "budgets are per token: two tokens of the same user count separately",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "public routes, unknown routes and 401s carry no rate-limit headers and are not counted",
+      "area": "ratelimit"
+    },
+    {
+      "file": "ratelimit.test.ts",
+      "name": "the rate limit is checked right after authentication, before body, visibility and validation checks",
+      "area": "ratelimit"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "the data file holds version 2 and the new state as soon as a mutating response arrives",
+      "area": "persistence"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "a new app on the same file sees exactly the same state",
+      "area": "persistence"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "after a restart the next card number continues, and revoked or expired tokens stay invalid",
+      "area": "persistence"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "the file never holds a plain-text password, and webhook secrets survive a restart",
+      "area": "persistence"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "a missing file is an empty state, and the file is created on the first write",
+      "area": "persistence"
+    },
+    {
+      "file": "persistence.test.ts",
+      "name": "createApp throws synchronously on invalid JSON and on an unsupported version",
+      "area": "persistence"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "a 1.x file is copied byte for byte to <dataFile>.v1.bak and rewritten as version 2 before createApp returns",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "migrated users keep their ids and 1.x passwords; emails are trimmed and lowercased",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "handles are derived from emails in file order, with collisions (_2) and padding of short handles",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "teams, roles (manager/editor/reader) and members are migrated, owner first; the audit log starts empty",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "boards get their columns and WIP limits; cards land in their column, or the first one, ordered by `order`",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "card fields: labels from tags, dueDate from UTC timestamps, description from notes, assignee only for owner/admin/member",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "card numbers follow createdAt per project, ties in file order; the next number continues and new cards sort last",
+      "area": "migration"
+    },
+    {
+      "file": "migration.test.ts",
+      "name": "comments keep parentId only for a parent on the same card, and mentions are recomputed with the migrated handles",
+      "area": "migration"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "team, member and project writes each append one entry with the documented action, target and details",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "board, column, card and comment writes append their entries",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "webhook writes append entries; test pings, reads and failed writes add nothing",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "failed requests, reads, /me routes and cascades add nothing",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "the log is newest first and pages with limit and cursor; a bad limit or cursor is 400 invalid_query",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "?action= and ?actorId= filter exactly and combine; values that match nothing give an empty list",
+      "area": "audit"
+    },
+    {
+      "file": "audit.test.ts",
+      "name": "admin+ only: members and viewers get 403, non-members 404; the log goes with its team",
+      "area": "audit"
+    }
+  ]
+}

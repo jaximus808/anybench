@@ -1,0 +1,420 @@
+# Kit: on a whole-application build, do Claude Code skill packs and harnesses beat plain Claude Code?
+# The harness and skills league for Anybench (plan.md E21, ticket 21.1, TDM-227). Validated by
+# KitSpecSchema (packages/core) and validateKitDir (packages/kit) in
+# packages/kit/test/tdm227-harness-league-kit.test.ts.
+#
+# The arena is kits/tandem-long-horizon (E18), unchanged: its workloads, hidden-tests gate,
+# requirements, proof, rubric and scripts, and its A (claude-code-solo) and D (tandem) adapters,
+# are byte-identical copies made by scripts/sync-shared.mjs (`--check` fails on any difference;
+# KitSpec cannot reference another kit's files). Everything below `workloads:` is E18's text.
+schema_version: 2
+
+subject:
+  kind: harness
+  name: harness-league
+  summary: >-
+    A league of Claude Code setups on one whole-application build (a multi-user project tracker
+    API) in two sizes: plain Claude Code solo (the baseline), Claude Code with its built-in
+    subagents, two popular skill packs installed the way their READMEs say (gstack and
+    Superpowers), and Tandem with 3 workers. Every setup runs claude-opus-5-5 on Claude Code
+    2.1.319 with our own Anthropic key, at Claude Code's default effort with thinking on, under
+    the same caps; none gets a task-specific prompt.
+  horizon:
+    horizon: long
+    rationale: >-
+      Skill packs and harnesses claim to help most on long work: planning, test-driven loops,
+      review and subagent hand-offs cost turns on every task and can only pay off when the task is
+      big enough that one plain session struggles. The arena is E18's whole-application build
+      across 12 feature areas (33 on project-tracker-xl), under a 3 h cap and graded with partial
+      credit.
+  better_means:
+    - passes more of the hidden tests (partial credit across 12 or 33 feature areas)
+    - more trials pass every hidden test
+    - finishes sooner (wall clock)
+    - costs less per task and per hidden test passed (tokens x price)
+    - the code it leaves is easier to maintain
+
+# Five setups (README "Contenders", docs/findings/harness-league-contenders.md for the evidence):
+#   A claude-code-solo        baseline, byte-identical to E18's A
+#   B claude-code-subagents   Claude Code with built-in subagents (the setup E18 dropped)
+#   G gstack                  garrytan/gstack v1.98.0.0, its README's install (skills + ./setup)
+#   S superpowers             obra/superpowers v7.0.2, its README's install (Claude Code plugin)
+#   D tandem                  byte-identical to E18's D, TANDEM_WORKERS=3
+# The order rotates per round from schedule.order_seed.
+#
+# Comparable setups (plan.md 17.2 rule 4, enforced by validateKitDir): every setup runs the same
+# pinned model, the same pinned Claude Code (versions.CLAUDE_CODE_VERSION, also every install
+# script's default), the same caps, the same token source (AB_TOKEN_SOURCE=anthropic_key) and no
+# assist only one of them gets (approvals are automatic: human_in_loop.policy auto).
+#
+# Tools per setup: A and D disallow Claude Code's subagent tools (Task, Agent) as in E18; B, G and
+# S keep them (B is about them, and both skill packs dispatch subagents in their own docs). Every
+# setup disallows the multi-agent Workflow tool of 2.1.319: no contender's docs use it, and a
+# league setup that could fall back on it would measure Workflow, not the tool under test.
+#
+# Instructions: every Claude Code setup gets the same three task-agnostic lines A has had since
+# E18 (read first, follow the repo's patterns, write and run tests); B adds its subagent roster,
+# G adds the section gstack's README prescribes, S adds nothing (its README prescribes none; its
+# plugin's SessionStart hook loads using-superpowers). No setup gets a task-specific prompt.
+#
+# Skill packs run in a home of their own (adapters/tool-home/driver.sh): one env snapshot serves
+# every setup, so a skill pack installed into the eval user's real ~/.claude would load in every
+# trial. Their install.sh runs the README's install with HOME=~/.anybench/homes/<tool>.
+contenders:
+  - id: claude-code-solo
+    name: "A · Claude Code solo"
+    role: baseline
+    source:
+      upload: [adapters/claude-code-solo/CLAUDE.md]
+    install:
+      script: adapters/claude-code/install.sh
+      healthcheck: adapters/claude-code/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/claude-code/driver.sh
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        CC_SETUP: claude-code-solo
+        CC_MODEL: claude-opus-5-5
+        CC_WALL_CAP_S: "10800"
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+        CC_DISALLOWED_TOOLS: "Task Agent Workflow"
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
+    found_by: "researcher: the plain default (subagents removed)"
+
+  - id: claude-code-subagents
+    name: "B · Claude Code + subagents"
+    role: subject
+    # The implementer, test-writer and reviewer subagents of kits/tandem-vs-claude-code, copied
+    # byte for byte; E18's driver and settings.
+    source:
+      upload:
+        - adapters/claude-code-subagents/CLAUDE.md
+        - adapters/claude-code-subagents/.claude/
+    install:
+      script: adapters/claude-code/install.sh
+      healthcheck: adapters/claude-code/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/claude-code/driver.sh
+      verbs:
+        run: adapters/claude-code/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        CC_SETUP: claude-code-subagents
+        CC_MODEL: claude-opus-5-5
+        CC_WALL_CAP_S: "10800"
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+        CC_DISALLOWED_TOOLS: "Workflow"
+    versions: { CLAUDE_CODE_VERSION: "2.1.319" }
+    found_by: "user: the setup Tandem has to beat (E18's dropped B)"
+
+  - id: gstack
+    name: "G · Claude Code + gstack"
+    role: subject
+    # github.com/garrytan/gstack v1.98.0.0, the latest release on 2026-11-09 (GitHub releases
+    # API; tag v1.98.0.0 -> commit 91009308, pinned in versions.GSTACK_COMMIT). Installed by its
+    # README (adapters/gstack/install.sh): clone into ~/.claude/skills/gstack, ./setup. Like A and
+    # B, the source is the setup's uploaded CLAUDE.md: the shared lines every setup gets, plus the
+    # "gstack" section the README prescribes.
+    source:
+      upload: [adapters/gstack/CLAUDE.md]
+    install:
+      script: adapters/gstack/install.sh
+      healthcheck: adapters/gstack/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/tool-home/driver.sh
+      verbs:
+        run: adapters/tool-home/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        CC_TOOL_HOME: gstack
+        CC_SETUP: gstack
+        CC_MODEL: claude-opus-5-5
+        CC_WALL_CAP_S: "10800"
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+        CC_DISALLOWED_TOOLS: "Workflow"
+    version: gstack@1.98.0.0
+    versions:
+      CLAUDE_CODE_VERSION: "2.1.319"
+      GSTACK_COMMIT: 910093087dec4877f99dfaed6600784942ed7a7b
+      BUN_VERSION: "1.4.2"
+    found_by: "user: the founder's own setup (E21); 140k GitHub stars"
+
+  - id: superpowers
+    name: "S · Claude Code + Superpowers"
+    role: subject
+    # github.com/obra/superpowers v7.0.2, the latest release on 2026-11-09 (GitHub releases API;
+    # tag v7.0.2 -> commit 22f0b463, pinned in versions.SUPERPOWERS_COMMIT). Installed as a Claude
+    # Code plugin by its README (adapters/superpowers/install.sh). The README prescribes no
+    # CLAUDE.md text, so its CLAUDE.md is only the shared lines every setup gets.
+    source:
+      upload: [adapters/superpowers/CLAUDE.md]
+    install:
+      script: adapters/superpowers/install.sh
+      healthcheck: adapters/superpowers/healthcheck.sh
+    driver:
+      type: coding-agent
+      script: adapters/tool-home/driver.sh
+      verbs:
+        run: adapters/tool-home/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        CC_TOOL_HOME: superpowers
+        CC_SETUP: superpowers
+        CC_MODEL: claude-opus-5-5
+        CC_WALL_CAP_S: "10800"
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+        CC_DISALLOWED_TOOLS: "Workflow"
+    version: superpowers@7.0.2
+    versions:
+      CLAUDE_CODE_VERSION: "2.1.319"
+      SUPERPOWERS_COMMIT: 22f0b463e7a5e579904dd6211a520321035526f7
+      SUPERPOWERS_VERSION: "7.0.2"
+    found_by: "researcher: the most-starred Claude Code skill pack (315k stars), in Anthropic's plugin marketplace"
+
+  - id: tandem
+    name: "D · Tandem ×3"
+    role: subject
+    # Byte-identical to kits/tandem-long-horizon's D: v0.2.0 = mcp-v3.2.0, the same commit.
+    source:
+      github: jaximus808/tandem
+      ref: 05b4a022651f4823dbe00e2748df5862d9c32164
+    install:
+      script: adapters/tandem/install.sh
+      healthcheck: adapters/tandem/healthcheck.sh
+    driver:
+      type: harness
+      script: adapters/tandem/driver.sh
+      verbs:
+        run: adapters/tandem/driver.sh run {task} {workspace}
+      wall_clock_cap_s: 10800
+      model: claude-opus-5-5
+      token_cap_micro_usd: 25000000
+      env:
+        TANDEM_WORKERS: "3"
+        CC_MODEL: claude-opus-5-5
+        AB_TOKEN_SOURCE: anthropic_key
+        ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+        ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+    version: tandem@0.2.0
+    versions: { CLAUDE_CODE_VERSION: "2.1.319", TANDEM_MCP_VERSION: "3.2.0", TANDEM_VERSION: "0.2.0" }
+
+workloads:
+  - id: project-tracker
+    title: Build a whole multi-user project tracker API (12 feature areas)
+    input: workloads/project-tracker/input/
+    instruction: workloads/project-tracker/instruction.md
+    # The instruction IS the contract the 120 hidden tests check (every route, field, status code,
+    # error code and exact response; plan.md 17.2 rule 9: every hidden assertion traces to it).
+    # The skeptic then counts the test names and asserted values it shares with the tests as the
+    # contract, not as leakage, checks that it copies none of the oracle's or the tests' code, and
+    # reports the declaration as a warning (TDM-233).
+    instruction_kind: contract
+    setup: workloads/project-tracker/setup.sh
+    timeout_s: 10800
+    params:
+      shape: whole-app
+      feature_areas: 12
+      hidden_tests: 120
+
+  # The large rung (README "Two rungs", TDM-235 to TDM-238): v1's contract plus 21 areas, about 5x
+  # v1. Same gate, requirements and caps; its own instruction, starting repo, hidden tests and oracle.
+  - id: project-tracker-xl
+    title: Build a whole multi-user project tracker API, large (33 feature areas)
+    input: workloads/project-tracker-xl/input/
+    instruction: workloads/project-tracker-xl/instruction.md
+    # The same declaration as project-tracker: the instruction is the contract the 600 hidden tests
+    # check (TDM-233).
+    instruction_kind: contract
+    setup: workloads/project-tracker-xl/setup.sh
+    timeout_s: 10800
+    params:
+      shape: whole-app
+      feature_areas: 33
+      hidden_tests: 600
+
+# Collectors are omitted on purpose: each driver type gets its defaults (DRIVER_DEFAULT_COLLECTORS),
+# so A gets stream-json and Tandem also gets tandem-board.
+
+gates:
+  - id: hidden-tests
+    kind: hidden-tests
+    check: gates/hidden-tests/check.sh
+    reference: gates/hidden-tests/
+    # The grader's own copy of the 1.x data file each workload ships in input/fixtures/ (byte-
+    # identical by design): the migration tests load this copy, so a contender that edits the
+    # workspace's copy can't change the grade. One `*` segment per workload dir (TDM-233).
+    fixtures: [gates/hidden-tests/*/fixtures/]
+    description: >-
+      Runs the workload's hidden tests (gates/hidden-tests/<workload>/: 120 for project-tracker,
+      600 for project-tracker-xl; never in the workspace) against a copy of the frozen workspace,
+      offline. Passes only when every hidden test passes;
+      also writes hidden_test_fraction, hidden_tests_passed and hidden_tests_total.
+    timeout_s: 1800
+
+requirements:
+  - id: tests-pass
+    type: measured
+    title: Every hidden test passes (120 or 600 tests)
+    metric: gate_pass_rate
+    unit: ratio
+    better: higher
+    target: at least 1.0 (every trial passes every hidden test of its workload)
+    gate_id: hidden-tests
+  - id: tests-fraction
+    type: measured
+    title: Share of the hidden tests passed (partial credit, every trial)
+    metric: hidden_test_fraction
+    unit: ratio
+    better: higher
+    target: higher is better
+    gate_id: hidden-tests
+    aggregate: all_trials
+  - id: wall
+    type: measured
+    title: Wall-clock time to solve (failed trials count at the 3 h cap)
+    metric: wall_s
+    unit: s
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: cost
+    type: measured
+    title: Cost per solved task (tokens × price)
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+  - id: cost-per-test
+    type: measured
+    title: Cost per hidden test passed (tokens × price)
+    metric: cost_micro_usd
+    unit: micro-USD
+    better: lower
+    target: lower is better
+    gate_id: hidden-tests
+    aggregate: per_test_passed
+  - id: quality
+    type: reviewed
+    title: "Code quality: follows the repo's patterns, handles errors, tests check real behavior, no dead code"
+    rubric: rubric.md
+    criterion: code-quality
+    scale: { min: 1, max: 4 }
+    gate_id: hidden-tests
+
+proof:
+  # The reference solution (proof/oracle/project-tracker/, ticket 18.4) and the overlay drivers are
+  # the same shape as kits/tandem-vs-claude-code's; PROOF.md has the offline run.
+  oracle:
+    id: reference-solution
+    dir: proof/oracle/
+    contender: tandem
+    driver_patch: proof/oracle/driver.sh
+    gates: [hidden-tests]
+    description: Applies proof/oracle/<workload>/ (the reference solution) instead of running the harness.
+  do_less:
+    - id: do-nothing
+      dir: proof/do_less/do-nothing/
+      contender: tandem
+      driver_patch: proof/do_less/do-nothing/driver.sh
+      description: "No-op harness: leaves the starting repo untouched; must fail every hidden test and show 0 claims."
+    # A near miss (TDM-233): the reference solution with feature area 8 (webhooks) cut out. It still
+    # passes most hidden tests (PROOF.md: 106 of 120; on project-tracker-xl, where it cuts the xl
+    # oracle's webhook routes, 515 of 600), so the gate is shown to refuse a whole app with one area
+    # missing.
+    - id: partial-oracle
+      kind: partial-oracle
+      dir: proof/do_less/partial-oracle/
+      contender: tandem
+      driver_patch: proof/do_less/partial-oracle/driver.sh
+      description: "The workload's oracle without the webhooks area; must fail the hidden-tests gate."
+  regression:
+    id: skip-tests
+    dir: proof/regression/skip-tests/
+    contender: claude-code-solo
+    env:
+      CLAUDE_MD_OVERLAY: proof/regression/skip-tests/CLAUDE.md
+    description: A CLAUDE.md that says "skip the tests"; must score lower than setup A.
+
+human_in_loop:
+  kind: tandem
+  # Approvals are automatic. An llm-reviewer would be help only Tandem gets (A has no approval
+  # step), which the comparability rules refuse unless every contender gets it.
+  policy: auto
+
+# Our own Anthropic key: the worker writes the run owner's stored BYOK key (apps/server
+# user_secrets, provider anthropic) to ~/.anybench/env for every trial; the drivers read it from
+# there (EVAL_SECRETS) and the runner redacts it from every log and event.
+secrets: [ANTHROPIC_API_KEY]
+
+collect:
+  - stream.jsonl
+  - versions.json
+  - claude.stderr.log
+  - tandem/**
+
+transfer:
+  max_mb: 300
+
+scoring:
+  # The preregistered headline (plan.md 17.2 rules 3 and 6): the founder's prediction is about the
+  # share of hidden tests passed on this whole-app build (README "Pre-registered prediction").
+  primary: tests-fraction
+  weights:
+    tests-fraction: 40
+    tests-pass: 20
+    wall: 10
+    cost: 5
+    cost-per-test: 5
+    quality: 20
+
+# Measured trials per setup. TDM-213 sizes the first run at 5 to 8 per setup from the power plan
+# and the $150 token budget; 5 is the floor it starts from.
+repeats: 5
+
+schedule:
+  # A warm-up would be a whole 3 h trial at up to $25: none. Rotates the setup order per round.
+  warmups: 0
+  order_seed: 212
+
+env:
+  profile: agent-cc
+  resources: { vcpu: 4, memory_gb: 8, disk_gb: 20 }
+  os_packages: [git]
+  toolchains:
+    - { name: node, version: "22" }
+  network:
+    # The agents need the Anthropic API and npm / GitHub (snapshot build only). Gates run offline.
+    allow: [api.anthropic.com, registry.npmjs.org, github.com, "*.githubusercontent.com"]
+  region: us-east
