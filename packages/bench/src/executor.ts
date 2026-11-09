@@ -1344,7 +1344,7 @@ class TrialExecution {
     for (const f of prepared.files ?? []) {
       await provider.putFile(pid, f.path, f.content, f.mode === undefined ? {} : { mode: f.mode });
     }
-    await provider.putFile(pid, p.trialJson, `${JSON.stringify(job, null, 2)}\n`, { mode: 0o600 });
+    await provider.putFile(pid, p.trialJson, trialJobJson(job), { mode: 0o600 });
     this.checkStop();
     const bin = this.deps.runnerBin?.(p.home) ?? `${p.home}/.anybench/bin/runner`;
     await provider.execDetached(pid, `${shellQuote(bin)} --trial ${shellQuote(job.trial_id)}`, {
@@ -2129,4 +2129,14 @@ export class MemoryTrialExecStore implements TrialExecStore {
       )
       .map((t) => ({ id: t.id, attempt: t.attempt, state: t.state }));
   }
+}
+
+/**
+ * trial.json as the runner reads it. Money in the job (the BYOK token cap, token prices) is
+ * bigint micro-USD, which JSON.stringify refuses ("Do not know how to serialize a BigInt"); the
+ * runner's TrialJobSchema takes micro-USD as base-10 integer strings, so bigints go out as those.
+ * Found by league run 01a1c1e7 (every BYOK trial failed at install on the live path).
+ */
+export function trialJobJson(job: unknown): string {
+  return `${JSON.stringify(job, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`;
 }
