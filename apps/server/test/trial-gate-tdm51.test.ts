@@ -4,6 +4,7 @@
 // fail-closed verdicts recorded as failure_class "gate", idempotency, stale attempts and
 // subject snapshots refused for scoring.
 import { readFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { newId, TrialIdSchema } from "@anybench/core";
 import { GateInfraError, runGates, SCORE_ROOT, type TrialGateRecord } from "@anybench/bench";
 import { ArtifactTransferError, createComputerRegistry } from "@anybench/envs";
@@ -35,6 +36,31 @@ import { drizzleComputerStore } from "../src/lib/computer-store.js";
 import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./helpers/pg-tdm11.js";
 
 const available = await pgAvailableTdm11();
+
+/** A minimal ustar .tar.gz of these files (the runner's out.tar.gz shape). */
+function tarGzTdm245(files: Record<string, string>): Uint8Array {
+  const blocks: Buffer[] = [];
+  for (const [name, text] of Object.entries(files)) {
+    const data = Buffer.from(text, "utf8");
+    const header = Buffer.alloc(512);
+    header.write(name, 0, "utf8");
+    header.write("0000644\0", 100);
+    header.write("0000000\0", 108);
+    header.write("0000000\0", 116);
+    header.write(data.length.toString(8).padStart(11, "0") + "\0", 124);
+    header.write("00000000000\0", 136);
+    header.write("        ", 148);
+    header.write("0", 156);
+    header.write("ustar\0", 257);
+    header.write("00", 263);
+    let sum = 0;
+    for (const b of header) sum += b;
+    header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+    blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return new Uint8Array(gzipSync(Buffer.concat(blocks)));
+}
 const enc = new TextEncoder();
 const SHA = "b".repeat(64);
 
@@ -319,6 +345,92 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     expect(report2).toMatchObject({ outcome: "scored", to: "done" });
     const [row] = await h.db.select().from(trials).where(eq(trials.id, t2.id));
     expect(row!.state).toBe("done");
+  });
+
+  it("TDM-245: the headless policy's counts from the bundle's stream.jsonl go into trials.metrics with the verdict, read once", async () => {
+    const policyStream = [
+      { type: "system", subtype: "anybench_headless_policy", policy: "headless-v1" },
+      { type: "system", subtype: "init", session_id: "s1", model: "claude-opus-5-5" },
+      { type: "result", subtype: "success", session_id: "s1", num_turns: 3, total_cost_usd: 0.5 },
+      { type: "system", subtype: "anybench_auto_answer", reply: "Yes, approved." },
+      { type: "result", subtype: "success", session_id: "s1", num_turns: 5, total_cost_usd: 0.9 },
+      { type: "system", subtype: "anybench_auto_answer", reply: "Yes, approved." },
+      { type: "result", subtype: "success", session_id: "s1", num_turns: 6, total_cost_usd: 1.1 },
+    ]
+      .map((l) => JSON.stringify(l))
+      .join("\n");
+    const s = await seedTdm51(h.db, false);
+    // A stored value from an earlier scoring is replaced, the rest of the metrics kept.
+    const t = await trialTdm51(h.db, s, "gating", {
+      metrics: { questions_auto_answered: 9, some_gate_metric: 1 },
+    });
+    let reads = 0;
+    const traced: number[] = [];
+    const bundle = tarGzTdm245({ "stream.jsonl": policyStream, "versions.json": "{}" });
+    const report = await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: {
+            bundle: async () => {
+              reads++;
+              return bundle;
+            },
+          },
+          traces: {
+            get: async () => null,
+            put: async (_r, _t, trace) => void traced.push(trace.actors.length),
+          },
+        },
+      }),
+      { trial_id: t.id, attempt: 1 },
+    );
+    expect(report).toMatchObject({ outcome: "scored", to: "done" });
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
+    expect(row!.metrics).toMatchObject({
+      questions_auto_answered: 2,
+      auto_answer_cap_reached: 0,
+      some_gate_metric: 1,
+    });
+    // The trace reuses the bytes the metrics read: one download per trial.
+    expect(reads).toBe(1);
+    expect(traced).toHaveLength(1);
+
+    // A transcript without the policy (Tandem's, any other kit's): the counts are cleared, not kept.
+    const plain = tarGzTdm245({
+      "stream.jsonl": JSON.stringify({ type: "result", subtype: "success", num_turns: 1 }),
+    });
+    const t2 = await trialTdm51(h.db, s, "gating", { metrics: { questions_auto_answered: 4 } });
+    await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: { bundle: async () => plain },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t2.id, attempt: 1 },
+    );
+    const [row2] = await h.db.select().from(trials).where(eq(trials.id, t2.id));
+    expect(row2!.metrics).not.toHaveProperty("questions_auto_answered");
+    expect(row2!.metrics).not.toHaveProperty("auto_answer_cap_reached");
+
+    // The bundle could not be read: the stored counts stay and the trial is scored the same way.
+    const t3 = await trialTdm51(h.db, s, "gating", { metrics: { questions_auto_answered: 3 } });
+    const report3 = await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: {
+            bundle: async () => {
+              throw new Error("store down");
+            },
+          },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t3.id, attempt: 1 },
+    );
+    expect(report3).toMatchObject({ outcome: "scored", to: "done" });
+    const [row3] = await h.db.select().from(trials).where(eq(trials.id, t3.id));
+    expect(row3!.metrics).toMatchObject({ questions_auto_answered: 3 });
   });
 
   it("a check that broke on the outputs is the contender's counted FAIL plus trial.kit_suspect, never a re-roll", async () => {

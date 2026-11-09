@@ -168,6 +168,7 @@ describe.skipIf(!available)("run budget (TDM-242, local Postgres)", () => {
       compute: CAP_BILLED,
       managedTokens: 0n,
       total: CAP_BILLED,
+      byokTokens: 0n,
     });
     expect(trialCap(spec, c, w, "free_run", PRICING).total).toBe(CAP_AT_COST);
   });
@@ -216,7 +217,7 @@ describe.skipIf(!available)("run budget (TDM-242, local Postgres)", () => {
     expect(b0.committed).toBe(CAP_BILLED - 82_800n);
     expect(b0.byokTokens).toBe(250_000n);
     expect(b0.inFlight).toEqual([d]);
-    expect(b0.queued).toEqual([{ id: e, cap: CAP_BILLED }]);
+    expect(b0.queued).toEqual([{ id: e, cap: CAP_BILLED, byokCap: 0n }]);
 
     // Stored on the run, with a run.budget event whose cost delta is the change in spent.
     expect(await storeRunBudget(h.db, b0, actor)).toBe(true);

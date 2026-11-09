@@ -147,6 +147,7 @@ export function toRun(row: RunRow): Run {
     budget_basis: row.budgetBasis,
     budget_limit_micro_usd: row.budgetLimitMicroUsd ?? row.budgetMicroUsd,
     byok_token_micro_usd: row.byokTokenMicroUsd,
+    byok_token_limit_micro_usd: row.byokTokenLimitMicroUsd ?? null,
     estimate_micro_usd: row.estimateMicroUsd ?? null,
     kit_id: (row.kitId ?? null) as Run["kit_id"],
     kit_origin: isUploadedKitRun(row.intake) ? "uploaded" : "generated",
@@ -534,6 +535,9 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
             question: body.question,
             state: "intake",
             budgetMicroUsd: body.budget_micro_usd,
+            ...(body.byok_token_limit_micro_usd !== undefined
+              ? { byokTokenLimitMicroUsd: body.byok_token_limit_micro_usd }
+              : {}),
             intake: toJsonValue(intake),
           })
           .returning();
@@ -811,12 +815,18 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
       if (!t.ok) return { ok: false, status: 409, message: t.error.message };
       const raised =
         body.budget_micro_usd !== undefined && body.budget_micro_usd !== row.budgetMicroUsd;
+      const byokRaised =
+        body.byok_token_limit_micro_usd !== undefined &&
+        body.byok_token_limit_micro_usd !== row.byokTokenLimitMicroUsd;
       const [updated] = await tx
         .update(runs)
         .set({
           state: t.to,
           pausedReason: null,
           ...(body.budget_micro_usd !== undefined ? { budgetMicroUsd: body.budget_micro_usd } : {}),
+          ...(body.byok_token_limit_micro_usd !== undefined
+            ? { byokTokenLimitMicroUsd: body.byok_token_limit_micro_usd }
+            : {}),
           // A budget stop ends with the hold (trial-execute cancelState reads it).
           stageOutputs: sql`${runs.stageOutputs} - 'budget_stop'`,
           updatedAt: sql`now()`,
@@ -826,9 +836,16 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
       const { lastSeq } = await appendEvents(tx, params.id, [
         stateChanged(params.id, actor, t.from, t.to, {
           command: "resume",
-          reason: raised
-            ? `resumed with the budget raised to ${body.budget_micro_usd} micro-USD`
-            : "resumed",
+          reason:
+            [
+              raised ? `the budget raised to ${body.budget_micro_usd} micro-USD` : null,
+              byokRaised
+                ? `the BYOK token limit set to ${body.byok_token_limit_micro_usd} micro-USD`
+                : null,
+            ]
+              .filter((x) => x !== null)
+              .map((x, i) => (i === 0 ? `resumed with ${x}` : x))
+              .join(" and ") || "resumed",
         }),
       ]);
       await enqueueAdvance(

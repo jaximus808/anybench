@@ -41,12 +41,29 @@
 //   - Infra failures and our own retries never count (see spent above). Stages after `running`
 //     (scoring, analyzing) are never held: the trials are paid for, the report is ours to finish.
 //
+// TDM-245: the BYOK token limit (runs.byok_token_limit_micro_usd, optional). The budget above never
+// counts tokens on the user's own key, so a run of 25 trials at a $25 cap could spend $625 there.
+// With a limit set, BYOK tokens are held the same way, separately from the budget:
+//   byok spent      every trial's runner-metered token spend on the user's key
+//                   (trials.token_spend_micro_usd, written when its runner ends); a trial that
+//                   finished or is being graded without a reading counts at its BYOK cap.
+//   byok committed  each BYOK trial in flight at its BYOK cap (token_cap_micro_usd, where the
+//                   runner stops it), whatever it has spent so far (the reading comes at the end).
+//   Launch: also needs byok spent + byok committed + this trial's BYOK cap <= the limit. A BYOK
+//   trial with no cap cannot be bounded, so it never launches under a limit.
+//   Hold and hard stop: as for the budget (paused_budget with the reason; byok spent alone past
+//   the limit stops the running trials). Resume can raise the limit (POST /runs/:id/resume).
+//
 // runs.spent_micro_usd / committed_micro_usd / byok_token_micro_usd are written by
 // storeRunBudget (each orchestrator step while the run spends, every admitted launch, and the
 // ledger's actual charges when the run is terminal), with a `run.budget` event whose
 // cost_delta_micro_usd is the change in spent, so the live page's counter follows it.
 import { trialJobFromKit } from "@anybench/bench";
-import { DEFAULT_MANAGED_TOKEN_MARKUP_BPS, servedTrials } from "@anybench/billing";
+import {
+  BYOK_TOKEN_SOURCES,
+  DEFAULT_MANAGED_TOKEN_MARKUP_BPS,
+  servedTrials,
+} from "@anybench/billing";
 import {
   isAgentDriver,
   RunIdSchema,
@@ -124,7 +141,25 @@ export interface TrialCap {
   compute: bigint;
   /** Its managed-token cap (Naïve proxy, we pay), in the run's basis; 0 for BYOK or no model. */
   managedTokens: bigint;
+  /** compute + managedTokens: what the budget holds it to. */
   total: bigint;
+  /**
+   * TDM-245: its cap on the user's own key (token_cap_micro_usd of a BYOK contender); 0 when it
+   * does not use the user's key; null when it does with no cap (unbounded).
+   */
+  byokTokens: bigint | null;
+}
+
+/** TDM-245: the run's BYOK token limit and what counts against it (all null-free when no limit). */
+export interface ByokBudget {
+  /** runs.byok_token_limit_micro_usd; null = no limit (BYOK tokens never hold the run). */
+  limit: bigint | null;
+  /** Measured spend, plus finished / grading BYOK trials without a reading at their cap. */
+  spent: bigint;
+  /** BYOK trials in flight, each at its BYOK cap. */
+  committed: bigint;
+  /** A BYOK trial without a cap is in flight: nothing more may launch under a limit. */
+  unbounded: boolean;
 }
 
 export interface RunBudget {
@@ -135,12 +170,14 @@ export interface RunBudget {
   limit: bigint;
   spent: { runFee: bigint; compute: bigint; managedTokens: bigint; total: bigint };
   committed: bigint;
-  /** Model tokens on the user's own key (not billed, never limits the run). */
+  /** Model tokens on the user's own key, measured (not billed; reported). */
   byokTokens: bigint;
+  /** TDM-245: the BYOK token limit and what counts against it. */
+  byok: ByokBudget;
   /** Trials launched and not finished (forking … collecting). */
   inFlight: string[];
   /** Queued trials (never launched, or waiting to relaunch), oldest first, with their caps. */
-  queued: { id: string; cap: bigint }[];
+  queued: { id: string; cap: bigint; byokCap: bigint | null }[];
   /** What runs.* says now (to write only what changed). */
   stored: {
     spent: bigint;
@@ -156,6 +193,26 @@ export interface RunBudget {
 /** spent + committed + `extra` stays within the limit. */
 export function fitsBudget(b: RunBudget, extra: bigint): boolean {
   return b.spent.total + b.committed + extra <= b.limit;
+}
+
+/**
+ * TDM-245: BYOK spent + committed + a trial's BYOK cap stays within the BYOK limit (always true
+ * with no limit, or for a trial that does not use the user's key).
+ */
+export function fitsByok(b: RunBudget, byokCap: bigint | null): boolean {
+  if (b.byok.limit === null || byokCap === 0n) return true;
+  if (byokCap === null || b.byok.unbounded) return false;
+  return b.byok.spent + b.byok.committed + byokCap <= b.byok.limit;
+}
+
+/** Why the next trial (at `cap`) cannot launch now, or null when it may: the budget, then BYOK. */
+export function launchRefusal(
+  b: RunBudget,
+  cap: Pick<TrialCap, "total" | "byokTokens">,
+): string | null {
+  if (!fitsBudget(b, cap.total)) return launchHeldReason(b, cap.total);
+  if (!fitsByok(b, cap.byokTokens)) return byokHeldReason(b, cap.byokTokens);
+  return null;
 }
 
 /** $1.23 (micro-USD to the nearest cent, half up; no float). */
@@ -222,6 +279,7 @@ export function trialCap(
   const blockSeconds = pricing.blockSeconds ?? BUDGET_BLOCK_SECONDS;
   let wall = 3600;
   let managed = 0n;
+  let byok: bigint | null = 0n;
   let price = pricing.blockPriceMicroUsd;
   if (spec) {
     if (spec.env) {
@@ -232,6 +290,13 @@ export function trialCap(
       const job = trialJobFromKit(spec, contenderId, workloadId);
       wall = job.wall_clock_s;
       const contender = spec.contenders.find((c) => c.id === contenderId);
+      const source = job.env?.AB_TOKEN_SOURCE;
+      if (contender && isAgentDriver(contender.driver) && source !== undefined) {
+        // TDM-245: a contender on the user's own key: its cap there (the runner stops it).
+        if (BYOK_TOKEN_SOURCES[String(source)]) {
+          byok = contender.driver.token_cap_micro_usd ?? null;
+        }
+      }
       if (
         contender &&
         isAgentDriver(contender.driver) &&
@@ -255,7 +320,7 @@ export function trialCap(
     basis,
     pricing,
   );
-  return { compute, managedTokens: managed, total: compute + managed };
+  return { compute, managedTokens: managed, total: compute + managed, byokTokens: byok };
 }
 
 type DbLike = Database | DbTx;
@@ -281,6 +346,7 @@ export async function readRunBudget(
       id: runs.id,
       state: runs.state,
       budget: runs.budgetMicroUsd,
+      byokLimit: runs.byokTokenLimitMicroUsd,
       kitId: runs.kitId,
       intake: runs.intake,
       spent: runs.spentMicroUsd,
@@ -389,14 +455,42 @@ export async function readRunBudget(
   let managed = 0n;
   let committed = 0n;
   let byok = 0n;
+  const byokBudget: ByokBudget = {
+    limit: run.byokLimit ?? null,
+    spent: 0n,
+    committed: 0n,
+    unbounded: false,
+  };
   const inFlight: string[] = [];
-  const queued: { id: string; cap: bigint }[] = [];
+  const queued: { id: string; cap: bigint; byokCap: bigint | null }[] = [];
   for (const t of rows) {
     if (t.proxyKeyId === null && t.tokenSpend !== null) byok += t.tokenSpend;
+    // TDM-245: the BYOK limit's view of this trial (only trials of a contender on the user's key).
+    const byokCap =
+      t.state === "queued" || IN_FLIGHT.includes(t.state) || t.tokenSpend === null
+        ? capOf(t.id).byokTokens
+        : 0n;
+    if (t.proxyKeyId === null && t.tokenSpend !== null) {
+      byokBudget.spent += t.tokenSpend;
+    } else if (
+      t.tokenSpend === null &&
+      (GRADING.includes(t.state) || FINISHED_BILLED.includes(t.state)) &&
+      byokCap !== 0n
+    ) {
+      // Finished on the user's key with no reading: count it at its cap (never loosen the limit).
+      if (byokCap === null) byokBudget.unbounded = true;
+      else byokBudget.spent += byokCap;
+    }
+    // A collecting trial's runner has ended and its reading is in: measured, no longer committed.
+    const read = t.state === "collecting" && t.tokenSpend !== null;
+    if (IN_FLIGHT.includes(t.state) && byokCap !== 0n && !read) {
+      if (byokCap === null) byokBudget.unbounded = true;
+      else byokBudget.committed += byokCap;
+    }
     const rawProxyCost = micro((t.metrics as Record<string, unknown> | null)?.proxy_cost_micro_usd);
     const proxyCost = rawProxyCost === null ? null : tokenCharge(rawProxyCost, basis, pricing);
     if (t.state === "queued") {
-      queued.push({ id: t.id, cap: capOf(t.id).total });
+      queued.push({ id: t.id, cap: capOf(t.id).total, byokCap });
     } else if (IN_FLIGHT.includes(t.state)) {
       inFlight.push(t.id);
       const cap = capOf(t.id);
@@ -427,6 +521,7 @@ export async function readRunBudget(
     spent: { runFee, compute, managedTokens: managed, total: runFee + compute + managed },
     committed,
     byokTokens: byok,
+    byok: byokBudget,
     inFlight,
     queued,
     stored: {
@@ -474,6 +569,7 @@ export async function terminalRunBudget(
     b.spent = { runFee, compute, managedTokens, total: runFee + compute + managedTokens };
   }
   b.committed = 0n;
+  b.byok.committed = 0n;
   b.inFlight = [];
   return b;
 }
@@ -546,6 +642,22 @@ export function limitWords(b: Pick<RunBudget, "basis" | "limit">): string {
   return b.basis === "free_run"
     ? `the free run's ${usd(b.limit)} compute cap`
     : `the ${usd(b.limit)} budget`;
+}
+
+/** TDM-245: why a trial on the user's key cannot launch under the BYOK token limit. */
+export function byokHeldReason(b: RunBudget, byokCap: bigint | null): string {
+  const limit = usd(b.byok.limit ?? 0n);
+  if (byokCap === null) {
+    return `the next trial runs on your own model key with no token cap, so it cannot be held to the ${limit} BYOK token limit`;
+  }
+  if (b.byok.unbounded) {
+    return `a running trial on your own model key has no token cap, so nothing more fits the ${limit} BYOK token limit until it ends`;
+  }
+  return (
+    `BYOK tokens spent ${usd(b.byok.spent)} + ${usd(b.byok.committed)} committed to running ` +
+    `trials at their caps + ${usd(byokCap)} for the next trial at its cap would pass the ` +
+    `${limit} BYOK token limit`
+  );
 }
 
 /** Why a trial cannot launch now (the store's `held` message, the hold reason). */

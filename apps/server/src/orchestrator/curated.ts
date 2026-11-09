@@ -41,7 +41,12 @@ import {
   type StageContext,
   type Understanding,
 } from "./ports.js";
-import { LONG_HORIZON_DISCLOSURE, summaryAnalyst, TANDEM_DISCLOSURE } from "./proof-score.js";
+import {
+  HARNESS_LEAGUE_DISCLOSURE,
+  LONG_HORIZON_DISCLOSURE,
+  summaryAnalyst,
+  TANDEM_DISCLOSURE,
+} from "./proof-score.js";
 
 /** The three-short-task curated kit (E14/E16). Still selectable; no longer the default. */
 export const CURATED_TANDEM_KIT = "tandem-vs-claude-code";
@@ -49,8 +54,23 @@ export const CURATED_TANDEM_KIT = "tandem-vs-claude-code";
 export const CURATED_LONG_HORIZON_KIT = "tandem-long-horizon";
 /** The curated kit the Tandem repo gets unless the question asks for the other one. */
 export const CURATED_DEFAULT_KIT = CURATED_LONG_HORIZON_KIT;
-export const CURATED_KIT_IDS = [CURATED_LONG_HORIZON_KIT, CURATED_TANDEM_KIT] as const;
+/**
+ * The harness and skills league (E21, TDM-245): E18's whole-app arena with five Claude Code
+ * setups. Only when the question asks for it ("harness league", "skills league").
+ */
+export const CURATED_HARNESS_LEAGUE_KIT = "harness-league";
+/** Kit order matters for curatedKitOfSpec: E18's kit first (the league holds its A and D too). */
+export const CURATED_KIT_IDS = [
+  CURATED_LONG_HORIZON_KIT,
+  CURATED_TANDEM_KIT,
+  CURATED_HARNESS_LEAGUE_KIT,
+] as const;
 export type CuratedKitId = (typeof CURATED_KIT_IDS)[number];
+
+/** The harness league when the question names it (any case). */
+export function wantsHarnessLeague(question: string): boolean {
+  return /\bharness[\s-]+league\b|\bskills?[\s-]+league\b/i.test(question);
+}
 
 /** The short-task kit when the question names it or says "short tasks" (any case). */
 export function wantsShortTaskKit(question: string): boolean {
@@ -62,6 +82,7 @@ export function wantsShortTaskKit(question: string): boolean {
  * the null pilot (the A/A pilot is that kit's profile, E18 18.1); otherwise the long-horizon kit.
  */
 export function curatedKitFor(question: string): CuratedKitId {
+  if (wantsHarnessLeague(question)) return CURATED_HARNESS_LEAGUE_KIT;
   return wantsShortTaskKit(question) || wantsNullPilot(question)
     ? CURATED_TANDEM_KIT
     : CURATED_DEFAULT_KIT;
@@ -69,6 +90,7 @@ export function curatedKitFor(question: string): CuratedKitId {
 
 /** The disclosure the report carries for a curated kit's setups (how tokens were bought). */
 export function curatedDisclosure(id: CuratedKitId): string {
+  if (id === CURATED_HARNESS_LEAGUE_KIT) return HARNESS_LEAGUE_DISCLOSURE;
   return id === CURATED_LONG_HORIZON_KIT ? LONG_HORIZON_DISCLOSURE : TANDEM_DISCLOSURE;
 }
 export const CURATED_KIT_UNAVAILABLE =
@@ -220,6 +242,124 @@ export function longHorizonSmokeProfile(
   return { ok: true, spec: r.data };
 }
 
+/** The harness league's two workloads (E18's rungs). */
+export const LEAGUE_V1_WORKLOAD = "project-tracker";
+export const LEAGUE_XL_WORKLOAD = "project-tracker-xl";
+/** Measured trials per setup the question may ask for ("n=5", "5 repeats"). */
+export const LEAGUE_REPEATS_MIN = 1;
+export const LEAGUE_REPEATS_MAX = 10;
+
+export interface LeagueChoice {
+  /** The workloads the run keeps, in kit order. */
+  workloads: string[];
+  /** Measured trials per setup × workload. */
+  repeats: number;
+  /** Where each came from, for the run page. */
+  workloadsFrom: "default" | "question";
+  repeatsFrom: "kit" | "question" | "smoke";
+}
+
+/**
+ * The harness league's cut, read from the question. Workload: project-tracker (v1, 120 hidden
+ * tests) unless the question names the xl rung ("project-tracker-xl", "xl", "v2"), or asks for
+ * "both workloads" / "both rungs" or names both. Repeats: "n=5", "5 repeats", "repeats: 5"
+ * (LEAGUE_REPEATS_MIN..MAX), "smoke" → 1, otherwise the kit's own (5). The league's
+ * default is v1 only: its whole kit (both rungs × 5 setups × 5) is 50 trials, and on v1 the five
+ * setups fit the founder's token budget (docs/findings/harness-league-run-plan.md).
+ */
+export function leagueChoiceFor(
+  question: string,
+  kitRepeats: number,
+): { ok: true; choice: LeagueChoice } | { ok: false; reason: string } {
+  const xl = /\bproject-tracker-xl\b|\bxl\b|\bv2\b/i.test(question);
+  const v1 = /\bproject-tracker\b(?!-xl)|\bv1\b/i.test(question);
+  const both = /\bboth\s+(?:workloads|rungs|sizes|tasks)\b/i.test(question) || (xl && v1);
+  const workloads = both
+    ? [LEAGUE_V1_WORKLOAD, LEAGUE_XL_WORKLOAD]
+    : xl
+      ? [LEAGUE_XL_WORKLOAD]
+      : [LEAGUE_V1_WORKLOAD];
+  const asked =
+    /\bn\s*=\s*(\d+)\b/i.exec(question) ??
+    /\b(\d+)\s+(?:repeats?|trials?\s+(?:per|each|a)\s+setup|runs?\s+per\s+setup)\b/i.exec(
+      question,
+    ) ??
+    /\brepeats?\s*[=:]?\s*(\d+)\b/i.exec(question);
+  let repeats = kitRepeats;
+  let repeatsFrom: LeagueChoice["repeatsFrom"] = "kit";
+  if (asked) {
+    repeats = Number(asked[1]);
+    repeatsFrom = "question";
+    if (
+      !Number.isSafeInteger(repeats) ||
+      repeats < LEAGUE_REPEATS_MIN ||
+      repeats > LEAGUE_REPEATS_MAX
+    ) {
+      return {
+        ok: false,
+        reason: `the harness league runs ${LEAGUE_REPEATS_MIN} to ${LEAGUE_REPEATS_MAX} trials per setup; the question asks for ${asked[1]}`,
+      };
+    }
+  } else if (wantsSmoke(question)) {
+    repeats = 1;
+    repeatsFrom = "smoke";
+  }
+  return {
+    ok: true,
+    choice: {
+      workloads,
+      repeats,
+      workloadsFrom: xl || v1 || both ? "question" : "default",
+      repeatsFrom,
+    },
+  };
+}
+
+/**
+ * The harness league cut to `choice`: only those workloads, that many repeats, no warm-up. Every
+ * setup, gate, requirement, cap and the proof stay as the kit has them. Re-validated after the cut.
+ */
+export function leagueProfile(
+  spec: KitSpec,
+  choice: Pick<LeagueChoice, "workloads" | "repeats">,
+): { ok: true; spec: KitSpec } | { ok: false; reason: string } {
+  const keep = new Set(choice.workloads);
+  const cut = {
+    ...spec,
+    workloads: spec.workloads.filter((w) => keep.has(w.id)),
+    repeats: choice.repeats,
+    schedule: { ...spec.schedule, warmups: 0 },
+  };
+  if (cut.workloads.length !== keep.size) {
+    const have = new Set(spec.workloads.map((w) => w.id));
+    const missing = choice.workloads.filter((w) => !have.has(w));
+    return { ok: false, reason: `the harness league kit has no ${missing.join(", ")} workload` };
+  }
+  const r = safeParseKitSpec(cut);
+  if (!r.success) {
+    return {
+      ok: false,
+      reason: `the harness league profile does not validate: ${formatSchemaIssues(r.error).slice(0, 5).join("; ")}`,
+    };
+  }
+  return { ok: true, spec: r.data };
+}
+
+/** Every cut of the league the designer can produce (the proof sign-off covers each one). */
+export function leagueCuts(spec: KitSpec): ReturnType<typeof leagueProfile>[] {
+  const out: ReturnType<typeof leagueProfile>[] = [];
+  for (const workloads of [
+    [LEAGUE_V1_WORKLOAD],
+    [LEAGUE_XL_WORKLOAD],
+    [LEAGUE_V1_WORKLOAD, LEAGUE_XL_WORKLOAD],
+  ]) {
+    for (let repeats = LEAGUE_REPEATS_MIN; repeats <= LEAGUE_REPEATS_MAX; repeats++) {
+      out.push(leagueProfile(spec, { workloads, repeats }));
+    }
+  }
+  return out;
+}
+
 /** The A/A null pilot when the question says "null pilot" (any case). */
 export function wantsNullPilot(question: string): boolean {
   return /\bnull[\s-]+pilot\b/i.test(question);
@@ -331,10 +471,16 @@ export async function curatedKitOfSpec(
 ): Promise<CuratedKitId | null> {
   const dir = defaultKitsDir(kitsDir);
   const ids = spec.workloads.map((w) => w.id);
+  // The league shares E18's workloads (and its A and D): its own setups tell them apart.
+  const setups = spec.contenders.map((c) => c.id);
   for (const id of CURATED_KIT_IDS) {
     try {
-      const own = new Set((await loadKit(path.join(dir, id))).spec.workloads.map((w) => w.id));
-      if (ids.length > 0 && ids.every((w) => own.has(w))) return id;
+      const curated = (await loadKit(path.join(dir, id))).spec;
+      const own = new Set(curated.workloads.map((w) => w.id));
+      const ownSetups = new Set(curated.contenders.map((c) => c.id));
+      // The null pilot's twin is a copy of the short-task kit's A, not one of its setups.
+      const setupsMatch = id === CURATED_TANDEM_KIT || setups.every((c) => ownSetups.has(c));
+      if (ids.length > 0 && ids.every((w) => own.has(w)) && setupsMatch) return id;
     } catch (err) {
       if (!(err instanceof KitLoadError)) throw err;
     }
@@ -422,6 +568,27 @@ export function curatedKitStages(opts: { kitsDir?: string } = {}): AgentStagePor
       const kit = loaded.kit;
       // The kit's files on disk (contract C1): kits.files_url = file://<dir> for env_build/proof.
       const files_dir = kit.dir;
+      if (id === CURATED_HARNESS_LEAGUE_KIT) {
+        const picked = leagueChoiceFor(ctx.run.question, kit.spec.repeats);
+        if (!picked.ok) {
+          await say(ctx, "kit_designer", picked.reason);
+          return stageHold(picked.reason);
+        }
+        const league = leagueProfile(kit.spec, picked.choice);
+        if (!league.ok) return stageHold(league.reason);
+        const c = picked.choice;
+        await say(
+          ctx,
+          "kit_designer",
+          `using the curated harness league (${id}): ${league.spec.contenders.map((x) => x.name).join(", ")} on E18's whole-app arena (${curatedDisclosure(id)})`,
+        );
+        await say(
+          ctx,
+          "kit_designer",
+          `league profile: ${trialCount(league.spec)} trials (${league.spec.contenders.length} setups × ${c.workloads.join(" + ")} × ${c.repeats} repeats, no warm-up; each up to 3 h and $25 of tokens); ${c.workloadsFrom === "default" ? `name "${LEAGUE_XL_WORKLOAD}" or "both workloads" for the xl rung` : "workload from the question"}, ${c.repeatsFrom === "question" ? "repeats from the question" : `say "n=<${LEAGUE_REPEATS_MIN}-${LEAGUE_REPEATS_MAX}>" for other repeats`}`,
+        );
+        return stageOk({ spec: league.spec, files_dir });
+      }
       if (id === CURATED_LONG_HORIZON_KIT) {
         await say(
           ctx,

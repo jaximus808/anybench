@@ -93,7 +93,12 @@ import {
   type KitDirOptions,
 } from "../orchestrator/kit-files.js";
 import type { KitFileStore } from "../lib/kit-upload/store.js";
-import { attemptProxySpend, trialMetrics, trialPhaseEdges } from "../orchestrator/trial-metrics.js";
+import {
+  attemptProxySpend,
+  autoAnswerMetricsFromBundle,
+  trialMetrics,
+  trialPhaseEdges,
+} from "../orchestrator/trial-metrics.js";
 import { defineJob, type JobContext } from "./types.js";
 import {
   artifactBundleSource,
@@ -517,6 +522,22 @@ export async function gateTrial(
     );
   }
   const edges = (await trialPhaseEdges(deps.db, trial.runId, [trial.id])).get(trial.id) ?? [];
+  // TDM-245: the headless policy's counts from the bundle's stream.jsonl, in the same update as
+  // the verdict (the report's auto-answer line). The trace below reuses the bytes. Best effort:
+  // an unreadable bundle leaves the counts out and never changes the score.
+  let bundle: Uint8Array | null | undefined;
+  let autoAnswer: Record<string, number> | undefined;
+  if (deps.traces) {
+    try {
+      bundle = await deps.traces.bundles.bundle(trial.runId, trial.id);
+      autoAnswer = bundle ? autoAnswerMetricsFromBundle(bundle) : {};
+    } catch (err) {
+      deps.logger?.warn(
+        { trialId: trial.id, err: err instanceof Error ? err.message : String(err) },
+        "trial.gate: bundle not read for the auto-answer counts (the score stands)",
+      );
+    }
+  }
   const measured = trialMetrics({
     attempt: trial.attempt,
     existing: trial.metrics,
@@ -524,6 +545,7 @@ export async function gateTrial(
     edges,
     gate: scored,
     proxy,
+    ...(autoAnswer ? { autoAnswer } : {}),
   });
   const at = now();
 
@@ -609,6 +631,7 @@ export async function gateTrial(
         runId: trial.runId,
         trialId: trial.id,
         gate: scored,
+        ...(bundle !== undefined ? { bundle } : {}),
       });
       deps.logger?.info(
         { trialId: trial.id, actors: trace?.actors.length ?? 0, traced: trace !== null },

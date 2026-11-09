@@ -13,14 +13,23 @@
 //                      `proxy_cost_missing: 1` is set and the scorer treats cost as missing rather
 //                      than reporting compute alone as the cost.
 //
+//   questions_auto_answered / auto_answer_cap_reached
+//                      TDM-245: the harness league's headless policy (TDM-228), from the bundle's
+//                      stream.jsonl by bench's stream-json collector. Reported, never scored: the
+//                      report's per-setup "questions auto-answered" line (proof-score.ts
+//                      autoAnswerLine). The stream is written on the trial computer, so no
+//                      requirement may rest on it (plan.md 17.2 rule 5); it says how often the
+//                      policy fired, which the policy's own events record.
+//
 // trial.gate writes these with the verdict (one update, so the run never scores a trial without
 // them). trial.execute records them for a failed_subject trial right after it settles (its cost
 // counts in "all spend ÷ solved"; its wall is censored at the cap anyway).
 // scripts/ops/backfill-trial-metrics.ts recomputes them for trials settled before this existed.
-import { trialGateMetrics, TrialGateRecordSchema } from "@anybench/bench";
+import { collectStreamJson, trialGateMetrics, TrialGateRecordSchema } from "@anybench/bench";
 import type { ProxySpendSource, TrialProxySpend } from "@anybench/naive";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database, DbTx } from "../db/client.js";
+import { readTarGz } from "../lib/trial-trace/tar.js";
 import { events } from "../db/schema/events.js";
 import { trials } from "../db/schema/trials.js";
 
@@ -38,6 +47,36 @@ export const OWN_METRIC_KEYS = [
   "proxy_unpriced_calls",
   "proxy_cost_missing",
 ] as const;
+
+/**
+ * TDM-245: the headless policy's counts (bench stream-json collector), kept in `trials.metrics`
+ * when the trial's bundle has them. Recomputed whenever the bundle is read; kept otherwise.
+ */
+export const AUTO_ANSWER_METRIC_KEYS = [
+  "questions_auto_answered",
+  "auto_answer_cap_reached",
+] as const;
+
+/** Where a Claude Code setup's transcript sits in the trial bundle (COLLECTOR_OUTPUT_FILES). */
+const STREAM_FILE = "stream.jsonl";
+
+/**
+ * The headless policy's counts from a trial bundle (out.tar.gz): bench's stream-json collector
+ * over its `stream.jsonl`. Empty when there is no transcript (Tandem's sessions live under
+ * tandem/) or the policy never started (any setup outside the league); the collector writes the
+ * two rows only under the policy, with 0 when it never fired. Throws on an unreadable archive.
+ */
+export function autoAnswerMetricsFromBundle(bundle: Uint8Array): Record<string, number> {
+  const entries = readTarGz(bundle, { want: (name) => name === STREAM_FILE });
+  const stream = entries.find((e) => e.name === STREAM_FILE)?.data;
+  if (!stream) return {};
+  const out: Record<string, number> = {};
+  const keys: readonly string[] = AUTO_ANSWER_METRIC_KEYS;
+  for (const row of collectStreamJson(Buffer.from(stream).toString("utf8"))) {
+    if (keys.includes(row.name) && row.labels === undefined) out[row.name] = Number(row.value);
+  }
+  return out;
+}
 
 /** One trial.phase event, as stored. */
 export interface PhaseEdge {
@@ -65,6 +104,11 @@ export interface TrialMetricsInput {
   proxy: ProxySpendResult;
   /** Extra gate-vouched metrics (the backfill's reading of old records). Gate rows win. */
   gateMetrics?: Record<string, number>;
+  /**
+   * TDM-245: the bundle's headless-policy counts (autoAnswerMetricsFromBundle). Given: they replace
+   * the stored ones (none in the bundle clears them). Omitted (bundle not read): stored ones stay.
+   */
+  autoAnswer?: Record<string, number>;
 }
 
 function numbersOf(raw: unknown): Record<string, number> {
@@ -119,6 +163,14 @@ export function trialMetrics(input: TrialMetricsInput): {
   const fromGates = record.success ? trialGateMetrics(record.data) : {};
   for (const [k, v] of Object.entries({ ...input.gateMetrics, ...fromGates })) {
     if (!(OWN_METRIC_KEYS as readonly string[]).includes(k)) metrics[k] = v;
+  }
+
+  if (input.autoAnswer) {
+    for (const k of AUTO_ANSWER_METRIC_KEYS) {
+      delete metrics[k];
+      const v = input.autoAnswer[k];
+      if (v !== undefined && Number.isFinite(v)) metrics[k] = v;
+    }
   }
 
   // Micro-USD stays integer; jsonb numbers are exact below 2^53.

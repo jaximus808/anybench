@@ -77,8 +77,7 @@ import { byokLookup } from "../lib/byok.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import {
   budgetPricingFromConfig,
-  fitsBudget,
-  launchHeldReason,
+  launchRefusal,
   readRunBudget,
   storeRunBudget,
   type BudgetPricing,
@@ -283,15 +282,15 @@ export function drizzleTrialExecStore(
         const plan = planTransition(toExec(r), owner, req);
         if (!plan.ok) return plan;
         const launching = budget !== null && r.state === "queued" && plan.to === "forking";
-        const cap = launching ? budget!.capOf(r.id).total : 0n;
+        const trialCap = launching ? budget!.capOf(r.id) : null;
+        const cap = trialCap?.total ?? 0n;
         if (launching) {
           const b = budget!;
+          // TDM-245: the BYOK token limit too (launchRefusal: the budget first, then BYOK).
           const why =
             b.state === "paused_budget"
               ? "the run is paused for its budget"
-              : !fitsBudget(b, cap)
-                ? launchHeldReason(b, cap)
-                : null;
+              : launchRefusal(b, trialCap!);
           if (why) return { ok: false, reason: "held", message: why, trial: toExec(r) };
         }
         const [u] = await tx
@@ -307,6 +306,7 @@ export function drizzleTrialExecStore(
         if (launching) {
           // The launched trial's worst case is committed from now on.
           budget!.committed += cap;
+          if (trialCap!.byokTokens !== null) budget!.byok.committed += trialCap!.byokTokens;
           await storeRunBudget(tx, budget!, req.actor);
         }
         return { ok: true, trial: toExec(u!), from: plan.from, to: plan.to };

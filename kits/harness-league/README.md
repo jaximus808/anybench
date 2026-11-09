@@ -139,6 +139,14 @@ Reusing E18's Tandem results (epic E21): D's adapters, pins and settings are byt
 the kit is a different kit (its hash differs), so whether E18 run-1 trials can stand in for D here
 is ticket 21.3's call.
 
+## Running it
+
+On the live app the league is a curated kit of the Tandem repo: a GitHub run on
+`jaximus808/tandem` whose question says "harness league" (or "skills league"). The question also
+picks the workload (`project-tracker` unless it names the xl rung) and the repeats ("n=5"). The
+founder's run (v1, five setups, n = 5, a $150 hard stop on the Anthropic key), its estimate and
+the exact commands: `docs/findings/harness-league-run-plan.md` (TDM-245).
+
 ## Checks
 
 ```sh

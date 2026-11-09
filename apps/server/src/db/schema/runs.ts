@@ -55,6 +55,12 @@ export const runs = pgTable(
     committedMicroUsd: microUsdZero("committed_micro_usd"),
     /** TDM-242: model tokens on the user's own key (BYOK), runner-metered. Not billed by us. */
     byokTokenMicroUsd: microUsdZero("byok_token_micro_usd"),
+    /**
+     * TDM-245: the most the run may spend on the user's own model key (BYOK), or null for no limit.
+     * Held like the budget: a trial launches only when BYOK spent + the BYOK caps of the trials in
+     * flight + its own BYOK cap fit (orchestrator/budget.ts).
+     */
+    byokTokenLimitMicroUsd: microUsd("byok_token_limit_micro_usd"),
     /** TDM-242: `billed` (limit = budget_micro_usd) or `free_run` (limit = the free-run cap). */
     budgetBasis: text("budget_basis", { enum: ["billed", "free_run"] })
       .notNull()

@@ -79,7 +79,8 @@ import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import { kitSpecHash, proofOf } from "../routes/kits.js";
 import { proofAccepted } from "./proof-score.js";
 import {
-  launchHeldReason,
+  fitsBudget,
+  launchRefusal,
   limitWords,
   readRunBudget,
   storeRunBudget,
@@ -1149,8 +1150,15 @@ class RunAdvance {
   private launchable(b: RunBudget): Set<string> {
     const out = new Set<string>();
     let room = b.limit - b.spent.total - b.committed;
+    // TDM-245: the BYOK token limit, when the run has one (each BYOK trial at its cap).
+    const byokLimited = b.byok.limit !== null;
+    let byokRoom = byokLimited ? b.byok.limit! - b.byok.spent - b.byok.committed : 0n;
     for (const q of b.queued) {
       if (q.cap > room) break;
+      if (byokLimited && q.byokCap !== 0n) {
+        if (q.byokCap === null || b.byok.unbounded || q.byokCap > byokRoom) break;
+        byokRoom -= q.byokCap;
+      }
       out.add(q.id);
       room -= q.cap;
     }
@@ -1173,6 +1181,18 @@ class RunAdvance {
       b.basis === "free_run"
         ? `Settle to score the ${finished} finished, or cancel`
         : `Raise the budget to run them, or settle to score the ${finished} finished`;
+    // TDM-245: BYOK tokens past the BYOK limit stop the running trials the same way.
+    const byokOver = b.byok.limit !== null && b.byok.spent > b.byok.limit;
+    if (byokOver && b.inFlight.length > 0) {
+      const what = `BYOK tokens spent ${usd(b.byok.spent)}, past the ${usd(b.byok.limit!)} BYOK token limit`;
+      const reason =
+        `${what}: stopping the ${b.inFlight.length} running trial(s); what they did so far is ` +
+        `graded. ${b.queued.length} trial(s) not started. Raise the BYOK token limit to run ` +
+        `them, or settle to score the ${finished} finished`;
+      return this.hold(run, "pause_budget", reason, {
+        budget_stop: { at: new Date().toISOString(), reason: what },
+      });
+    }
     if (b.spent.total > b.limit && b.inFlight.length > 0) {
       const reason =
         `spent ${usd(b.spent.total)}, past ${limitWords(b)}: stopping the ${b.inFlight.length} ` +
@@ -1187,7 +1207,12 @@ class RunAdvance {
     }
     const next = b.queued[0];
     if (!next || b.inFlight.length > 0 || this.launchable(b).size > 0) return null;
-    const reason = `${launchHeldReason(b, next.cap)}. ${b.queued.length} trial(s) not started. ${options}`;
+    const refusal = launchRefusal(b, { total: next.cap, byokTokens: next.byokCap }) ?? "";
+    const byokHeld = fitsBudget(b, next.cap);
+    const what = byokHeld
+      ? `Raise the BYOK token limit to run them, or settle to score the ${finished} finished`
+      : options;
+    const reason = `${refusal}. ${b.queued.length} trial(s) not started. ${what}`;
     return this.hold(run, "pause_budget", reason);
   }
 

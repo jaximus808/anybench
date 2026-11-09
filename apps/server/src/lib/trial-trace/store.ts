@@ -110,9 +110,18 @@ export interface TraceDeps {
  */
 export async function buildAndStoreTrace(
   deps: TraceDeps,
-  input: { runId: string; trialId: string; gate: unknown },
+  input: {
+    runId: string;
+    trialId: string;
+    gate: unknown;
+    /** The bundle already read by the caller (null: it has none); omitted: read it here. */
+    bundle?: Uint8Array | null;
+  },
 ): Promise<TrialTrace | null> {
-  const bundle = await deps.bundles.bundle(input.runId, input.trialId);
+  const bundle =
+    input.bundle !== undefined
+      ? input.bundle
+      : await deps.bundles.bundle(input.runId, input.trialId);
   if (!bundle) return null;
   const trace = traceFromBundle(bundle, {
     trialId: input.trialId,

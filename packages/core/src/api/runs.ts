@@ -56,6 +56,11 @@ export const RunSchema = z.object({
   budget_limit_micro_usd: NonNegativeMicroUsdSchema.nullable().default(null),
   /** TDM-242: model tokens on the user's own key, paid to their provider; reported, not billed. */
   byok_token_micro_usd: NonNegativeMicroUsdSchema.default(0n),
+  /**
+   * TDM-245: the most the run may spend on the user's own model key, or null for no limit. A
+   * trial launches only when BYOK spent + the BYOK caps of the trials in flight + its own fit.
+   */
+  byok_token_limit_micro_usd: PositiveMicroUsdSchema.nullable().default(null),
   estimate_micro_usd: NonNegativeMicroUsdSchema.nullable(),
   kit_id: KitIdSchema.nullable(),
   /** `uploaded`: the run page says "kit: uploaded by you". Older servers omit it: `generated`. */
@@ -162,6 +167,11 @@ export const CreateRunBodySchema = z.object({
   question: z.string().trim().min(1).max(2000),
   source: RunSourceSchema,
   budget_micro_usd: PositiveMicroUsdSchema,
+  /**
+   * TDM-245: a hard stop on model tokens on the user's own key (BYOK), which the budget does not
+   * count (the user's provider bills them). Omitted: no limit; each trial still stops at its cap.
+   */
+  byok_token_limit_micro_usd: PositiveMicroUsdSchema.optional(),
   /** Contenders the user adds up front; the researcher finds the rest. */
   contenders: z.array(ContenderSchema).max(20).default([]),
   /**
@@ -416,11 +426,14 @@ export const runRoutes = defineRoutes({
     method: "POST",
     path: "/runs/:id/resume",
     auth: ["session", "apiKey:runs:write"],
-    summary: "Leave `needs_human` or `paused_budget`, optionally raising the budget.",
+    summary:
+      "Leave `needs_human` or `paused_budget`, optionally raising the budget or the BYOK token limit.",
     params: runParams,
     body: z.object({
       to: RunStateSchema.optional(),
       budget_micro_usd: PositiveMicroUsdSchema.optional(),
+      /** TDM-245: a new BYOK token limit for the rest of the run. */
+      byok_token_limit_micro_usd: PositiveMicroUsdSchema.optional(),
     }),
     response: runResponse,
   }),

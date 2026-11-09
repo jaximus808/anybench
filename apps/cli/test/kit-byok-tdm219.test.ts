@@ -324,7 +324,7 @@ async function startApi(): Promise<TestApi> {
     }
     if (req.method === "POST" && u.pathname === "/runs") {
       const b = CreateRunBodySchema.parse(JSON.parse(raw.toString()));
-      if (b.source.kind !== "kit" || !kits.has(b.source.kit_id)) {
+      if (b.source.kind !== "github" && (b.source.kind !== "kit" || !kits.has(b.source.kit_id))) {
         return send(404, { error: { code: "not_found", message: "no such kit" } });
       }
       api.runs.push({ ...b, idempotency: req.headers["idempotency-key"] });
@@ -337,7 +337,7 @@ async function startApi(): Promise<TestApi> {
           budget_micro_usd: b.budget_micro_usd.toString(),
           spent_micro_usd: "0",
           estimate_micro_usd: null,
-          kit_id: b.source.kit_id,
+          kit_id: b.source.kind === "kit" ? b.source.kit_id : null,
           paused_reason: null,
           cancel_requested_at: null,
           comped: false,
@@ -461,6 +461,68 @@ describe("anybench kit push + run --kit against a local API (TDM-219)", () => {
       await runRun(["--kit", "nope", "--question", "q", "--budget", "5"], capture().io, { env }),
     ).toBe(2);
     expect(await runRun(["--question", "q"], capture().io, { env })).toBe(2);
+  });
+
+  it("TDM-245: --repo starts a run on a GitHub repo; --no-auto-go sends auto_go false; bad combinations exit 2", async () => {
+    const question =
+      "Harness league on project-tracker (v1), n=5: do Claude Code skill packs and harnesses beat plain Claude Code?";
+    const r = capture();
+    expect(
+      await runRun(
+        [
+          "--repo",
+          "github.com/jaximus808/tandem",
+          "--question",
+          question,
+          "--budget",
+          "60",
+          "--byok-limit",
+          "150",
+          "--no-auto-go",
+          "--json",
+        ],
+        r.io,
+        { env },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(r.out.join("\n"))).toMatchObject({
+      state: "intake",
+      repo: "github.com/jaximus808/tandem",
+      auto_go: false,
+      budget_micro_usd: "60000000",
+      byok_token_limit_micro_usd: "150000000",
+    });
+    expect(api.runs.at(-1)).toMatchObject({
+      question,
+      source: { kind: "github", github: "github.com/jaximus808/tandem" },
+      auto_go: false,
+      byok_token_limit_micro_usd: 150_000_000n,
+    });
+    expect((api.runs.at(-1) as { source: object }).source).not.toHaveProperty("ref");
+    const withRef = capture();
+    expect(
+      await runRun(
+        ["--repo", "jaximus808/tandem", "--ref", "main", "--question", "q", "--budget", "5"],
+        withRef.io,
+        { env },
+      ),
+    ).toBe(0);
+    expect(api.runs.at(-1)).toMatchObject({
+      source: { kind: "github", github: "jaximus808/tandem", ref: "main" },
+    });
+    expect(api.runs.at(-1)).not.toHaveProperty("auto_go");
+
+    const before = api.runs.length;
+    for (const argv of [
+      ["--repo", "a/b", "--kit", randomUUID(), "--question", "q", "--budget", "5"],
+      ["--repo", "a/b", "--question", "q", "--budget", "5", "--auto-go", "--no-auto-go"],
+      ["--kit", randomUUID(), "--ref", "main", "--question", "q", "--budget", "5"],
+      ["--repo", "not a repo", "--question", "q", "--budget", "5"],
+      ["--repo", "a/b", "--question", "q", "--budget", "5", "--byok-limit", "0"],
+    ]) {
+      expect(await runRun(argv, capture().io, { env }), argv.join(" ")).toBe(2);
+    }
+    expect(api.runs.length).toBe(before);
   });
 
   it("parses budgets in dollars to integer micro-USD without floats", () => {

@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   gateResultsOf,
   scoreKit,
@@ -50,10 +51,12 @@ import { KitLoadError, loadKit } from "@anybench/kit";
 import { z } from "zod";
 import { isProven, kitSpecHash, proofOf } from "../routes/kits.js";
 import {
+  CURATED_HARNESS_LEAGUE_KIT,
   CURATED_KIT_IDS,
   CURATED_LONG_HORIZON_KIT,
   defaultKitsDir,
   headToHeadProfile,
+  leagueCuts,
   longHorizonSmokeProfile,
   nullPilotProfile,
   smokeProfile,
@@ -115,11 +118,56 @@ export const LONG_HORIZON_PROOF_SIGNOFF = {
   sha256: "4dfbaf54891cc1bd0293f45c3d7a0b5634a45741b17001ec7d7d2db92aaff6c9",
 } as const;
 
+/**
+ * The harness league's sign-off (TDM-245): E18's offline proof, which is the league's own. The
+ * league's PROOF.md, workloads, hidden tests, gate, oracle and do-less overlays are byte-identical
+ * copies of kits/tandem-long-horizon's (scripts/sync-shared.mjs), so this is the same record with
+ * the same sha256, signed at the commit that generated it. `shared_with` makes the proof stage
+ * check the copies again before every league run (sync-shared.mjs diffShared): one differing
+ * byte and the run holds.
+ */
+export const HARNESS_LEAGUE_PROOF_SIGNOFF = {
+  source: "kits/harness-league/PROOF.md",
+  commit: LONG_HORIZON_PROOF_SIGNOFF.commit,
+  sha256: LONG_HORIZON_PROOF_SIGNOFF.sha256,
+  shared_with: "kits/tandem-long-horizon",
+} as const;
+
+type CuratedSignoff = {
+  readonly source: string;
+  readonly commit: string;
+  readonly sha256: string;
+  /** The kit this kit's arena is a byte-identical copy of (checked at proof time). */
+  readonly shared_with?: string;
+};
+
 /** Each curated kit's sign-off (literal keys: curated.ts imports this module). */
-export function curatedProofSignoff(
-  id: CuratedKitId,
-): typeof TANDEM_PROOF_SIGNOFF | typeof LONG_HORIZON_PROOF_SIGNOFF {
+export function curatedProofSignoff(id: CuratedKitId): CuratedSignoff {
+  if (id === CURATED_HARNESS_LEAGUE_KIT) return HARNESS_LEAGUE_PROOF_SIGNOFF;
   return id === CURATED_LONG_HORIZON_KIT ? LONG_HORIZON_PROOF_SIGNOFF : TANDEM_PROOF_SIGNOFF;
+}
+
+/** One difference sync-shared.mjs found between the league's copies and their sources. */
+type SharedProblem = { kind: string; path: string };
+
+/**
+ * The league's shared arena against its sources, by the kit's own script
+ * (kits/harness-league/scripts/sync-shared.mjs, the one `--check` and the kit test run). Null when
+ * every copy is byte-identical; otherwise the differences, or why the check could not run.
+ */
+export async function sharedArenaProblems(kitDir: string): Promise<string[] | null> {
+  const script = path.join(kitDir, "scripts", "sync-shared.mjs");
+  let problems: SharedProblem[];
+  try {
+    const mod = (await import(pathToFileURL(script).href)) as {
+      diffShared?: () => SharedProblem[];
+    };
+    if (typeof mod.diffShared !== "function") return [`${script} exports no diffShared`];
+    problems = mod.diffShared();
+  } catch (err) {
+    return [`could not run ${script}: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  return problems.length === 0 ? null : problems.map((p) => `${p.kind}: ${p.path}`);
 }
 
 /** The checks the offline run verified (oracle passes, every do-less fails). */
@@ -131,6 +179,7 @@ export function curatedProofLabel(commit: string): string {
 
 /** The cuts of a curated kit that its offline proof covers (they only drop setups, tasks, repeats). */
 function curatedCuts(id: CuratedKitId, spec: KitSpec) {
+  if (id === CURATED_HARNESS_LEAGUE_KIT) return leagueCuts(spec);
   return id === CURATED_LONG_HORIZON_KIT
     ? [longHorizonSmokeProfile(spec)]
     : [smokeProfile(spec), headToHeadProfile(spec), nullPilotProfile(spec)];
@@ -178,6 +227,14 @@ export function curatedProof(opts: { kitsDir?: string } = {}): PipelinePort["pro
         `the curated proof record changed since its sign-off at ${signoff.commit.slice(0, 7)} (sha256 ${sha256.slice(0, 12)}); ${PROOF_SUITE_UNAVAILABLE}`,
       );
     }
+    if (signoff.shared_with) {
+      const problems = await sharedArenaProblems(kitDir);
+      if (problems) {
+        return hold(
+          `the ${id} kit's arena is no longer a byte-identical copy of ${signoff.shared_with} (${problems.length} difference(s): ${problems.slice(0, 3).join("; ")}); run node kits/${id}/scripts/sync-shared.mjs; ${PROOF_SUITE_UNAVAILABLE}`,
+        );
+      }
+    }
     const text = md.toString("utf8");
     const totals = /^Totals: oracle (.+?); do-nothing (.+?)\.?$/m.exec(text);
     if (!/^Overall: RESULT: PASS$/m.test(text) || !totals) {
@@ -213,7 +270,11 @@ export function curatedProof(opts: { kitsDir?: string } = {}): PipelinePort["pro
       verified: [...OFFLINE_VERIFIED],
       checks,
     };
-    await say(ctx, "proof", `${label}: ${verified.oracle_passes}; ${verified.do_less_fails}`);
+    await say(
+      ctx,
+      "proof",
+      `${label}: ${verified.oracle_passes}; ${verified.do_less_fails}${signoff.shared_with ? ` (${signoff.shared_with}'s proof: the arena is a byte-identical copy, checked now)` : ""}`,
+    );
     return stageOk(proof);
   };
 }
