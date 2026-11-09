@@ -15,6 +15,7 @@ src="$kit/workloads/$workload/input"
 
 case "$workload" in
   project-tracker) message="project-tracker 0.1.0: health endpoint, router and the tracker 1.x data file" ;;
+  project-tracker-xl) message="project-tracker 0.1.0: health endpoint, router and the tracker 1.x data file" ;;
   *) message="$workload: starting point" ;;
 esac
 

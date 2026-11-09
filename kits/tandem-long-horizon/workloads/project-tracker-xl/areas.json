@@ -1,0 +1,892 @@
+{
+  "workload": "project-tracker-xl",
+  "spec": "instruction.md",
+  "tests_total": 600,
+  "halves": {
+    "1": 298,
+    "2": 302
+  },
+  "note": "Feature areas of the project-tracker-xl contract (v1's project-tracker plus 21 areas). Each hidden test is tagged with exactly one area id. `section` is the instruction.md heading that defines the area (section 0, Conventions, applies to every area: its error order, event pipeline, scheduler, pagination and validation rules are tested inside the areas). `routes` are the routes the area owns, exactly as instruction.md's route tables spell them. `must_cover` lists behaviours the area's tests should reach; every one of them is written in instruction.md. `half` splits the areas into two sets of roughly equal test count, so the hidden tests can be written in two parallel tickets without overlap. This file is kit-side: it is not copied into the workspace.",
+  "areas": [
+    {
+      "id": "auth",
+      "title": "Accounts and auth",
+      "section": "## 1. Accounts and auth (`auth`)",
+      "half": 1,
+      "tests_target": 11,
+      "depends_on": [],
+      "routes": [
+        "POST /auth/register",
+        "POST /auth/login",
+        "POST /auth/logout",
+        "GET /me",
+        "PATCH /me",
+        "POST /me/password"
+      ],
+      "must_cover": [
+        "register validation (email, password length, name, handle regex) and the user shape without password",
+        "email_taken (case-insensitive) before handle_taken",
+        "login token >= 20 chars not starting with trk_, expiresAt = now + tokenTtlMs; invalid_credentials",
+        "401 unauthorized for missing, malformed, unknown, revoked and expired tokens (fake clock)",
+        "logout revokes only the calling token",
+        "password change: wrong_password; success revokes every session token but no API key",
+        "PATCH /me handle conflict and own-handle no-op"
+      ]
+    },
+    {
+      "id": "teams",
+      "title": "Teams and roles",
+      "section": "## 2. Teams and roles (`teams`)",
+      "half": 1,
+      "tests_target": 13,
+      "depends_on": [
+        "auth"
+      ],
+      "routes": [
+        "POST /teams",
+        "GET /teams",
+        "GET /teams/:teamId",
+        "PATCH /teams/:teamId",
+        "DELETE /teams/:teamId",
+        "GET /teams/:teamId/members",
+        "POST /teams/:teamId/members",
+        "PATCH /teams/:teamId/members/:userId",
+        "DELETE /teams/:teamId/members/:userId",
+        "POST /teams/:teamId/transfer"
+      ],
+      "must_cover": [
+        "creator is owner; plan is defaultPlan; myRole per caller; GET /teams lists only the caller's teams",
+        "non-members get 404 not_found, never 403, on every team-scoped route",
+        "role matrix: viewer/member get 403 on admin+ routes; admin gets 403 on owner routes",
+        "add member: user_not_found, already_member, role owner rejected, members quota after already_member",
+        "owner_required on changing or removing the owner",
+        "self-removal by a member; removal of someone else by a member is 403",
+        "leaving cascades: cards unassigned (archived included), watching stops, private views deleted, user field values removed; no updatedAt change",
+        "transfer: target becomes owner, previous owner admin, non-member target 400",
+        "deleting a team removes it for every member"
+      ]
+    },
+    {
+      "id": "projects",
+      "title": "Projects",
+      "section": "## 3. Projects (`projects`)",
+      "half": 1,
+      "tests_target": 9,
+      "depends_on": [
+        "teams"
+      ],
+      "routes": [
+        "POST /teams/:teamId/projects",
+        "GET /teams/:teamId/projects",
+        "GET /projects/:projectId",
+        "PATCH /projects/:projectId",
+        "DELETE /projects/:projectId"
+      ],
+      "must_cover": [
+        "key regex and key_taken within a team (archived included); same key allowed in another team; projects quota after key_taken",
+        "PATCH with key is 400 invalid_body; updatedAt changes",
+        "?archived=false|true|all and invalid_query",
+        "archived project: writes to boards, columns, cards, comments, fields, sprints, checklist, attachments answer 409 project_archived; watching and timer stop still work; unarchive restores writes",
+        "delete cascades (its boards, cards, fields, sprints answer 404; storage freed)"
+      ]
+    },
+    {
+      "id": "boards",
+      "title": "Boards and columns",
+      "section": "## 4. Boards and columns (`boards`)",
+      "half": 1,
+      "tests_target": 13,
+      "depends_on": [
+        "projects"
+      ],
+      "routes": [
+        "POST /projects/:projectId/boards",
+        "GET /projects/:projectId/boards",
+        "GET /boards/:boardId",
+        "PATCH /boards/:boardId",
+        "DELETE /boards/:boardId",
+        "POST /boards/:boardId/columns",
+        "PATCH /columns/:columnId",
+        "DELETE /columns/:columnId"
+      ],
+      "must_cover": [
+        "default columns To do / In progress / Done with positions 0..2 and categories todo / in_progress / done; category rule for custom column lists",
+        "insert a column at a position; positions stay 0..n-1",
+        "move a column with PATCH position; relative order of the others kept",
+        "wipLimit and category validation",
+        "changing a category to or from done sets or clears completedAt of its cards without touching updatedAt",
+        "delete: last_column, column_not_empty (archived cards ignored), ?moveTo appends cards in order, invalid moveTo is invalid_query",
+        "member is 403 on column and board writes"
+      ]
+    },
+    {
+      "id": "cards",
+      "title": "Cards",
+      "section": "## 5. Cards (`cards`)",
+      "half": 1,
+      "tests_target": 20,
+      "depends_on": [
+        "boards"
+      ],
+      "routes": [
+        "POST /columns/:columnId/cards",
+        "GET /boards/:boardId/cards",
+        "GET /cards/:cardId",
+        "PATCH /cards/:cardId",
+        "POST /cards/:cardId/move",
+        "DELETE /cards/:cardId"
+      ],
+      "must_cover": [
+        "full card shape with defaults (priority none, points null, sprintId null, customFields {}, checklist {0,0}, blocked false, completedAt, archived false)",
+        "number per project across boards, never reused after delete; key PROJECT-N",
+        "labels normalised: trimmed, lowercased, de-duplicated, sorted; more than 10 is 400",
+        "dueDate, priority, points and sprintId validation",
+        "assignee: viewer, non-member and unknown id are invalid_assignee; null clears; validation order invalid_body then invalid_assignee then field values",
+        "create at a position shifts later cards; delete closes the gap",
+        "move across columns and within a column with exact resulting positions; move to another board's column is 400",
+        "completedAt set on entering a done column, kept between done columns, cleared on leaving",
+        "blocked card cannot enter a done column (409 blocked) but can be created there and leave it",
+        "wip_limit_reached on create and on move into a full column; reorder inside a full column allowed; cards quota on create",
+        "due job: card.due emitted when the clock passes the start of dueDate on the next request, once; cancelled by clearing the date; skipped for completed or archived cards",
+        "GET /boards/:boardId/cards order and ?columnId= filter; foreign columnId is invalid_query"
+      ]
+    },
+    {
+      "id": "comments",
+      "title": "Comments and mentions",
+      "section": "## 6. Comments and mentions (`comments`)",
+      "half": 1,
+      "tests_target": 10,
+      "depends_on": [
+        "cards"
+      ],
+      "routes": [
+        "POST /cards/:cardId/comments",
+        "GET /cards/:cardId/comments",
+        "GET /comments/:commentId",
+        "PATCH /comments/:commentId",
+        "DELETE /comments/:commentId",
+        "GET /me/mentions"
+      ],
+      "must_cover": [
+        "threaded replies returned as nested trees, oldest first, any depth",
+        "parentId on another card is 400 invalid_body",
+        "mention regex edge cases: email addresses, uppercase, punctuation, 21-char names, non-members, the author",
+        "mentions recomputed on PATCH",
+        "PATCH by a non-author (even the owner) is 403; DELETE by admin allowed, by another member 403",
+        "soft delete keeps replies; PATCH/DELETE/reply on a deleted comment is comment_deleted; card_archived on archived cards",
+        "GET /me/mentions newest first with cursor pagination"
+      ]
+    },
+    {
+      "id": "search",
+      "title": "Search",
+      "section": "## 7. Search (`search`)",
+      "half": 1,
+      "tests_target": 14,
+      "depends_on": [
+        "cards",
+        "comments"
+      ],
+      "routes": [
+        "GET /teams/:teamId/search"
+      ],
+      "must_cover": [
+        "prefix term matching over title, description and non-deleted comments; every term must match",
+        "score 3*t + d + c and its tie-break by creation order",
+        "filters: projectId, boardId, columnId, assigneeId and none, repeated label, dueFrom/dueTo inclusive",
+        "new filters: priority, sprintId and none, category, blocked, with invalid_query on bad values",
+        "archived projects excluded unless includeArchived=true; archived cards never returned",
+        "cursor pagination visits every match once; total; invalid limit/cursor/date are invalid_query",
+        "q longer than 200 chars or with more than 10 terms is invalid_query; results never include another team's cards"
+      ]
+    },
+    {
+      "id": "webhooks",
+      "title": "Webhooks",
+      "section": "## 8. Webhooks (`webhooks`)",
+      "half": 1,
+      "tests_target": 12,
+      "depends_on": [
+        "cards",
+        "comments",
+        "teams"
+      ],
+      "routes": [
+        "POST /teams/:teamId/webhooks",
+        "GET /teams/:teamId/webhooks",
+        "GET /webhooks/:webhookId",
+        "PATCH /webhooks/:webhookId",
+        "DELETE /webhooks/:webhookId",
+        "POST /webhooks/:webhookId/rotate-secret",
+        "POST /webhooks/:webhookId/test",
+        "GET /webhooks/:webhookId/deliveries"
+      ],
+      "must_cover": [
+        "secret only on create and rotate; generated secret >= 32 chars; webhooks quota on create",
+        "events validation against the section 0.8 table, de-dup and sort, * normalisation",
+        "a local receiver gets { id, event, teamId, actorId, via, occurredAt, data } with the documented headers; signature verifies with HMAC-SHA256 of the raw body",
+        "events from rule actions carry via { type: rule, ruleId, runId } and the rule creator as actorId; deliveries in queue order",
+        "inactive webhooks get nothing but ping; events filter respected",
+        "retry with small retryDelaysMs: 500 then 200 gives attempts 2 and succeeded; same body bytes, attempt header increments",
+        "exhausted retries give failed; a timeout gives a non-empty lastError and lastStatusCode null",
+        "deliveries newest first; member gets 403 on webhook routes"
+      ]
+    },
+    {
+      "id": "ratelimit",
+      "title": "Rate limiting",
+      "section": "## 9. Rate limiting (`ratelimit`)",
+      "half": 1,
+      "tests_target": 8,
+      "depends_on": [
+        "auth",
+        "apikeys"
+      ],
+      "routes": [],
+      "must_cover": [
+        "headers x-ratelimit-limit, -remaining, -reset on counted requests (fake clock)",
+        "429 rate_limited with retry-after and remaining 0, and no side effect",
+        "429s are not counted; budget per credential: two tokens, and an API key apart from its owner's tokens",
+        "a request failing at 3a or later still counts; an idempotent replay counts",
+        "a new window (clock moved) restores the budget",
+        "public routes (GET /plans included) and 401s carry no headers and are not counted"
+      ]
+    },
+    {
+      "id": "persistence",
+      "title": "Persistence (version 2 data file)",
+      "section": "### 10.1 The data file (`persistence`)",
+      "half": 1,
+      "tests_target": 8,
+      "depends_on": [
+        "auth",
+        "teams",
+        "cards",
+        "comments",
+        "webhooks",
+        "audit",
+        "apikeys",
+        "automation",
+        "recurring"
+      ],
+      "routes": [],
+      "must_cover": [
+        "the file exists and is version 2 right after a mutating response, including pipeline effects (no debounce)",
+        "a new app on the same file sees everything: logins, tokens, API keys, ids, positions, next card number, rules and runs, notifications",
+        "pending jobs (due job, recurrence) survive a restart and run when due",
+        "no plain-text password or API key secret in the file",
+        "missing file is an empty state; createApp throws on invalid JSON and on an unsupported version"
+      ]
+    },
+    {
+      "id": "migration",
+      "title": "Migration from the 1.x format",
+      "section": "### 10.2 Loading a 1.x file (`migration`)",
+      "half": 1,
+      "tests_target": 9,
+      "depends_on": [
+        "persistence"
+      ],
+      "routes": [],
+      "must_cover": [
+        "v1.bak byte-identical and dataFile rewritten as version 2 before createApp returns",
+        "migrated users log in with their 1.x passwords; emails lowercased; derived handles including collisions and short handles",
+        "role mapping manager/editor/reader, member order, plan = defaultPlan",
+        "columns, wipLimit from limits, categories by position, orphan column cards land in the first column, positions from order with ties",
+        "labels from tags, dueDate from UTC timestamps, assignee dropped for viewers and non-members, completedAt for cards in done columns, one history entry per card",
+        "card numbers per project by createdAt with ties in file order; next card number continues",
+        "comment parentId kept only for the same card; mentions recomputed with migrated handles"
+      ],
+      "fixture": "input/fixtures/tracker-v1.json (byte-identical to project-tracker's; hidden tests must carry their own copy, since the agent can edit the workspace)"
+    },
+    {
+      "id": "audit",
+      "title": "Audit log",
+      "section": "## 11. Audit log (`audit`)",
+      "half": 1,
+      "tests_target": 10,
+      "depends_on": [
+        "teams",
+        "projects",
+        "boards",
+        "cards",
+        "comments",
+        "webhooks",
+        "automation"
+      ],
+      "routes": [
+        "GET /teams/:teamId/audit"
+      ],
+      "must_cover": [
+        "one entry per change with the documented action, target, details and via, for requests, rule actions and jobs",
+        "rule actions add their own entries after the request's (card.updated with fields [labels], card.moved, comment.created, sprint.cards_added)",
+        "failed requests, reads, /me routes, watching, cascades, the due job and dry-run imports add nothing",
+        "fields in *.updated details are the sorted body fields",
+        "newest first with cursor pagination; action and actorId filters",
+        "member and viewer get 403"
+      ]
+    },
+    {
+      "id": "apikeys",
+      "title": "API keys",
+      "section": "## 12. API keys (`apikeys`)",
+      "half": 1,
+      "tests_target": 23,
+      "depends_on": [
+        "auth",
+        "teams"
+      ],
+      "routes": [
+        "POST /me/api-keys",
+        "GET /me/api-keys",
+        "GET /me/api-keys/:keyId",
+        "PATCH /me/api-keys/:keyId",
+        "DELETE /me/api-keys/:keyId"
+      ],
+      "must_cover": [
+        "create returns secret trk_ + >= 32 chars once; prefix is its first 12 chars; list and get never show it",
+        "name, scope, teamId and expiresAt validation; PATCH with scope or teamId is 400; 20 keys per user is quota_exceeded",
+        "a key authenticates as its owner with the owner's current role; deleted and expired keys are 401",
+        "api_key_not_allowed on logout, PATCH /me, password, /me/api-keys routes, invite accept, and POST /teams for a team-restricted key",
+        "insufficient_scope: read key on writes, write key on admin+ and owner routes, checked before 404",
+        "team-restricted key: other teams 404 and left out of GET /teams, mentions, notifications",
+        "another user's key id is 404"
+      ]
+    },
+    {
+      "id": "plans",
+      "title": "Plans and quotas",
+      "section": "## 13. Plans and quotas (`plans`)",
+      "half": 1,
+      "tests_target": 23,
+      "depends_on": [
+        "teams",
+        "projects",
+        "cards",
+        "webhooks"
+      ],
+      "routes": [
+        "GET /plans",
+        "GET /teams/:teamId/plan",
+        "PUT /teams/:teamId/plan"
+      ],
+      "must_cover": [
+        "GET /plans is public and lists the exact limits table",
+        "GET /teams/:teamId/plan usage counts: archived projects and cards, inactive webhooks, disabled rules, distinct sha256 storage",
+        "quota_exceeded with details { resource, limit, used } for projects, cards, members, webhooks, rules, recurrences, storageBytes at the documented check position",
+        "fixed limits: fields 30 per project, checklist items 50 per card, API keys 20 per user",
+        "PUT plan: owner only; downgrade_blocked with resources in table order changes nothing; same plan is a no-op without audit; plan_changed audit entry",
+        "defaultPlan option applies to new and migrated teams"
+      ]
+    },
+    {
+      "id": "idempotency",
+      "title": "Idempotency keys",
+      "section": "## 14. Idempotency keys (`idempotency`)",
+      "half": 1,
+      "tests_target": 12,
+      "depends_on": [
+        "cards",
+        "auth"
+      ],
+      "routes": [],
+      "must_cover": [
+        "a repeated POST with the same key and body replays status and body bytes with idempotency-replayed: true and no second effect (one card, one audit entry, one delivery)",
+        "same key, different body is 409 idempotency_conflict",
+        "invalid header values are 400 invalid_header",
+        "error responses store nothing; the same key on another path, method or user is unrelated",
+        "records expire after idempotencyTtlMs (fake clock) and are not persisted across a restart",
+        "PATCH, PUT and DELETE ignore the header"
+      ]
+    },
+    {
+      "id": "fields",
+      "title": "Custom fields",
+      "section": "## 15. Custom fields (`fields`)",
+      "half": 1,
+      "tests_target": 30,
+      "depends_on": [
+        "cards",
+        "search"
+      ],
+      "routes": [
+        "POST /projects/:projectId/fields",
+        "GET /projects/:projectId/fields",
+        "GET /fields/:fieldId",
+        "PATCH /fields/:fieldId",
+        "DELETE /fields/:fieldId",
+        "PUT /cards/:cardId/fields/:fieldId",
+        "DELETE /cards/:cardId/fields/:fieldId"
+      ],
+      "must_cover": [
+        "field definitions: name uniqueness case-insensitive, type immutable, options rules per type, 30-field quota",
+        "value validation for each of the 8 types with invalid_field_value details.fieldId (first offending key in body order)",
+        "create/PATCH merge semantics: null ignored on create, null removes on PATCH; PUT and DELETE routes return the card and emit card.updated [customFields]",
+        "required fields: field_required on create, on PATCH null, on DELETE; making a field required checks nothing",
+        "search field.<id> conditions per type, checkbox false matches unset in the field's project only, bad number/checkbox values invalid_query",
+        "options change removes stale select/multiselect values from cards and templates without updatedAt change",
+        "deleting a field removes values and disables referencing rules"
+      ]
+    },
+    {
+      "id": "labels",
+      "title": "Team labels",
+      "section": "## 16. Team labels (`labels`)",
+      "half": 1,
+      "tests_target": 18,
+      "depends_on": [
+        "cards",
+        "teams"
+      ],
+      "routes": [
+        "POST /teams/:teamId/labels",
+        "GET /teams/:teamId/labels",
+        "PATCH /labels/:labelId",
+        "DELETE /labels/:labelId",
+        "POST /labels/:labelId/merge"
+      ],
+      "must_cover": [
+        "label name normalisation, uniqueness (label_taken), color validation and lowercase default #888888, list by name",
+        "rename rewrites cards (archived projects and cards included), templates, recurrences, rule conditions and actions, view queries; arrays re-sorted and de-duplicated; no updatedAt change, no events",
+        "delete removes the name from cards, templates, recurrences and views and disables rules that use it",
+        "merge rewrites everywhere into the target (rules not disabled) and deletes the source; intoLabelId of another team is 400"
+      ]
+    },
+    {
+      "id": "dependencies",
+      "title": "Dependencies",
+      "section": "## 18. Dependencies (`dependencies`)",
+      "half": 1,
+      "tests_target": 22,
+      "depends_on": [
+        "cards"
+      ],
+      "routes": [
+        "POST /cards/:cardId/blockers",
+        "GET /cards/:cardId/blockers",
+        "GET /cards/:cardId/blocking",
+        "DELETE /cards/:cardId/blockers/:blockerId"
+      ],
+      "must_cover": [
+        "add a blocker: same team any project, not itself (400), dependency_exists",
+        "dependency_cycle with details.path from the BFS in link creation order, including the direct two-card case",
+        "blocked is true only while an open blocker exists (not completed, not archived)",
+        "blocked cards answer 409 blocked when moved into a done column; the move_to_column action fails with blocked",
+        "blockers and blocking lists in link creation order; DELETE of a non-blocker is 404",
+        "project_archived and card_archived apply when either card qualifies; deleting a card removes its links"
+      ]
+    },
+    {
+      "id": "sprints",
+      "title": "Sprints and velocity",
+      "section": "## 19. Sprints and velocity (`sprints`)",
+      "half": 1,
+      "tests_target": 33,
+      "depends_on": [
+        "cards"
+      ],
+      "routes": [
+        "POST /projects/:projectId/sprints",
+        "GET /projects/:projectId/sprints",
+        "GET /sprints/:sprintId",
+        "PATCH /sprints/:sprintId",
+        "DELETE /sprints/:sprintId",
+        "POST /sprints/:sprintId/start",
+        "POST /sprints/:sprintId/complete",
+        "POST /sprints/:sprintId/cards",
+        "DELETE /sprints/:sprintId/cards/:cardId",
+        "GET /sprints/:sprintId/cards",
+        "GET /sprints/:sprintId/burndown",
+        "GET /projects/:projectId/velocity"
+      ],
+      "must_cover": [
+        "sprint create validation (dates, endDate >= startDate) and list order with ?state",
+        "state machine: start only planned (sprint_state), one active per project (sprint_active), complete only active",
+        "committedPoints at start and completedPoints at complete from non-archived cards, null points as 0",
+        "complete carries open cards to a planned sprint or to none; completed cards keep sprintId",
+        "PATCH and DELETE restrictions by state; delete clears sprintId by cascade",
+        "POST cards emits card.updated [sprintId] per changed card and one sprint.cards_added audit entry; card PATCH sprintId validation",
+        "burndown per date with null for future dates and remaining computed from completedAt against the end of each date",
+        "velocity: most recently completed first, count, average rounded to 2 decimals or null"
+      ]
+    },
+    {
+      "id": "checklists",
+      "title": "Checklists",
+      "section": "## 17. Checklists (`checklists`)",
+      "half": 2,
+      "tests_target": 15,
+      "depends_on": [
+        "cards"
+      ],
+      "routes": [
+        "POST /cards/:cardId/checklist",
+        "GET /cards/:cardId/checklist",
+        "PATCH /checklist/:itemId",
+        "DELETE /checklist/:itemId"
+      ],
+      "must_cover": [
+        "item create/insert/move/delete with positions 0..n-1",
+        "done toggling sets and clears doneAt and doneBy; same value keeps them",
+        "card checklist summary { total, done }; card updatedAt unchanged",
+        "checklist.completed emitted exactly when the last undone item is done or deleted, never on instantiation",
+        "50-item quota; card_archived and project_archived"
+      ]
+    },
+    {
+      "id": "templates",
+      "title": "Card templates",
+      "section": "## 20. Card templates (`templates`)",
+      "half": 2,
+      "tests_target": 15,
+      "depends_on": [
+        "cards",
+        "fields",
+        "checklists"
+      ],
+      "routes": [
+        "POST /projects/:projectId/templates",
+        "GET /projects/:projectId/templates",
+        "GET /templates/:templateId",
+        "PATCH /templates/:templateId",
+        "DELETE /templates/:templateId",
+        "POST /templates/:templateId/cards"
+      ],
+      "must_cover": [
+        "template validation including customFields values and checklist entries",
+        "instantiate: columnId in the project, title override, placeholders {{date}} {{user}} {{number}} {{project}} replaced, others kept, title cut to 200",
+        "instantiated card takes labels, priority, points, values and gets checklist items; one card.created event and audit entry",
+        "required fields checked on instantiate (field_required); quota and WIP limit apply",
+        "delete of a template used by a recurrence is template_in_use"
+      ]
+    },
+    {
+      "id": "recurring",
+      "title": "Recurring cards",
+      "section": "## 21. Recurring cards (`recurring`)",
+      "half": 2,
+      "tests_target": 28,
+      "depends_on": [
+        "cards",
+        "templates"
+      ],
+      "routes": [
+        "POST /boards/:boardId/recurrences",
+        "GET /boards/:boardId/recurrences",
+        "GET /recurrences/:recurrenceId",
+        "PATCH /recurrences/:recurrenceId",
+        "DELETE /recurrences/:recurrenceId",
+        "GET /recurrences/:recurrenceId/occurrences"
+      ],
+      "must_cover": [
+        "recurrence validation: exactly one of templateId and title, schedule shapes per frequency, dates, recurrences quota",
+        "occurrence dates for daily, weekly (Monday-based week intervals), monthly (short months clamp to the last day) and endDate",
+        "nextRunAt is the first occurrence later than now, null when inactive or finished; recomputed on PATCH",
+        "the scheduler runs on any request (including /health and 401s) and creates exactly one card per run even after missed occurrences",
+        "run failures recorded in lastError in the documented order (forbidden, project_archived, quota_exceeded, wip_limit_reached, invalid_assignee, field_required) with no card",
+        "a run's card.created carries via recurrence and triggers rules; occurrences route lists the next count instants",
+        "column delete moves the recurrence to moveTo or deletes it"
+      ]
+    },
+    {
+      "id": "automation",
+      "title": "Automation rules",
+      "section": "## 22. Automation rules (`automation`)",
+      "half": 2,
+      "tests_target": 52,
+      "depends_on": [
+        "cards",
+        "comments",
+        "fields",
+        "sprints",
+        "dependencies",
+        "notifications",
+        "webhooks",
+        "audit"
+      ],
+      "routes": [
+        "POST /teams/:teamId/rules",
+        "GET /teams/:teamId/rules",
+        "GET /rules/:ruleId",
+        "PATCH /rules/:ruleId",
+        "DELETE /rules/:ruleId",
+        "POST /rules/:ruleId/test",
+        "GET /rules/:ruleId/runs",
+        "GET /teams/:teamId/rule-runs"
+      ],
+      "must_cover": [
+        "rule validation: trigger events and filters (projectId, toColumnId, fields), condition fields and ops per type, action shapes, archive_card last; rules quota",
+        "conditions evaluated on the current card state, every op of the table including customFields per type and missing values",
+        "actions mirror their routes: set_assignee, add_label, remove_label, set_priority, move_to_column, set_field, add_comment with placeholders, notify, add_to_sprint (id and active), archive_card",
+        "action outcomes: noop when nothing changes, failed with the documented code, later actions not_run, earlier changes kept",
+        "runs: skipped (forbidden, not_found, project_archived, card_archived), no_match, succeeded, failed; recorded with depth; runs lists newest first with ?status",
+        "pipeline order: the response shows the state after rules; event snapshots before them; rules in creation order see earlier rules' changes",
+        "chains across rules up to automation.maxDepth; a rule never reacts to its own actions",
+        "rule changes appear in audit with via, in activity, in webhooks, and in notifications (add_comment mentions)",
+        "referenced project, column, field or sprint deletion disables the rule; re-enabling with a missing reference is 400",
+        "POST /rules/:ruleId/test answers per-condition booleans without effects"
+      ]
+    },
+    {
+      "id": "notifications",
+      "title": "Notifications and watchers",
+      "section": "## 23. Notifications and watchers (`notifications`)",
+      "half": 2,
+      "tests_target": 36,
+      "depends_on": [
+        "comments",
+        "cards"
+      ],
+      "routes": [
+        "GET /me/notifications",
+        "GET /me/notifications/unread-count",
+        "POST /me/notifications/:notificationId/read",
+        "POST /me/notifications/:notificationId/unread",
+        "POST /me/notifications/read-all",
+        "DELETE /me/notifications/:notificationId",
+        "GET /me/notification-settings",
+        "PUT /me/notification-settings",
+        "POST /cards/:cardId/watch",
+        "DELETE /cards/:cardId/watch",
+        "GET /cards/:cardId/watchers"
+      ],
+      "must_cover": [
+        "auto-watch on create, assignment and comment; watch and unwatch idempotent; watchers in watching order",
+        "mention, comment, assigned, moved and due notifications to the right recipients, never the actor, one per user per event",
+        "assigned only when the assignee actually changes to a non-null user",
+        "settings: type switches and mutedProjectIds suppress creation; PUT validation (exactly seven keys)",
+        "visibility: only while a member of the team (invite always); other ids 404",
+        "read, unread, read-all (optional teamId), unread-count, delete; ?unread filter and cursor pagination newest first",
+        "rule notify notifications created when the action runs, rule creator included"
+      ]
+    },
+    {
+      "id": "attachments",
+      "title": "Attachments",
+      "section": "## 24. Attachments (`attachments`)",
+      "half": 2,
+      "tests_target": 22,
+      "depends_on": [
+        "cards",
+        "plans"
+      ],
+      "routes": [
+        "POST /cards/:cardId/attachments",
+        "GET /cards/:cardId/attachments",
+        "GET /attachments/:attachmentId",
+        "GET /attachments/:attachmentId/content",
+        "PATCH /attachments/:attachmentId",
+        "DELETE /attachments/:attachmentId"
+      ],
+      "must_cover": [
+        "raw-body upload with filename query validation, contentType from the header up to ';' or application/octet-stream, size and sha256",
+        "content route returns the exact bytes with content-type, content-length and quoted etag; If-None-Match gives 304",
+        "1 MiB body limit (413) and empty body 400",
+        "storage quota counts distinct sha256 per team; re-uploading known bytes adds nothing; delete frees bytes only when no other copy remains",
+        "attachment.added event and audit details { sha256, size }; card_archived and project_archived"
+      ]
+    },
+    {
+      "id": "activity",
+      "title": "Activity and card history",
+      "section": "## 25. Activity and card history (`activity`)",
+      "half": 2,
+      "tests_target": 15,
+      "depends_on": [
+        "cards",
+        "automation"
+      ],
+      "routes": [
+        "GET /teams/:teamId/activity",
+        "GET /projects/:projectId/activity",
+        "GET /cards/:cardId/activity",
+        "GET /me/activity",
+        "GET /cards/:cardId/history"
+      ],
+      "must_cover": [
+        "one activity entry per event with projectId and cardId rules, including rule-caused events with via",
+        "team feed with event and actorId filters, project, card and me feeds newest first with pagination",
+        "card history: creation, every move including within a column and by rules, restore; cascades record nothing"
+      ]
+    },
+    {
+      "id": "views",
+      "title": "Saved views",
+      "section": "## 26. Saved views (`views`)",
+      "half": 2,
+      "tests_target": 16,
+      "depends_on": [
+        "search",
+        "fields",
+        "labels"
+      ],
+      "routes": [
+        "POST /teams/:teamId/views",
+        "GET /teams/:teamId/views",
+        "GET /views/:viewId",
+        "PATCH /views/:viewId",
+        "DELETE /views/:viewId",
+        "GET /views/:viewId/cards"
+      ],
+      "must_cover": [
+        "private views are invisible (404) to others; shared views visible to every member",
+        "viewer may create private but not shared views (403); PATCH/DELETE rights for owner and admin+",
+        "query validation per search parameter (invalid_body), unknown keys dropped, labels normalised",
+        "GET /views/:viewId/cards equals search with the stored query, with total and pagination"
+      ]
+    },
+    {
+      "id": "exports",
+      "title": "Import and export",
+      "section": "## 27. Import and export (`exports`)",
+      "half": 2,
+      "tests_target": 26,
+      "depends_on": [
+        "cards",
+        "fields",
+        "checklists"
+      ],
+      "routes": [
+        "GET /projects/:projectId/export",
+        "POST /projects/:projectId/import",
+        "POST /teams/:teamId/import"
+      ],
+      "must_cover": [
+        "JSON project document with exact key order, board/column indexes, field names, emails, checklist",
+        "CSV export header, cell formatting and RFC 4180 quoting, CRLF line ends, content-type",
+        "CSV import: header errors (unknown_column, missing_column), row errors with row/column/code ordering, malformed rows",
+        "CSV import creates and updates cards, moves between columns, ignores WIP; dryRun changes nothing; one audit entry; no events or rules",
+        "team import: first invalid value as a JSON Pointer path, key override, key_taken, quotas",
+        "round trip: export, import into another team, export again gives the same document except key/name overrides"
+      ]
+    },
+    {
+      "id": "reports",
+      "title": "Reports",
+      "section": "## 28. Reports (`reports`)",
+      "half": 2,
+      "tests_target": 22,
+      "depends_on": [
+        "cards",
+        "activity",
+        "time",
+        "sprints"
+      ],
+      "routes": [
+        "GET /projects/:projectId/reports/summary",
+        "GET /projects/:projectId/reports/cycle-time",
+        "GET /projects/:projectId/reports/flow",
+        "GET /projects/:projectId/reports/time",
+        "GET /teams/:teamId/reports/workload"
+      ],
+      "must_cover": [
+        "summary counts by category, priority, assignee (null first), label; overdue against today; blocked; points",
+        "cycle time from the first in_progress history entry, with average, median (even count) and p85 nearest-rank",
+        "flow: per date counts from history at the end of each date with current categories; at most 92 dates; from/to validation",
+        "time report by user and card within the date range",
+        "workload per member+ in member order over non-archived projects",
+        "archived cards are left out everywhere"
+      ]
+    },
+    {
+      "id": "html",
+      "title": "HTML pages",
+      "section": "## 32. HTML pages (`html`)",
+      "half": 2,
+      "tests_target": 12,
+      "depends_on": [
+        "cards",
+        "comments",
+        "notifications",
+        "reports"
+      ],
+      "routes": [
+        "GET /html/boards/:boardId",
+        "GET /html/cards/:cardId",
+        "GET /html/projects/:projectId/summary",
+        "GET /html/me/notifications"
+      ],
+      "must_cover": [
+        "content-type text/html; doctype and title formats",
+        "board page sections per column with data attributes, cards by position, assignee and labels; archived cards left out",
+        "card page dl fields in order, description newlines as <br>, nested comment trees, deleted comments",
+        "escaping of & < > \" ' in text and attributes, and nothing else",
+        "summary and notifications pages; errors stay JSON"
+      ]
+    },
+    {
+      "id": "invites",
+      "title": "Invitations",
+      "section": "## 30. Invitations (`invites`)",
+      "half": 2,
+      "tests_target": 13,
+      "depends_on": [
+        "teams",
+        "notifications",
+        "plans"
+      ],
+      "routes": [
+        "POST /teams/:teamId/invites",
+        "GET /teams/:teamId/invites",
+        "DELETE /invites/:inviteId",
+        "GET /me/invites",
+        "POST /invites/:token/accept",
+        "POST /me/invites/:inviteId/decline"
+      ],
+      "must_cover": [
+        "create with token once, already_member, replacing a pending invite, invite notification for a registered user",
+        "expiry via invites.ttlMs and the fake clock; status filter including expired",
+        "accept: 404 unknown token, 403 for another email, invite_used, invite_expired, members quota; member.added emitted",
+        "decline and revoke state rules; GET /me/invites lists pending ones for the caller's email"
+      ]
+    },
+    {
+      "id": "trash",
+      "title": "Archive and trash",
+      "section": "## 31. Archive and trash (`trash`)",
+      "half": 2,
+      "tests_target": 15,
+      "depends_on": [
+        "cards",
+        "search",
+        "sprints"
+      ],
+      "routes": [
+        "POST /cards/:cardId/archive",
+        "POST /cards/:cardId/restore",
+        "GET /projects/:projectId/trash"
+      ],
+      "must_cover": [
+        "archive: position null, gap closed, hidden from board lists, search, sprints, reports, WIP counts; still in GET /cards and exports",
+        "writes to an archived card answer card_archived; delete, restore, watch and timer stop still work",
+        "restore: column and position, WIP check, completedAt rules, history entry, card_not_archived",
+        "trash list newest archivedAt first; purge after trash.retentionMs with card.deleted and card.purged audit, actor null"
+      ]
+    },
+    {
+      "id": "time",
+      "title": "Time tracking",
+      "section": "## 29. Time tracking (`time`)",
+      "half": 2,
+      "tests_target": 15,
+      "depends_on": [
+        "cards"
+      ],
+      "routes": [
+        "POST /cards/:cardId/time-entries",
+        "GET /cards/:cardId/time-entries",
+        "DELETE /time-entries/:entryId",
+        "POST /cards/:cardId/timer/start",
+        "POST /cards/:cardId/timer/stop",
+        "GET /me/timer"
+      ],
+      "must_cover": [
+        "manual entries: minutes 1..1440, date not after today, note; minutesLogged on the card",
+        "one running timer per user across teams (timer_running); stop on another card is no_timer; minutes rounding and cap",
+        "GET /me/timer; delete by the entry's user or admin+",
+        "time.logged and time.deleted audit entries; no events"
+      ]
+    }
+  ]
+}
