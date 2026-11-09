@@ -8,7 +8,7 @@
 
 ```sh
 # 1. stop the Mac worker loop (its heartbeat goes stale; trial.reattach moves its trials to the new worker)
-# 2. from the main checkout (Node 22+, bun for the runner binaries if they are not built yet):
+# 2. from the main checkout (Node 22+, bun: the deploy rebuilds the runner binaries unless they carry this checkout's runner commit, TDM-247):
 pnpm tsx scripts/deploy/worker.ts            # build, bundle, migrate dev, upload release, create + start, heartbeat gate
 pnpm tsx scripts/deploy/worker.ts --status   # computers, supervisor state, heartbeat age
 # rollback: pnpm tsx scripts/deploy/worker.ts --down   (stop + delete every worker computer), then restart the Mac loop
@@ -28,6 +28,55 @@ Re-running the deploy is a no-op while the newest worker computer runs the same 
 | Host | `bootstrap.sh install <id> <sha256>` installs Node 22.12.0 from nodejs.org if the image has no Node ≥ 22 (the Naïve image ships v24.22.1). It then fetches the release, checks its sha256, extracts it, runs `npm install --omit=dev`, links `current` to the new release and writes the units. |
 | Supervisor | systemd `anybench-worker.service` with `Restart=always`, `RestartSec=5`, `TimeoutStopSec=120` (SIGTERM, so graphile drains) and logs in `~/anybench-worker/worker.log`, plus `anybench-worker-rotate.timer` every 15 min. Hosts without systemd get a `setsid` supervisor loop. `run-worker.sh` sets `ANYBENCH_KITS_DIR`, `ANYBENCH_RUNNER_BIN_DIR` and `ANYBENCH_GENERATED_KITS_DIR`, then runs `node --env-file=~/.anybench/worker.env`. |
 | Health gate | A worker counts as healthy when `bootstrap.sh status` shows `active` and its `worker_heartbeats` row (host = hostname) has `ticks ≥ 2` and is younger than 60 s. |
+
+## The runner binaries: built from this checkout, or refused (TDM-247, 2026-11-09)
+
+**Incident.** From Nov 7 to Nov 9 every deploy shipped the runner built on the deploying Mac on Nov 7 21:19. `worker.ts` ran `build:bin` only `if (!bins.every((f) => existsSync(f)))`, and the binaries existed. The TDM-231 and TDM-239 token-meter fixes never reached a trial, so the harness league's recorded BYOK spend was 4-5× the real spend on subagent setups, trials were killed at a fake $25 cap and the run paused early (`harness-league-run-1.md` §2). The env snapshot hash already included the runner's sha256, so the images followed the bytes. But the bytes were the stale ones.
+
+**Fix.**
+
+- **The binary carries its commit.** `build-bin.mjs` compiles `anybench-runner-build:<40 hex>[-dirty]` into the runner with `bun build --define __ANYBENCH_RUNNER_BUILD__=…`. That commit is the newest one that changed the runner's build inputs (`@anybench/envs` `runnerSourceBuild`). The inputs are `src/` and `package.json` of the runner and of every workspace package it depends on (core, envs, providers), plus `packages/runner/scripts` and `pnpm-lock.yaml`. It is not HEAD. A docs or server-only commit leaves the binary, the release id and every cached env image unchanged. The bun build is deterministic: two builds of the same commit give the same sha256.
+- **`runner --version`** prints `0.1.0 <commit>`. The runner writes `runner_commit` into `status.json` (also on the ingest wire, where it is optional for older runners), `machine.json` and the driver's env (`ANYBENCH_RUNNER_COMMIT`). At freeze it also adds `runner_commit` to the driver's `versions.json`, so every trial bundle says which runner, and which token meter, ran it.
+- **Deploy.** `worker.ts` refuses to deploy while the runner's inputs have uncommitted changes (a dry run only reports them). `ensureRunnerBins` (`lib/runner-bins.ts`) reads the build out of each binary's bytes, because a linux binary cannot run on the Mac. Any binary that is missing, unstamped (pre-TDM-247) or built from another commit is rebuilt. If it still does not match, the deploy refuses. With `--skip-build` it refuses without rebuilding. `bundleWorkerRelease` checks the same thing again before anything goes into the tarball. The manifest records `runnerCommit`.
+- **Post-check on the host.** After `install`, the successor runs `bootstrap.sh runner-version`, which runs `current/bin/runner-linux-<arch> --version`. The output must report the manifest's `runnerCommit`. This happens before the old worker is stopped: on a mismatch the successor is deleted and the old worker keeps running. The on-host rotator uses the same code path.
+- **Trial computers (env build).** `runnerInstaller` refuses an unstamped binary. A worker running from a git checkout, with no `ANYBENCH_RUNNER_BIN_DIR`, also refuses a binary whose build is not the checkout's runner commit. That is the local-first worker case: its `packages/runner/dist/bin` can be just as stale. The run holds with the message. The snapshot cache key now carries `runner_commit: ["x64:<commit>", "arm64:<commit>"]` next to the sha256s, so an image baked with an older runner is never forked. The image's `runner --version` must report the binary's build, or the build fails at the `runner` step. `envs.health.runner_commit` / `stage_outputs.env.detail.runner_commit` names it.
+
+**Cache invalidation on the first build after TDM-247:** every image is rebuilt once (the new key, and new bytes). A rebuild takes about 4 min per kit (`env-build-naive.md`). After that, an image is rebuilt only when a runner input changes.
+
+**Commands (2026-11-09, worktree at 25c8e81, the code commit before its rebase onto TDM-248):**
+
+```
+$ pnpm --filter @anybench/runner build:bin
+$ bun build src/cli.ts --compile --minify --target=bun-linux-x64 --define __ANYBENCH_RUNNER_BUILD__="anybench-runner-build:25c8e8165653b4c33c7dac27277b1eaec9033dce" --outfile …/runner-linux-x64
+ [155ms] compile  …/runner-linux-x64 bun-linux-x64-v1.3.14
+$ … (arm64 likewise)
+$ shasum -a 256 packages/runner/dist/bin/*      # same twice in a row: the build is deterministic
+400a54ac153e2598ff1d18e212687e644fb4446915247ed747929fe726331db7  runner-linux-arm64
+40ca70d1dfe47dcfe25e86fdd00d7c799c26288b4133ad2e559c1509439b8df1  runner-linux-x64
+$ docker run --rm --platform linux/arm64 -v "$PWD/packages/runner/dist/bin:/b:ro" node:22 /b/runner-linux-arm64 --version
+0.1.0 25c8e8165653b4c33c7dac27277b1eaec9033dce
+$ docker run --rm --platform linux/amd64 -v "$PWD/packages/runner/dist/bin:/b:ro" node:22 /b/runner-linux-x64 --version
+0.1.0 25c8e8165653b4c33c7dac27277b1eaec9033dce
+
+# the main checkout's Nov 7 binaries, judged against this checkout (inspectRunnerBins + judgeRunnerBins)
+{"ok":false,"problems":["runner-linux-x64 carries no build commit (pre-TDM-247)","runner-linux-arm64 carries no build commit (pre-TDM-247)"]}
+
+# the Nov 7 binaries copied into the worktree, then a dry run that may not rebuild them
+$ pnpm tsx scripts/deploy/worker.ts --dry-run --skip-build
+[deploy:worker] runner source {"commit":"25c8e8165653b4c33c7dac27277b1eaec9033dce"}
+[deploy:worker] failed: stale runner binaries, refusing to ship them (--skip-build): runner-linux-x64 carries no build commit (pre-TDM-247); runner-linux-arm64 carries no build commit (pre-TDM-247)
+
+# with the fresh binaries
+$ pnpm tsx scripts/deploy/worker.ts --dry-run --skip-build
+[deploy:worker] runner source {"commit":"25c8e8165653b4c33c7dac27277b1eaec9033dce"}
+[deploy:worker] runner binaries current {"build":"25c8e8165653b4c33c7dac27277b1eaec9033dce"}
+[deploy:worker] dry run: release artifact {…,"commit":"25c8e8165653","runner_commit":"25c8e8165653b4c33c7dac27277b1eaec9033dce"}
+[deploy:worker] dry run: bootstrap.sh {"phases":["install","start","stop","status","pack-kits","unpack-kits","runner-version"],…,"bash_n":"ok",…}
+```
+
+**After the next real deploy**, check one live trial. Its `status.json` / `versions.json` should carry `runner_commit`, and a cap stop's reason should carry TDM-231's "with a $X margin" clause.
+
+Tests: `scripts/deploy/test/runner-bins-tdm247.test.ts`, the new case in `worker-reconcile-worker-naive.test.ts`, `packages/runner/test/tdm247-runner-commit.test.ts`, `packages/envs/test/runner-stamp-tdm247.test.ts` and `apps/server/test/env-build-runner-commit-tdm247.test.ts`.
 
 ## 12-hour lifetime
 
