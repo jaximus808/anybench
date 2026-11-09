@@ -58,7 +58,10 @@ if [[ -n "${CLAUDE_MD_OVERLAY:-}" ]]; then cat "$kit/$CLAUDE_MD_OVERLAY" >> "$cf
 printf '{"claude_code":"%s","node":"%s","model":"%s","setup":"%s","token_source":"anthropic_key"}\n' \
   "$(claude --version | head -1)" "$(node --version)" "$model" "$setup" > "$out/versions.json"
 
-args=(-p "$(cat "$task")" --output-format stream-json --verbose --dangerously-skip-permissions --model "$model")
+# The task goes in on stdin, never on argv: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN)
+# and project-tracker-xl's instruction is 150 KB, so passing it as the -p argument exits 126,
+# "Argument list too long" (TDM-239). `claude -p` with no prompt argument reads it from stdin.
+args=(-p --output-format stream-json --verbose --dangerously-skip-permissions --model "$model")
 [[ -n "${CC_MAX_TURNS:-}" ]] && args+=(--max-turns "$CC_MAX_TURNS")
 # One --disallowedTools value per tool ("Task Agent" -> Task, Agent).
 if [[ -n "${CC_DISALLOWED_TOOLS:-}" ]]; then
@@ -78,7 +81,7 @@ fi
 
 cd "$ws"
 set +e
-${limit[@]+"${limit[@]}"} claude "${args[@]}" < /dev/null 2> >(node "$board" redact > "$out/claude.stderr.log") |
+${limit[@]+"${limit[@]}"} claude "${args[@]}" < "$task" 2> >(node "$board" redact > "$out/claude.stderr.log") |
   node "$board" tap --file "$out/stream.jsonl"
 statuses=("${PIPESTATUS[@]}")
 set -e
