@@ -8,8 +8,9 @@
 // decides it is read from the runner's manifest.json by the worker when the trial ends, never
 // inferred from the state or the failure class:
 //
-//   present   manifest.json exists for this attempt and lists at least one file besides the
-//             runner's own logs and probes (FROZEN_RUNNER_OWN_FILES).
+//   present   manifest.json exists for this attempt and lists at least one file under
+//             workspace/ (FROZEN_WORKSPACE_DIR, TDM-248: the driver's stream.jsonl, versions.json
+//             and logs are not a workspace).
 //   grading   pending      present, the gate has not written its verdict yet (the run waits);
 //             graded       the gate scored the frozen outputs (trials.gate holds the verdict);
 //             unavailable  present, but our scoring could not grade it (no bundle in the store,
@@ -19,7 +20,17 @@
 //
 // An infra failure (failed_infra: the computer died, no frozen workspace) is unchanged: excluded
 // from scoring, retried, never billed.
+//
+// TDM-248 [21.8]: a failed_subject trial that OUR runner stopped (token cap, the run's budget
+// stop, wall-clock cap) and whose workspace was then not frozen lost its work to us, not to the
+// subject (harness league run 1: the runner killed the driver before it copied the workspace).
+// It is "not graded (infra)" (workspaceLostByInfra): left out of scoring like failed_infra,
+// never a 0, and the report names it. The runner now freezes the workspace itself after such a
+// stop (`runner_froze`); a runner freeze that found nothing is the subject's empty workspace.
 import { z } from "zod";
+
+/** Where the frozen workspace sits in the outputs: every workspace gate reads $EVAL_OUT/workspace/. */
+export const FROZEN_WORKSPACE_DIR = "workspace";
 
 /** Files the runner writes into ~/eval/out itself: their presence is not the subject's work. */
 export const FROZEN_RUNNER_OWN_FILES = [
@@ -43,8 +54,13 @@ export const FrozenWorkspaceSchema = z.strictObject({
   manifest: z.boolean(),
   /** Files the manifest lists. */
   files: z.int().nonnegative(),
-  /** Of which are not the runner's own (FROZEN_RUNNER_OWN_FILES). */
+  /** Of which are under workspace/ (FROZEN_WORKSPACE_DIR). */
   workspace_files: z.int().nonnegative(),
+  /**
+   * TDM-248: the runner itself froze EVAL_WS after it stopped the subject (manifest.json
+   * `workspace_freeze`, no error). Absent on manifests from older runners.
+   */
+  runner_froze: z.boolean().optional(),
   /** The manifest's `frozen_at`, when it had one. */
   frozen_at: z.string().nullable(),
   grading: FrozenGradingSchema,
@@ -63,6 +79,49 @@ export function frozenWorkspaceOf(raw: unknown): FrozenWorkspace | null {
 export function frozenGradingPending(state: string, raw: unknown): boolean {
   return state === "failed_subject" && frozenWorkspaceOf(raw)?.grading === "pending";
 }
+
+/**
+ * TDM-248: failure classes that mean our runner (or the executor) stopped the subject: the token
+ * cap or the run's budget stop (`budget`), the wall-clock cap.
+ */
+export const RUNNER_STOP_FAILURE_CLASSES = ["budget", "wall_clock_exceeded", "wall_clock"] as const;
+
+/** The verdict every workspace gate writes when the outputs carry no workspace/ at all. */
+export const NO_WORKSPACE_VERDICT = /the outputs have no workspace\//;
+
+/**
+ * TDM-248: our infra lost this trial's workspace, so it is "not graded (infra)": a failed_subject
+ * trial our runner stopped, with no runner freeze, and either nothing frozen (`grading: none`) or
+ * a gate that found no workspace/ in the outputs (manifests from before TDM-248 counted the
+ * driver's own logs as workspace files, so those trials were "graded" on nothing). Never true for
+ * a trial the subject ended itself, for one the runner froze (even empty), or for one our scoring
+ * could not grade (`unavailable`, TDM-232: a fail, since a contender could provoke that).
+ */
+export function workspaceLostByInfra(input: {
+  state: string;
+  failureClass: string | null | undefined;
+  frozen: unknown;
+  /** The trial's gate verdict reasons (its gate.json `reason`s). */
+  gateReasons?: readonly string[];
+  /** The graded hidden-test fraction, when its gate wrote one. */
+  hiddenTestFraction?: number | undefined;
+}): boolean {
+  if (input.state !== "failed_subject") return false;
+  if (!(RUNNER_STOP_FAILURE_CLASSES as readonly string[]).includes(input.failureClass ?? ""))
+    return false;
+  const f = frozenWorkspaceOf(input.frozen);
+  if (!f || f.runner_froze === true) return false;
+  if (f.grading === "none") return true;
+  return (
+    f.grading === "graded" &&
+    input.hiddenTestFraction === undefined &&
+    (input.gateReasons ?? []).some((r) => NO_WORKSPACE_VERDICT.test(r))
+  );
+}
+
+/** TDM-248: the report's words for a trial whose workspace our infra lost. */
+export const NOT_GRADED_INFRA =
+  "not graded (infra): our runner stopped it before its workspace was saved, so it is left out of scoring (not counted as 0) and has to run again";
 
 /** Why a failed_subject trial stopped, in words, from its failure_class (runner or executor). */
 export function subjectStopWords(failureClass: string | null | undefined): string {
@@ -104,9 +163,24 @@ export function subjectFailureNote(input: {
   hiddenTestFraction?: number | undefined;
   hiddenTestsPassed?: number | undefined;
   hiddenTestsTotal?: number | undefined;
+  /** TDM-248: the trial's gate verdict reasons, to recognise a workspace our infra lost. */
+  gateReasons?: readonly string[];
+  /** TDM-248: the trial's state (default failed_subject: the note is for those). */
+  state?: string;
 }): string {
   const stop = subjectStopWords(input.failureClass);
   const frozen = frozenWorkspaceOf(input.frozen);
+  if (
+    workspaceLostByInfra({
+      state: input.state ?? "failed_subject",
+      failureClass: input.failureClass,
+      frozen: input.frozen,
+      ...(input.gateReasons ? { gateReasons: input.gateReasons } : {}),
+      hiddenTestFraction: input.hiddenTestFraction,
+    })
+  ) {
+    return `${stop}; ${NOT_GRADED_INFRA}`;
+  }
   switch (frozen?.grading) {
     case "graded": {
       const { hiddenTestsPassed: k, hiddenTestsTotal: n, hiddenTestFraction: f } = input;
@@ -123,6 +197,8 @@ export function subjectFailureNote(input: {
     case "unavailable":
       return `${stop}; its frozen workspace could not be graded (our scoring failed${frozen.reason ? `: ${frozen.reason}` : ""}), counted as a fail with no partial credit`;
     default:
-      return `${stop}; no frozen workspace to grade, counted as a fail`;
+      return frozen?.runner_froze
+        ? `${stop}; its workspace was frozen empty, counted as a fail`
+        : `${stop}; no frozen workspace to grade, counted as a fail`;
   }
 }

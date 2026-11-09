@@ -11,6 +11,10 @@
 // running → collecting (collect), and on failure the final edge to failed_subject / failed_infra /
 // cancelled. After a subject failure the runner still collects, freezes and uploads what exists,
 // so the investigator has evidence, and reports the failure last.
+//
+// TDM-248: when the runner itself stopped the subject's verb (token cap, the run's budget stop,
+// wall-clock cap), the driver was killed before it could copy EVAL_WS into EVAL_OUT/workspace/,
+// so `collect` makes that copy (freeze-ws.ts) and manifest.json says so (`workspace_freeze`).
 
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
@@ -21,6 +25,12 @@ import { sha256File } from "@anybench/envs";
 import { loadEnvFile } from "./envfile.js";
 import { EventSink, type FetchLike } from "./events.js";
 import { defaultShell, RedactingLineWriter, runVerb, type VerbResult } from "./exec.js";
+import {
+  freezeWorkspace,
+  STOP_FREEZE_DIR,
+  type SubjectStop,
+  type WorkspaceFreeze,
+} from "./freeze-ws.js";
 import { listFiles, matchFiles } from "./glob.js";
 import { loadTrialJob, TrialJobError, type TrialJob } from "./job.js";
 import { LogChunker, type LogStream } from "./logs.js";
@@ -187,6 +197,9 @@ class TrialRun {
   private runBudgetStop: string | null = null;
   private resolveBudget!: () => void;
   private readonly budgetStop = new Promise<void>((r) => (this.resolveBudget = r));
+  /** TDM-248: the runner killed a subject verb (cap or budget stop): freeze EVAL_WS at collect. */
+  private subjectStop: SubjectStop | null = null;
+  private workspaceFreeze: WorkspaceFreeze | null = null;
 
   constructor(
     private readonly job: TrialJob,
@@ -456,6 +469,7 @@ class TrialRun {
     // collect: stop the driver first so whatever it flushes on exit is collected too.
     await this.enter("collect");
     await this.stopDriver();
+    if (this.subjectStop) await this.freezeStoppedWorkspace(this.subjectStop);
     for (const rel of await matchFiles(p.wsDir, job.collect)) {
       const dest = join(p.artifactsDir, rel);
       await mkdir(dirname(dest), { recursive: true });
@@ -480,6 +494,7 @@ class TrialRun {
       attempt: job.attempt,
       frozen_at: new Date().toISOString(),
       files: manifest,
+      ...(this.workspaceFreeze ? { workspace_freeze: this.workspaceFreeze } : {}),
     });
     await writeTarGz(
       p.outDir,
@@ -512,6 +527,25 @@ class TrialRun {
       this.status.upload = { state: "failed", artifacts: [], error };
       this.log(`runner: upload failed: ${error}`);
     }
+  }
+
+  /**
+   * TDM-248: the runner stopped the subject, so the driver never froze its workspace: copy EVAL_WS
+   * into EVAL_OUT/workspace/ (replacing a partial copy), within the bundle's transfer cap.
+   */
+  private async freezeStoppedWorkspace(trigger: SubjectStop): Promise<void> {
+    const p = this.paths;
+    const f = await freezeWorkspace(p.wsDir, join(p.outDir, STOP_FREEZE_DIR), {
+      trigger,
+      dir: STOP_FREEZE_DIR,
+      maxBytes: this.job.upload.max_bytes,
+    });
+    this.workspaceFreeze = f;
+    this.log(
+      `runner: froze the workspace after the ${trigger} stop: ${f.files} files, ${f.bytes} bytes` +
+        (f.skipped ? `, ${f.skipped} skipped` : "") +
+        (f.error ? `; error: ${f.error}` : ""),
+    );
   }
 
   private async waitReady(command: string): Promise<boolean> {
@@ -610,6 +644,11 @@ class TrialRun {
   /** True on exit 0; otherwise records a subject failure (first one wins). */
   private verbOk(r: VerbResult, failureClass: string, what: string, metered = false): boolean {
     if (r.cancelled) throw new CancelledError();
+    // TDM-248: we killed the subject's verb, so its driver could not freeze the workspace.
+    if (metered && !this.subjectStop) {
+      if (r.aborted) this.subjectStop = "budget";
+      else if (r.timedOut) this.subjectStop = "wall_clock";
+    }
     // Crossing the token cap fails the verb even if it managed to exit 0 before the kill landed.
     if (metered && this.budgetHit) {
       this.fail("failed_subject", "budget", this.budgetReason(this.budgetHit, what));

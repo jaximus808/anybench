@@ -17,4 +17,5 @@ export * from "./machine.js";
 export * from "./logs.js";
 export * from "./token-cap.js";
 export * from "./netprobe.js";
+export * from "./freeze-ws.js";
 export { runTrial, RUNNER_EXIT, type RunTrialOptions, type RunTrialResult } from "./runner.js";

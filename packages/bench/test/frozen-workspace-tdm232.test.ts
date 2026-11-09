@@ -128,7 +128,7 @@ describe("frozen workspace fact (TDM-232)", () => {
       present: true,
       manifest: true,
       files: 5,
-      workspace_files: 2,
+      workspace_files: 1, // TDM-248: stream.jsonl is the driver's, not the workspace
       frozen_at: "2026-11-09T04:00:00.000Z",
       grading: "pending",
     });

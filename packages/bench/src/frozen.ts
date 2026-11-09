@@ -5,8 +5,12 @@
 // attempt froze a workspace is graded on it like a `collecting` trial; it keeps its outcome. An
 // infra failure never gets here (no manifest: the computer died before the freeze), and stays
 // excluded, retried and unbilled.
+//
+// TDM-248: only files under workspace/ count as the workspace. Before, every file that was not
+// the runner's own counted, so a coding-agent driver's stream.jsonl, versions.json and
+// claude.stderr.log read as "3 workspace files, present" and the gate graded nothing.
 import {
-  FROZEN_RUNNER_OWN_FILES,
+  FROZEN_WORKSPACE_DIR,
   frozenWorkspaceOf,
   type FrozenWorkspace,
   type TrialState,
@@ -18,9 +22,13 @@ const ManifestSchema = z.object({
   attempt: z.int().positive().optional(),
   frozen_at: z.string().optional(),
   files: z.array(z.object({ path: z.string().min(1) })),
+  /** TDM-248: the runner froze EVAL_WS itself after it stopped the subject (runner freeze-ws.ts). */
+  workspace_freeze: z
+    .object({ by: z.literal("runner"), error: z.string().nullable().optional() })
+    .optional(),
 });
 
-const OWN = new Set<string>(FROZEN_RUNNER_OWN_FILES);
+const WORKSPACE_PREFIX = `${FROZEN_WORKSPACE_DIR}/`;
 
 /**
  * manifest.json (parsed JSON, or null when absent) → the fact. A manifest from another attempt
@@ -44,15 +52,22 @@ export function frozenWorkspaceFromManifest(raw: unknown, attempt: number): Froz
     return none(`manifest.json is from attempt ${m.data.attempt}, not ${attempt}`);
   }
   const files = m.data.files.length;
-  const workspace = m.data.files.filter((f) => !OWN.has(f.path)).length;
+  const workspace = m.data.files.filter((f) => f.path.startsWith(WORKSPACE_PREFIX)).length;
+  const freeze = m.data.workspace_freeze;
   const base = {
     manifest: true,
     files,
     workspace_files: workspace,
     frozen_at: m.data.frozen_at ?? null,
+    ...(freeze ? { runner_froze: !freeze.error } : {}),
   };
   if (workspace === 0) {
-    return none("the manifest lists only the runner's own logs and probes", base);
+    return none(
+      freeze && !freeze.error
+        ? "the runner froze the workspace after stopping the subject, and it was empty"
+        : `the manifest lists no ${WORKSPACE_PREFIX} files`,
+      base,
+    );
   }
   return { present: true, ...base, grading: "pending" };
 }

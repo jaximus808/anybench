@@ -49,6 +49,7 @@ import {
 import { requireScope } from "../lib/auth-key.js";
 import type { AppDeps } from "../types.js";
 import { gatePassed } from "../lib/trial-trace/parse.js";
+import { gatesOf } from "../orchestrator/proof-score.js";
 import { summarizeRunTraces, type TracedTrial } from "../lib/trial-trace/summary.js";
 
 const contract = apiRoutes.trials;
@@ -147,6 +148,8 @@ export function outcomeNoteOf(row: TrialRow): string | null {
     hiddenTestFraction: m[HIDDEN_TEST_FRACTION_METRIC],
     hiddenTestsPassed: m[HIDDEN_TESTS_PASSED_METRIC],
     hiddenTestsTotal: m[HIDDEN_TESTS_TOTAL_METRIC],
+    // TDM-248: a workspace our runner lost reads "not graded (infra)", not a fail.
+    gateReasons: Object.values(gatesOf(row.gate)).map((g) => g.reason),
   });
 }
 

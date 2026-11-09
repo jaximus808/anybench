@@ -43,6 +43,7 @@ import {
   HIDDEN_TESTS_TOTAL_METRIC,
   PROOF_CHECKS,
   subjectFailureNote,
+  workspaceLostByInfra,
   RequirementComparisonSchema,
   type ContenderResult,
   type RequirementComparison,
@@ -314,6 +315,12 @@ export const StoredScoreSchema = z.object({
     scored: z.int().nonnegative(),
     warmups: z.int().nonnegative(),
     infra: z.int().nonnegative(),
+    /**
+     * TDM-248: failed_subject trials our runner stopped and whose workspace our infra lost
+     * (core workspaceLostByInfra): "not graded (infra)", left out like infra failures. Absent
+     * in scores stored before TDM-248.
+     */
+    infra_lost: z.int().nonnegative().default(0),
     cancelled: z.int().nonnegative(),
   }),
   /** Measured trials per contender × workload: the n of every comparison. */
@@ -346,14 +353,29 @@ export function gatesOf(raw: unknown): Record<string, GateResult> {
   return plain.success ? plain.data : {};
 }
 
+/** TDM-248: our infra lost this failed_subject trial's workspace (core workspaceLostByInfra). */
+export function lostByInfra(t: StageTrial): boolean {
+  return workspaceLostByInfra({
+    state: t.state,
+    failureClass: t.failure_class ?? null,
+    frozen: t.frozen_workspace,
+    gateReasons: Object.values(gatesOf(t.gate)).map((g) => g.reason),
+    hiddenTestFraction: numbersOf(t.metrics)[HIDDEN_TEST_FRACTION_METRIC],
+  });
+}
+
 /** A settled trial → the scorer's TrialResult, or why it is left out. */
 export function trialResultOf(
   t: StageTrial,
   basis: KitCostBasis = { kind: "compute_proxy" },
-): { ok: true; result: TrialResult } | { ok: false; why: "warmups" | "infra" | "cancelled" } {
+):
+  | { ok: true; result: TrialResult }
+  | { ok: false; why: "warmups" | "infra" | "infra_lost" | "cancelled" } {
   if (t.repeat < 0) return { ok: false, why: "warmups" };
   if (t.state === "failed_infra") return { ok: false, why: "infra" };
   if (t.state === "cancelled") return { ok: false, why: "cancelled" };
+  // TDM-248: a workspace our runner lost is not the subject's fail: left out, never a 0.
+  if (lostByInfra(t)) return { ok: false, why: "infra_lost" };
   const metrics = numbersOf(t.metrics);
   // Plan 17.2 rule 5: cost comes from the provider side, never from a file the agent can write.
   delete metrics.cost_micro_usd;
@@ -394,7 +416,7 @@ export function kitScore(): PipelinePort["score"] {
 
 /** scoreKit over the run's settled, measured trials, as runs.stage_outputs.score stores it. */
 export function storedScoreOf(kit: KitSpec, trials: readonly StageTrial[]): StoredScore {
-  const excluded = { warmups: 0, infra: 0, cancelled: 0 };
+  const excluded = { warmups: 0, infra: 0, infra_lost: 0, cancelled: 0 };
   const results: TrialResult[] = [];
   const basis = kitCostBasis(kit);
   for (const t of trials) {
@@ -635,7 +657,7 @@ export function subjectFailureLines(
   nameOf: (contender: string) => string,
 ): string[] {
   return trials
-    .filter((t) => t.repeat >= 0 && t.state === "failed_subject")
+    .filter((t) => t.repeat >= 0 && t.state === "failed_subject" && !lostByInfra(t))
     .map((t) => {
       const m = numbersOf(t.metrics);
       const note = subjectFailureNote({
@@ -647,6 +669,27 @@ export function subjectFailureLines(
       });
       return `- ${nameOf(t.contender)}, ${t.workload_id} #${t.repeat + 1}: ${note}`;
     });
+}
+
+/**
+ * TDM-248: one line per trial whose workspace our infra lost, e.g. "- B · Claude Code + subagents,
+ * project-tracker-xl #1: stopped at the token cap; not graded (infra): our runner stopped it ...".
+ */
+export function infraLostLines(
+  trials: readonly StageTrial[],
+  nameOf: (contender: string) => string,
+): string[] {
+  return trials
+    .filter((t) => t.repeat >= 0 && lostByInfra(t))
+    .map(
+      (t) =>
+        `- ${nameOf(t.contender)}, ${t.workload_id} #${t.repeat + 1}: ${subjectFailureNote({
+          failureClass: t.failure_class ?? null,
+          frozen: t.frozen_workspace,
+          gateReasons: Object.values(gatesOf(t.gate)).map((g) => g.reason),
+          hiddenTestFraction: numbersOf(t.metrics)[HIDDEN_TEST_FRACTION_METRIC],
+        })}`,
+    );
 }
 
 /** The deterministic report: per-requirement values with n, honest wording, no composite. */
@@ -709,9 +752,18 @@ export function buildSummary(
     : generalSentence;
   lines.push(sentence, "");
   lines.push(
-    `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.cancelled} cancelled.`,
+    `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.infra_lost ? `${score.trials.infra_lost} not graded (infra: our runner lost the workspace), ` : ""}${score.trials.cancelled} cancelled.`,
     "",
   );
+  // TDM-248: each trial whose workspace our infra lost, named, so nobody reads it as a 0.
+  const lost = infraLostLines(input.trials, nameOf);
+  if (lost.length) {
+    lines.push(
+      `Not graded (infra) (${lost.length}; left out of every requirement, never counted as 0, to run again):`,
+      ...lost,
+      "",
+    );
+  }
   // TDM-232: what happened to each trial that failed on the subject's side (scored as a fail).
   const stopped = subjectFailureLines(input.trials, nameOf);
   if (stopped.length) {
@@ -820,8 +872,10 @@ export function buildSummary(
   >;
   for (const t of input.trials) {
     if (t.repeat < 0) continue;
-    if (t.state === "failed_subject") failures.subject++;
-    else if (t.state === "failed_infra") failures.infra++;
+    if (t.state === "failed_subject") {
+      if (lostByInfra(t)) failures.infra++;
+      else failures.subject++;
+    } else if (t.state === "failed_infra") failures.infra++;
     else if (t.state === "done") {
       const gates = Object.values(gatesOf(t.gate));
       if (gates.some((g) => g.applicable !== false && !g.pass)) failures.gate++;
