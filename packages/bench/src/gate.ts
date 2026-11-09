@@ -47,6 +47,9 @@ import { join, posix } from "node:path";
 import {
   GateResultSchema,
   GateSchema,
+  HIDDEN_TEST_FRACTION_METRIC,
+  HIDDEN_TESTS_PASSED_METRIC,
+  HIDDEN_TESTS_TOTAL_METRIC,
   KitPathSchema,
   KitSlugSchema,
   type Gate,
@@ -194,9 +197,10 @@ export const GateOutcomeSchema = z.object({
    */
   kit_suspect: z.boolean(),
   /**
-   * The check's metric rows (`<gate>.metrics.jsonl`), name → value. Present only on a passing
-   * verdict: a failing or not-applicable gate never vouches for a number. Absent in records
-   * written before gates returned metrics.
+   * The check's metric rows (`<gate>.metrics.jsonl`), name → value. Every row of a passing
+   * verdict; of a failing one only its correctness counts (GATE_FAIL_VOUCHED_METRICS, TDM-232:
+   * the share of hidden tests passed); a not-applicable gate never vouches for a number. Absent in
+   * records written before gates returned metrics.
    */
   metrics: z.record(z.string(), z.number()).optional(),
 });
@@ -231,14 +235,30 @@ export function gateResultsOf(record: TrialGateRecord): Record<string, GateResul
 }
 
 /**
- * The metrics the trial's gates vouch for: every passing verdict's rows, in gate order (the first
- * gate to name a metric wins). This is where `api_p95_ms` reaches `trials.metrics`.
+ * Rows a FAILING verdict still vouches for (TDM-232): the correctness counts the gate computed on
+ * the scoring computer (the share of hidden tests passed and its counts). They are correctness
+ * itself, so a failed trial's partial work counts (`all_trials`, `per_test_passed`); speed and
+ * cost rows of a failing verdict never count.
+ */
+export const GATE_FAIL_VOUCHED_METRICS: readonly string[] = [
+  HIDDEN_TEST_FRACTION_METRIC,
+  HIDDEN_TESTS_PASSED_METRIC,
+  HIDDEN_TESTS_TOTAL_METRIC,
+];
+
+/**
+ * The metrics the trial's gates vouch for: every passing verdict's rows, plus a failing verdict's
+ * correctness counts (GATE_FAIL_VOUCHED_METRICS), in gate order (the first gate to name a metric
+ * wins). This is where `api_p95_ms` and `hidden_test_fraction` reach `trials.metrics`.
  */
 export function trialGateMetrics(record: TrialGateRecord): Record<string, number> {
   const out: Record<string, number> = {};
   for (const o of Object.values(record.gates)) {
-    if (o.status !== "verdict" || !o.result.pass || !o.metrics) continue;
-    for (const [k, v] of Object.entries(o.metrics)) if (!(k in out)) out[k] = v;
+    if (o.status !== "verdict" || !o.metrics) continue;
+    for (const [k, v] of Object.entries(o.metrics)) {
+      if (k in out) continue;
+      if (o.result.pass || GATE_FAIL_VOUCHED_METRICS.includes(k)) out[k] = v;
+    }
   }
   return out;
 }
@@ -1159,9 +1179,16 @@ export async function runGates(
         verdictText,
         logTail: tail.exitCode === 0 ? clip(tail.stdout, LOG_TAIL_MAX_CHARS) : "",
       });
-      if (outcome.status === "verdict" && outcome.result.pass) {
+      // A passing verdict vouches for every row; a failing (applicable) one only for its
+      // correctness counts, so a failed trial's partial work is scored (TDM-232).
+      if (outcome.status === "verdict" && (outcome.result.pass || outcome.result.applicable)) {
         const m = await exec(rootCat(`${SCORE_ROOT}/status/${g.id}.metrics`), 30_000);
-        const metrics = m.exitCode === 0 && !m.truncated ? parseGateMetrics(m.stdout) : {};
+        const rows = m.exitCode === 0 && !m.truncated ? parseGateMetrics(m.stdout) : {};
+        const metrics = outcome.result.pass
+          ? rows
+          : Object.fromEntries(
+              Object.entries(rows).filter(([k]) => GATE_FAIL_VOUCHED_METRICS.includes(k)),
+            );
         if (Object.keys(metrics).length > 0) outcome.metrics = metrics;
       }
       outcomes[g.id] = outcome;

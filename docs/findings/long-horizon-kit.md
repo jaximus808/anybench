@@ -113,6 +113,16 @@ one-sentence clarifications that no hidden test depends on; the full run uses th
    answers "no score: gate missing" for every gated requirement of the run
    (`packages/bench/src/score.ts` `judgedTrials`). With a 3 h cap and a $25 cap per trial that
    is a real risk for the first run.
+   **Fixed by TDM-232**: the worker records `trials.frozen_workspace` from the runner's
+   `manifest.json` when the runner ends; a `failed_subject` trial with workspace files in it is
+   graded by `trial.gate` and keeps its outcome (the run waits for the grade). Its
+   `hidden_test_fraction` counts as partial work; `gate_pass_rate`, wall (at the cap) and cost
+   (against the solves) count it as failed. A subject failure with nothing to grade is a fail,
+   never "gate missing". A failing hidden-tests verdict now also carries
+   `hidden_test_fraction` / `hidden_tests_passed` / `hidden_tests_total` (before, only a passing
+   verdict's metric rows were read, so a failed trial's fraction never reached `trials.metrics`).
+   The report lists each such trial ("stopped at the token cap; graded on its frozen workspace
+   (87 of 120 hidden tests)") and so does the trial drawer.
 4. **The skeptic still blocks the kit**, on work outside this ticket: `solution_leakage` and
    `answer_in_workloads` on `instruction.md` and the byte-identical `tracker-v1.json` (TDM-208 /
    TDM-209; the fixture copy is identical by design), and `weak_do_less` (no partial oracles yet;

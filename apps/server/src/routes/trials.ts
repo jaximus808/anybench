@@ -19,7 +19,12 @@ import {
   apiRoutes,
   ComputeProviderNameSchema,
   FailureClassSchema,
+  frozenWorkspaceOf,
   GateResultSchema,
+  HIDDEN_TEST_FRACTION_METRIC,
+  HIDDEN_TESTS_PASSED_METRIC,
+  HIDDEN_TESTS_TOTAL_METRIC,
+  subjectFailureNote,
   TrialStateSchema,
   type Trial,
   type TrialDetail,
@@ -112,7 +117,7 @@ export function toTrial(row: TrialRow): Trial {
   };
 }
 
-function toTrialDetail(row: TrialRow, phases: TrialDetail["phases"]): TrialDetail {
+export function toTrialDetail(row: TrialRow, phases: TrialDetail["phases"]): TrialDetail {
   const gate = GateResultSchema.safeParse(row.gate);
   const machine = machineOf(row.machine);
   const provider = ComputeProviderNameSchema.safeParse(row.provider);
@@ -127,7 +132,22 @@ function toTrialDetail(row: TrialRow, phases: TrialDetail["phases"]): TrialDetai
     gate: gate.success ? gate.data : null,
     versions: versionsOf(machine),
     phases,
+    frozen_workspace: frozenWorkspaceOf(row.frozenWorkspace),
+    outcome_note: outcomeNoteOf(row),
   };
+}
+
+/** TDM-232: a failed_subject trial's account in words (core subjectFailureNote). */
+export function outcomeNoteOf(row: TrialRow): string | null {
+  if (row.state !== "failed_subject") return null;
+  const m = metricsOf(row.metrics) ?? {};
+  return subjectFailureNote({
+    failureClass: row.failureClass,
+    frozen: row.frozenWorkspace,
+    hiddenTestFraction: m[HIDDEN_TEST_FRACTION_METRIC],
+    hiddenTestsPassed: m[HIDDEN_TESTS_PASSED_METRIC],
+    hiddenTestsTotal: m[HIDDEN_TESTS_TOTAL_METRIC],
+  });
 }
 
 /** GET /runs/:id/trials. Mount at /runs. */

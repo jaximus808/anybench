@@ -15,6 +15,15 @@
 // gates' metric rows (api_p95_ms) and the attempt's Naïve proxy spend on top of the compute share.
 // Same transaction as `done`, so the run never scores a trial without them.
 //
+// TDM-232: a failed_subject trial whose attempt froze a workspace (trials.frozen_workspace grading
+// `pending`, recorded by the executor from the runner's manifest.json) is graded the same way and
+// KEEPS its outcome: no state change, no phase event, its failure_class stays (budget,
+// wall_clock_exceeded, run_failed, ...). Its hidden-test fraction then counts its partial work;
+// gate_pass_rate, wall (at the cap) and cost (against the solves) count it as failed, as before.
+// When our scoring can't grade it (no bundle, scoring infra past its retries, a kit that does not
+// load) it stays failed_subject with grading `unavailable`: it is a fail with no partial credit,
+// never a failed_infra (its run already ended; a re-run would be a free re-roll).
+//
 // Idempotent: a trial not in collecting/gating, or on another attempt, is left alone. The verdict,
 // the state change and the events commit in one transaction guarded by `state = 'gating'`, so a
 // retried job never writes twice.
@@ -30,6 +39,7 @@
 import { fileURLToPath } from "node:url";
 import {
   AnybenchEventSchema,
+  frozenWorkspaceOf,
   RunIdSchema,
   safeParseKitSpec,
   transitionTrial,
@@ -41,6 +51,7 @@ import {
   collectScoringFiles,
   FROZEN_BUNDLE_NAME,
   classifyGateRecord,
+  gradesFrozenWorkspace,
   GateInfraError,
   GateKitError,
   runGates,
@@ -60,7 +71,7 @@ import {
 import type { ProxySpendSource } from "@anybench/naive";
 import { isProviderOutageError, type ComputeProvider } from "@anybench/providers";
 import type { LaunchBreaker } from "@anybench/bench";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { computers } from "../db/schema/computers.js";
@@ -224,6 +235,8 @@ export interface GateTrialDeps {
 export type GateTrialReport =
   | { outcome: "skipped"; reason: string }
   | { outcome: "scored"; to: TrialState; record: TrialGateRecord }
+  /** TDM-232: a failed_subject trial's frozen workspace could not be graded (ours). */
+  | { outcome: "ungraded"; reason: string }
   | {
       outcome: "failed_infra";
       failureClass: "infra" | "kit";
@@ -267,9 +280,17 @@ export async function gateTrial(
       reason: `stale attempt ${payload.attempt} (trial is on ${trial.attempt})`,
     };
   }
-  if (trial.state !== "collecting" && trial.state !== "gating") {
+  // TDM-232: a subject failure that froze a workspace is graded in place (it keeps its outcome).
+  const subject = gradesFrozenWorkspace({
+    state: trial.state,
+    frozen_workspace: trial.frozenWorkspace,
+  });
+  if (!subject && trial.state !== "collecting" && trial.state !== "gating") {
     return { outcome: "skipped", reason: `trial is ${trial.state}, not collecting or gating` };
   }
+  /** The state the verdict's update is guarded by. */
+  const scoringState: TrialState = subject ? "failed_subject" : "gating";
+  const frozenFact = frozenWorkspaceOf(trial.frozenWorkspace);
   const runId = RunIdSchema.parse(trial.runId);
   const phase = (from: TrialState, to: TrialState, at: Date, extra: object = {}): EventDraft => ({
     type: "trial.phase",
@@ -304,12 +325,54 @@ export async function gateTrial(
     });
   }
 
+  /**
+   * TDM-232: our scoring could not grade a failed_subject trial's frozen workspace. It stays
+   * failed_subject (a fail with no partial credit), grading `unavailable` with the reason, and its
+   * cost and wall are recorded here (trial.execute left them to this job).
+   */
+  async function ungraded(reason: string): Promise<GateTrialReport> {
+    const proxy = await attemptProxySpend(deps.proxySpend, trial!);
+    const edges = (await trialPhaseEdges(deps.db, trial!.runId, [trial!.id])).get(trial!.id) ?? [];
+    const measured = trialMetrics({
+      attempt: trial!.attempt,
+      existing: trial!.metrics,
+      costMicroUsd: trial!.costMicroUsd,
+      edges,
+      gate: null,
+      proxy,
+    });
+    const updated = await deps.db
+      .update(trials)
+      .set({
+        metrics: measured.metrics,
+        costMicroUsd: measured.costMicroUsd,
+        frozenWorkspace: { ...frozenFact!, grading: "unavailable", reason },
+        updatedAt: now(),
+      })
+      .where(
+        and(
+          eq(trials.id, trial!.id),
+          eq(trials.state, "failed_subject"),
+          eq(trials.attempt, payload.attempt),
+          isNull(trials.gate),
+        ),
+      )
+      .returning({ id: trials.id });
+    if (updated.length === 0) return { outcome: "skipped", reason: "trial was graded meanwhile" };
+    deps.logger?.warn(
+      { trialId: trial!.id, reason },
+      "trial.gate: frozen workspace of a failed_subject trial not graded (counted as a fail)",
+    );
+    return { outcome: "ungraded", reason };
+  }
+
   /** gating → failed_infra (our fault: never billed, retried by the executor). */
   async function failInfra(
     failureClass: "infra" | "kit",
     reason: string,
     record: TrialGateRecord | null,
   ): Promise<GateTrialReport> {
+    if (subject) return ungraded(`${failureClass === "kit" ? "kit: " : ""}${reason}`);
     const t = transitionTrial("gating", {
       type: "fail_infra",
       reason,
@@ -427,8 +490,10 @@ export async function gateTrial(
   // unscored and drop out of the verdict family (proof-score already treats them that way).
   void reviewed;
   const command = { type: "skip_review" } as const;
-  const t = transitionTrial("gating", command);
-  if (!t.ok) throw new Error(t.error.message);
+  const moved = transitionTrial("gating", command);
+  if (!moved.ok) throw new Error(moved.error.message);
+  // A graded subject failure keeps its state (and failure_class): only the verdict is written.
+  const t = subject ? { to: "failed_subject" as const } : moved;
   const { failureClass, kitSuspects } = classifyGateRecord(record);
   const failedApplicable = failureClass !== null;
   const scored = record;
@@ -460,14 +525,16 @@ export async function gateTrial(
         costMicroUsd: measured.costMicroUsd,
         state: t.to,
         updatedAt: at,
-        ...(failedApplicable ? { failureClass: "gate" } : {}),
+        ...(failedApplicable && !subject ? { failureClass: "gate" } : {}),
         ...(t.to === "done" ? { endedAt: at } : {}),
+        ...(frozenFact ? { frozenWorkspace: { ...frozenFact, grading: "graded" as const } } : {}),
       })
       .where(
         and(
           eq(trials.id, trial.id),
-          eq(trials.state, "gating"),
+          eq(trials.state, scoringState),
           eq(trials.attempt, payload.attempt),
+          ...(subject ? [isNull(trials.gate)] : []),
         ),
       )
       .returning({ id: trials.id });
@@ -509,14 +576,20 @@ export async function gateTrial(
         payload: { gate: k.gate, status: k.status, reason: k.reason },
       });
     }
-    drafts.push(phase("gating", t.to, at));
+    if (!subject) drafts.push(phase("gating", t.to, at));
     await appendEvents(tx, runId, toEvents(trial.runId, drafts));
     return true;
   });
   if (!wrote) return { outcome: "skipped", reason: "trial left gating while it was scored" };
   deps.logger?.info(
-    { trialId: trial.id, to: t.to, gates: Object.keys(scored.gates).length, failedApplicable },
-    "trial gated",
+    {
+      trialId: trial.id,
+      to: t.to,
+      gates: Object.keys(scored.gates).length,
+      failedApplicable,
+      ...(subject ? { frozenWorkspace: true } : {}),
+    },
+    subject ? "failed_subject trial graded on its frozen workspace" : "trial gated",
   );
   if (deps.traces) {
     // After the score is committed: reads the bundle, writes only the trace artifact.

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ComputerIdSchema, ContenderIdSchema, RunIdSchema, TrialIdSchema } from "../ids.js";
 import { NonNegativeMicroUsdSchema } from "../money.js";
 import { GateResultSchema } from "../schemas/requirement.js";
+import { FrozenWorkspaceSchema } from "../schemas/frozen-workspace.js";
 import { ComputeProviderNameSchema } from "../schemas/env.js";
 import { TrialStateSchema } from "../state/trial.js";
 import { IsoDateTimeSchema, PageQuerySchema, csvListSchema, pageOf } from "./common.js";
@@ -44,6 +45,16 @@ export const TrialDetailSchema = TrialSchema.extend({
   gate: GateResultSchema.nullable(),
   versions: z.record(z.string(), z.string()),
   phases: z.array(z.object({ state: TrialStateSchema, at: IsoDateTimeSchema })),
+  /**
+   * TDM-232: whether the attempt froze a workspace and what grading did with it (absent on
+   * servers before it, null for a trial that has not ended).
+   */
+  frozen_workspace: FrozenWorkspaceSchema.nullable().optional(),
+  /**
+   * TDM-232: what happened to a failed_subject trial, in words, e.g. "stopped at the token cap;
+   * graded on its frozen workspace (87 of 120 hidden tests)". Null for any other state.
+   */
+  outcome_note: z.string().nullable().optional(),
 });
 export type TrialDetail = z.infer<typeof TrialDetailSchema>;
 

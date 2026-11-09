@@ -64,6 +64,12 @@ export const trials = pgTable(
      * absorbed without spending an attempt (packages/bench TRIAL_MAX_OUTAGE_PAUSES).
      */
     outagePauses: integer("outage_pauses").notNull().default(0),
+    /**
+     * TDM-232: the attempt's frozen-workspace fact (core FrozenWorkspaceSchema), from the runner's
+     * manifest.json when the runner ended: whether a workspace was frozen and what grading did
+     * with it. A failed_subject trial with one is graded (trial.gate) and keeps its outcome.
+     */
+    frozenWorkspace: jsonb("frozen_workspace"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

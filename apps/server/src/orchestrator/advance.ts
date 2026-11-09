@@ -38,6 +38,7 @@ import {
   RUN_PAUSE_BUDGET_FROM,
   safeParseKitSpec,
   formatSchemaIssues,
+  frozenGradingPending,
   KitIdSchema,
   newId,
   toJsonValue,
@@ -113,6 +114,10 @@ export const TRIAL_EXECUTE_TASK = "trial.execute";
 
 /** `trials:<id>:<attempt>`, the key trial.execute uses (jobs/trial-execute.ts). */
 export const trialJobKey = (trialId: string, attempt: number) => `trials:${trialId}:${attempt}`;
+/** jobs/trial-execute.ts TRIAL_GATE_JOB / trialGateJobKey (not imported: jobs → orchestrator). */
+export const TRIAL_GATE_TASK = "trial.gate";
+export const trialGateKey = (trialId: string, attempt: number) =>
+  `trials:${trialId}:${attempt}:gate`;
 
 export interface OrchestratorTiming {
   /** run.advance lease length. */
@@ -250,9 +255,15 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A trial that will not change any more on its own. */
-export function trialSettled(t: Pick<TrialRow, "state" | "attempt">): boolean {
-  if (t.state === "done" || t.state === "failed_subject" || t.state === "cancelled") return true;
+/**
+ * A trial that will not change any more on its own. TDM-232: a failed_subject trial whose frozen
+ * workspace is still waiting for its gate is not settled yet (the run scores it once graded).
+ */
+export function trialSettled(
+  t: Pick<TrialRow, "state" | "attempt"> & { frozenWorkspace?: unknown },
+): boolean {
+  if (t.state === "failed_subject") return !frozenGradingPending(t.state, t.frozenWorkspace);
+  if (t.state === "done" || t.state === "cancelled") return true;
   return t.state === "failed_infra" && t.attempt >= TRIAL_MAX_ATTEMPTS;
 }
 
@@ -268,6 +279,8 @@ export function stageTrialOf(t: TrialRow, slugs: Map<string, string>): StageTria
     metrics: t.metrics,
     gate: t.gate,
     cost_micro_usd: t.costMicroUsd,
+    failure_class: t.failureClass,
+    frozen_workspace: t.frozenWorkspace,
   };
 }
 
@@ -1030,14 +1043,26 @@ class RunAdvance {
 
   /** trial.execute for every trial that should run and has no live job (lost enqueues too). */
   private async enqueueTrialJobs(all: TrialRow[]): Promise<void> {
-    const wanted: { key: string; payload: Record<string, unknown> }[] = [];
+    const wanted: { task: string; key: string; payload: Record<string, unknown> }[] = [];
     for (const t of all) {
       if (t.leaseOwner) continue; // an executor holds it (trial.reattach covers a dead one)
       if (t.state === "queued") {
-        wanted.push({ key: trialJobKey(t.id, t.attempt), payload: { trial_id: t.id } });
+        wanted.push({
+          task: TRIAL_EXECUTE_TASK,
+          key: trialJobKey(t.id, t.attempt),
+          payload: { trial_id: t.id },
+        });
+      } else if (frozenGradingPending(t.state, t.frozenWorkspace)) {
+        // TDM-232: the executor enqueues this grade itself; this only replaces one that was lost.
+        wanted.push({
+          task: TRIAL_GATE_TASK,
+          key: trialGateKey(t.id, t.attempt),
+          payload: { trial_id: t.id, attempt: t.attempt },
+        });
       } else if (t.state === "failed_infra" && t.attempt < TRIAL_MAX_ATTEMPTS) {
         // The executor schedules this retry itself; this only replaces one that was lost.
         wanted.push({
+          task: TRIAL_EXECUTE_TASK,
           key: trialJobKey(t.id, t.attempt + 1),
           payload: { trial_id: t.id, retry: true },
         });
@@ -1047,7 +1072,7 @@ class RunAdvance {
     const pending = await this.deps.jobs.pendingKeys(wanted.map((w) => w.key));
     for (const w of wanted) {
       if (pending.has(w.key)) continue;
-      await this.deps.jobs.add(TRIAL_EXECUTE_TASK, w.payload, { jobKey: w.key });
+      await this.deps.jobs.add(w.task, w.payload, { jobKey: w.key });
     }
   }
 

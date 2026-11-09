@@ -9,3 +9,4 @@ export * from "./kit-adapter.js";
 export * from "./executor.js";
 export * from "./gate.js";
 export * from "./breaker.js";
+export * from "./frozen.js";

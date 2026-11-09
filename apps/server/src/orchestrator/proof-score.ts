@@ -34,7 +34,11 @@ import {
   FAILURE_CLASSES,
   formatUsd,
   GateResultSchema,
+  HIDDEN_TEST_FRACTION_METRIC,
+  HIDDEN_TESTS_PASSED_METRIC,
+  HIDDEN_TESTS_TOTAL_METRIC,
   PROOF_CHECKS,
+  subjectFailureNote,
   RequirementComparisonSchema,
   type ContenderResult,
   type RequirementComparison,
@@ -256,6 +260,9 @@ export function trialResultOf(
       repeat: t.repeat,
       metrics,
       gates: gatesOf(t.gate),
+      // TDM-232: a subject failure is a failed trial for every gate (graded on its frozen
+      // workspace or not); its graded hidden-test fraction still counts as its partial work.
+      ...(t.state === "failed_subject" ? { failedSubject: true as const } : {}),
     },
   };
 }
@@ -498,6 +505,29 @@ export interface SummaryInput {
   disclosure?: string;
 }
 
+/**
+ * TDM-232: one line per measured failed_subject trial, e.g. "- A · Claude Code solo, project-tracker
+ * #2: stopped at the token cap; graded on its frozen workspace (87 of 120 hidden tests)".
+ */
+export function subjectFailureLines(
+  trials: readonly StageTrial[],
+  nameOf: (contender: string) => string,
+): string[] {
+  return trials
+    .filter((t) => t.repeat >= 0 && t.state === "failed_subject")
+    .map((t) => {
+      const m = numbersOf(t.metrics);
+      const note = subjectFailureNote({
+        failureClass: t.failure_class ?? null,
+        frozen: t.frozen_workspace,
+        hiddenTestFraction: m[HIDDEN_TEST_FRACTION_METRIC],
+        hiddenTestsPassed: m[HIDDEN_TESTS_PASSED_METRIC],
+        hiddenTestsTotal: m[HIDDEN_TESTS_TOTAL_METRIC],
+      });
+      return `- ${nameOf(t.contender)}, ${t.workload_id} #${t.repeat + 1}: ${note}`;
+    });
+}
+
 /** The deterministic report: per-requirement values with n, honest wording, no composite. */
 export type SummaryAnalysis = {
   md: string;
@@ -556,6 +586,15 @@ export function buildSummary(
     `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.cancelled} cancelled.`,
     "",
   );
+  // TDM-232: what happened to each trial that failed on the subject's side (scored as a fail).
+  const stopped = subjectFailureLines(input.trials, nameOf);
+  if (stopped.length) {
+    lines.push(
+      `Stopped early (${stopped.length}, scored as failed trials; a frozen workspace's hidden-test share counts as partial work):`,
+      ...stopped,
+      "",
+    );
+  }
   for (const req of kit.requirements) {
     const desc =
       req.type === "measured"

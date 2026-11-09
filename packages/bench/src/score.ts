@@ -155,6 +155,16 @@ export const TrialResultSchema = z.strictObject({
   gates: z.record(z.string(), GateResultSchema),
   /** reviewed requirement id → reviewer score on the requirement's scale. */
   reviews: z.record(z.string(), z.number()).default({}),
+  /**
+   * TDM-232: the trial ended failed on the subject's side (`failed_subject`: a wall-clock or token
+   * cap, a driver that exited non-zero). Every gate that applies counts as FAILED for it, even
+   * one whose verdict on its frozen workspace passed: gate_pass_rate counts it as a fail, wall is
+   * at the cap and its spend goes against the solves. Its correctness metrics (the graded hidden
+   * test fraction) still count as its partial work. With no result for a gate (nothing was frozen,
+   * or our scoring could not grade it) the gate is failed, never "gate missing", and it applies on
+   * the trial's workload unless a graded trial there says otherwise.
+   */
+  failedSubject: z.literal(true).optional(),
 });
 export type TrialResult = z.input<typeof TrialResultSchema>;
 type ParsedTrial = z.output<typeof TrialResultSchema>;
@@ -505,6 +515,19 @@ function applicability(
       if (r.applicable !== false) add(g, t.workloadId);
     }
   }
+  // TDM-232: an ungraded subject failure counts against every requirement gate on its workload,
+  // unless a graded trial there has a result for the gate (that evidence decides applicability).
+  const graded = new Set(
+    trials.flatMap((t) => Object.keys(t.gates).map((g) => `${g}\u0000${t.workloadId}`)),
+  );
+  for (const t of trials) {
+    if (!t.failedSubject) continue;
+    for (const r of requirements) {
+      const g = r.gate_id;
+      if (g === undefined || g in t.gates || graded.has(`${g}\u0000${t.workloadId}`)) continue;
+      add(g, t.workloadId);
+    }
+  }
   // A requirement that names its workloads declares its gate applies there: N/A is a failure.
   for (const r of requirements) {
     if (r.gate_id === undefined || r.workloads === undefined) continue;
@@ -518,8 +541,10 @@ type GateState = "pass" | "fail" | "missing" | "na";
 /** A trial's result for a gate, with applicability decided per gate × workload. */
 function gateState(t: ParsedTrial, gateId: string, applies: Applicability): GateState {
   const r = t.gates[gateId];
-  if (r === undefined) return "missing";
+  if (r === undefined && !t.failedSubject) return "missing";
   if (!applies.get(gateId)?.has(t.workloadId)) return "na";
+  // TDM-232: a subject failure is a fail, graded or not (its partial work counts in all_trials).
+  if (t.failedSubject || r === undefined) return "fail";
   // Applies here (to someone): a trial that claims otherwise counts as a failure.
   return r.pass && r.applicable !== false ? "pass" : "fail";
 }

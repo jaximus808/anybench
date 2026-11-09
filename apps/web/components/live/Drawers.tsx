@@ -222,6 +222,13 @@ export function TrialDrawer({
             aria-labelledby="gate-h"
           >
             <h3 id="gate-h">Correctness gate</h3>
+            {/* TDM-232: what happened to a subject failure, e.g. "stopped at the token cap;
+                graded on its frozen workspace (87 of 120 hidden tests)". */}
+            {detail?.outcome_note ? (
+              <p className={styles.gateSummary} data-testid="trial-outcome-note">
+                {detail.outcome_note}
+              </p>
+            ) : null}
             {gate ? (
               <>
                 <p className={styles.gateVerdict}>
@@ -238,7 +245,7 @@ export function TrialDrawer({
                   </ul>
                 ) : null}
               </>
-            ) : (
+            ) : detail?.outcome_note ? null : (
               <p className={styles.gateSummary}>
                 Not gated yet. No number from this trial counts until its gate passes.
               </p>

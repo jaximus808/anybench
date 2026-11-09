@@ -64,6 +64,7 @@ import {
   TRIAL_PHASES,
   transitionTrial,
   trialRetryDelayMs,
+  type FrozenWorkspace,
   type AnybenchEvent,
   type EventActor,
   type KitSpec,
@@ -111,6 +112,7 @@ import {
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { BreakerOp, LaunchBreaker } from "./breaker.js";
+import { frozenWorkspaceFromManifest } from "./frozen.js";
 
 // ---------- constants ----------
 
@@ -164,6 +166,11 @@ export interface ExecTrial {
   log_offset: number;
   /** worker-hardening: outage errors this trial absorbed without spending an attempt. */
   outage_pauses?: number;
+  /**
+   * TDM-232: whether the attempt left a frozen workspace (its manifest.json), read by the worker
+   * when the runner ended; core FrozenWorkspaceSchema. A failed_subject trial with one is graded.
+   */
+  frozen_workspace?: FrozenWorkspace | null;
 }
 
 /** Columns the executor writes besides state. */
@@ -182,6 +189,7 @@ export type TrialPatch = Partial<
     | "cost_micro_usd"
     | "log_offset"
     | "outage_pauses"
+    | "frozen_workspace"
   >
 >;
 
@@ -1589,6 +1597,9 @@ class TrialExecution {
     if (bundle) patch.logs_url = bundle;
     patch.cost_micro_usd = await this.costShare();
     if (state === "failed_subject") patch.ended_at = new Date(this.now());
+    // TDM-232: record whether a workspace was frozen (before the computer goes), so a subject
+    // failure that left real work is graded on it, as an explicit fact on the trial.
+    patch.frozen_workspace = await this.readFrozenWorkspace();
     await this.patch(patch);
 
     const keep = this.opts.keepComputer === true && this.computer !== null;
@@ -1609,6 +1620,28 @@ class TrialExecution {
       cost_micro_usd: this.t.cost_micro_usd,
       kept_computer_id: kept,
     };
+  }
+
+  /** The attempt's manifest.json → the frozen-workspace fact (FrozenWorkspaceSchema). */
+  private async readFrozenWorkspace(): Promise<FrozenWorkspace> {
+    if (!this.computer) return frozenWorkspaceFromManifest(null, this.t.attempt);
+    let raw: unknown;
+    try {
+      const bytes = await this.deps.registry.provider.getFile(
+        this.computer.info.id,
+        this.paths().manifestJson,
+      );
+      raw = JSON.parse(decodeText(bytes));
+    } catch (err) {
+      if (!isProviderError(err, "not_found") && !(err instanceof SyntaxError)) {
+        this.deps.logger?.warn(
+          { err, trialId: this.t.id },
+          "reading manifest.json failed: no frozen workspace recorded",
+        );
+      }
+      raw = null;
+    }
+    return frozenWorkspaceFromManifest(raw, this.t.attempt);
   }
 
   private async readMachine(): Promise<unknown> {

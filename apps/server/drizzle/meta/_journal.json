@@ -92,6 +92,13 @@
       "when": 1794188745727,
       "tag": "0012_kit_origin_uploads",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794197221252,
+      "tag": "0013_trial_frozen_workspace",
+      "breakpoints": true
     }
   ]
 }

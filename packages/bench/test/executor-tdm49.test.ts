@@ -6,6 +6,7 @@ import {
   createTrialLauncher,
   DB_MAX_TRIAL_ATTEMPTS,
   executeTrial,
+  gradesFrozenWorkspace,
   formatEnvFile,
   leaseOwnerBase,
   leaseTakeable,
@@ -257,6 +258,9 @@ describe("executor: retries", () => {
     expect(t.state).toBe("failed_infra");
     expect(t.ended_at).not.toBeNull();
     expect(t.failure_class).toBe("heartbeat_lost");
+    // TDM-232: an infra failure records no frozen workspace (nothing to grade; never billed).
+    expect(t.frozen_workspace ?? null).toBeNull();
+    expect(gradesFrozenWorkspace(t)).toBe(false);
     expect(h.creates()).toBe(3);
   });
 
@@ -276,6 +280,16 @@ describe("executor: retries", () => {
     expect(t).toMatchObject({ state: "failed_subject", attempt: 1, failure_class: "wall_clock" });
     // Outputs are kept even though the subject failed.
     expect(t.logs_url).toContain("out.tar.gz");
+    // TDM-232: the freeze is a recorded fact (from manifest.json), so trial.gate grades it.
+    expect(t.frozen_workspace).toEqual({
+      present: true,
+      manifest: true,
+      files: 3,
+      workspace_files: 1,
+      frozen_at: "2026-11-09T04:00:00.000Z",
+      grading: "pending",
+    });
+    expect(gradesFrozenWorkspace(t)).toBe(true);
     expect(h.creates()).toBe(1);
     // Executing it again does nothing: terminal.
     const again = await executeTrial(h.deps(), trialId, { retryNow: true });

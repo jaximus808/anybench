@@ -7,3 +7,4 @@ export * from "./contender.js";
 export * from "./env.js";
 export * from "./digest.js";
 export * from "./kit.js";
+export * from "./frozen-workspace.js";

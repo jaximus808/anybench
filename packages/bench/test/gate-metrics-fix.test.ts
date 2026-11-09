@@ -8,6 +8,7 @@ import { createComputerRegistry, MemoryComputerStore } from "@anybench/envs";
 import { FakeProvider, type FakeExecContext } from "@anybench/providers";
 import { describe, expect, it } from "vitest";
 import {
+  GATE_FAIL_VOUCHED_METRICS,
   GATE_METRICS_MAX,
   gateMetricsFile,
   parseGateMetrics,
@@ -120,6 +121,38 @@ describe("gate metric rows (metrics-fix)", () => {
     expect(rec.gates["api-load"]!.metrics).toBeUndefined();
     expect(rec.gates["hidden-tests"]!.metrics).toBeUndefined();
     expect(trialGateMetrics(rec)).toEqual({});
+  });
+
+  it("TDM-232: a failing verdict still vouches for its correctness counts (partial work), nothing else", async () => {
+    const rows = [
+      { metric: "hidden_test_fraction", value: 0.725 },
+      { metric: "hidden_tests_passed", value: 87 },
+      { metric: "hidden_tests_total", value: 120 },
+      { metric: "x", value: 1 },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n");
+    const s = scoringComputer({
+      "hidden-tests": { pass: false, metrics: rows },
+      "api-load": { pass: false, metrics: API_LOAD_ROWS },
+    });
+    const rec = await s.run();
+    expect(GATE_FAIL_VOUCHED_METRICS).toEqual([
+      "hidden_test_fraction",
+      "hidden_tests_passed",
+      "hidden_tests_total",
+    ]);
+    expect(rec.gates["hidden-tests"]!.metrics).toEqual({
+      hidden_test_fraction: 0.725,
+      hidden_tests_passed: 87,
+      hidden_tests_total: 120,
+    });
+    expect(rec.gates["api-load"]!.metrics).toBeUndefined();
+    expect(trialGateMetrics(rec)).toEqual({
+      hidden_test_fraction: 0.725,
+      hidden_tests_passed: 87,
+      hidden_tests_total: 120,
+    });
   });
 
   it("records from before gates returned metrics still parse (no metrics key)", async () => {

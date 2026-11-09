@@ -247,7 +247,7 @@ docs/
 
 **Run state machine** (`runs.state`): `intake → understand → research → kit_draft → env_build → proof → awaiting_go → running → scoring → analyzing → delivered`, plus `failed`, `needs_human`, `paused_budget`, `cancelled`. `awaiting_go` auto-advances when the estimate fits the run budget and the billing gate passes.
 
-**Trial state machine** (`trials.state`): `queued → forking → installing → warming → running → collecting → gating → reviewing → done | failed_infra | failed_subject | cancelled`. Only `failed_infra` retries (max 3, exponential backoff, `trials.attempt`).
+**Trial state machine** (`trials.state`): `queued → forking → installing → warming → running → collecting → gating → reviewing → done | failed_infra | failed_subject | cancelled`. Only `failed_infra` retries (max 3, exponential backoff, `trials.attempt`). A `failed_subject` trial whose attempt froze a workspace (`trials.frozen_workspace`, read from the runner's manifest) is still graded on it and keeps its outcome: its hidden-test fraction counts as partial work, every gated metric counts it as a failed trial (TDM-232).
 
 - The worker owns transitions; the API only enqueues commands. Both state machines are pure transition tables in `packages/core`, tested without a DB.
 - **Jobs** (graphile-worker): `run.advance`, `trial.execute`, `trial.gate`, `env.build`, `agent.session.run`, `computer.reap`, `alerts.evaluate`, `credits.poll`, `usage.report`, `billing.reconcile`, `stripe.webhook`, `release.watch`, `publish.render`. Every job has `job_key = <table>:<id>:<attempt>`.

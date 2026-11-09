@@ -191,6 +191,10 @@ export interface StageTrial {
   metrics: unknown;
   gate: unknown;
   cost_micro_usd: bigint;
+  /** TDM-232: why a failed_subject trial stopped (runner failure class), for the report. */
+  failure_class?: string | null;
+  /** TDM-232: trials.frozen_workspace (core FrozenWorkspaceSchema), for the report. */
+  frozen_workspace?: unknown;
 }
 
 /** analyst: computed stats → the report. Numbers come from code ([5.8] scoring, [7.5] report). */

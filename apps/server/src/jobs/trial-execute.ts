@@ -4,7 +4,8 @@
 //   trial.execute  {trial_id, retry?, reuse_computer_id?, keep_computer?}
 //     job_key `trials:<id>:<attempt>`. One attempt of one trial: lease → fork → secrets +
 //     trial.json by fs.write → detached runner → watch → collected (enqueue trial.gate, key
-//     `trials:<id>:<attempt>:gate`) | final | failed_infra with tries left (enqueue the next
+//     `trials:<id>:<attempt>:gate`) | final (a failed_subject trial that froze a workspace is
+//     graded too, TDM-232: trial.gate with the same key) | failed_infra with tries left (enqueue the next
 //     attempt at now + trialRetryDelayMs, key `trials:<id>:<attempt+1>`, payload retry=true).
 //     Both follow-up jobs are enqueued while the lease is still held, so a crash in between is
 //     picked up by trial.reattach and the enqueue repeats (job keys dedupe it).
@@ -24,6 +25,7 @@
 // gets at most 3 tries (TRIAL_MAX_ATTEMPTS in packages/bench; see executor.ts).
 import {
   AnybenchEventSchema,
+  frozenWorkspaceOf,
   RunIdSchema,
   TrialStateSchema,
   type EventActor,
@@ -32,6 +34,7 @@ import {
 import {
   EXECUTING_TRIAL_STATES,
   executeTrial,
+  gradesFrozenWorkspace,
   leaseOwnerBase,
   planTransition,
   reattachOrphans,
@@ -134,6 +137,7 @@ function toExec(r: TrialRow): ExecTrial {
     cost_micro_usd: r.costMicroUsd,
     log_offset: r.logOffset,
     outage_pauses: r.outagePauses,
+    frozen_workspace: frozenWorkspaceOf(r.frozenWorkspace),
   };
 }
 
@@ -151,6 +155,7 @@ function toColumns(p: TrialPatch): Partial<typeof trials.$inferInsert> {
   if (p.cost_micro_usd !== undefined) c.costMicroUsd = p.cost_micro_usd;
   if (p.log_offset !== undefined) c.logOffset = p.log_offset;
   if (p.outage_pauses !== undefined) c.outagePauses = p.outage_pauses;
+  if (p.frozen_workspace !== undefined) c.frozenWorkspace = p.frozen_workspace;
   return c;
 }
 
@@ -444,7 +449,11 @@ export async function enqueueFollowUp(
     );
     return;
   }
-  if (outcome.kind === "collected") {
+  // TDM-232: a failed_subject trial that froze a workspace is graded on it (it keeps its outcome).
+  if (
+    outcome.kind === "collected" ||
+    (outcome.kind === "final" && gradesFrozenWorkspace(outcome.trial))
+  ) {
     const t = outcome.trial;
     await addJob(
       TRIAL_GATE_JOB,
@@ -462,8 +471,10 @@ export async function enqueueFollowUp(
 }
 
 /**
- * A failed_subject trial never reaches trial.gate: record its cost (compute + proxy spend) and wall
- * here, so "all spend ÷ solved" counts it (orchestrator/trial-metrics.ts).
+ * A failed_subject trial with nothing to grade never reaches trial.gate: record its cost (compute +
+ * proxy spend) and wall here, so "all spend ÷ solved" counts it (orchestrator/trial-metrics.ts).
+ * One that froze a workspace is graded, and trial.gate records them with the verdict (TDM-232):
+ * writing them here too would race the gate's own write.
  */
 export async function recordFailedSubjectMetrics(
   db: Database,
@@ -472,6 +483,7 @@ export async function recordFailedSubjectMetrics(
 ): Promise<void> {
   const [row] = await db.select().from(trials).where(eq(trials.id, trialId));
   if (!row || row.state !== "failed_subject") return;
+  if (gradesFrozenWorkspace({ state: row.state, frozen_workspace: row.frozenWorkspace })) return;
   await recordTrialMetrics(db, row, await attemptProxySpend(spend, row));
 }
 

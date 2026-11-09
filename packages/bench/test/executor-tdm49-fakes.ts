@@ -115,6 +115,21 @@ export function installFakeRunnerTdm49(
       if (phase === "done") break;
       if (phase === "run")
         ctx.writeFile(`${home}/eval/out/machine.json`, '{"nproc":2,"load_1m":0.1}');
+      // TDM-232: the freeze writes manifest.json (the runner's own logs plus the driver's output).
+      if (phase === "freeze")
+        ctx.writeFile(
+          `${home}/eval/out/manifest.json`,
+          JSON.stringify({
+            trial_id: job.trial_id,
+            attempt: job.attempt,
+            frozen_at: "2026-11-09T04:00:00.000Z",
+            files: [
+              { path: "stdout.log", sha256: "a".repeat(64), size_bytes: 1 },
+              { path: "machine.json", sha256: "a".repeat(64), size_bytes: 1 },
+              { path: "sorted.txt", sha256: "a".repeat(64), size_bytes: 1 },
+            ],
+          }),
+        );
       write(phase);
       if (m === "hang" && phase === "run") return { exitCode: 137 };
       if (m === "fail_no_outcome" && phase === "warmup") {

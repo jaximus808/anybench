@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RunPage from "../app/runs/[id]/page";
+import type { ApiClient } from "@anybench/core";
 import { LiveRunView } from "../components/live/LiveRunPage";
-import { applyEvents, initLive } from "../lib/live/model";
+import { LiveApiContext } from "../lib/live/client";
+import { applyEvents, initLive, trialLabel } from "../lib/live/model";
 import { createDemoRun } from "./fixtures/simulator";
 
 // The page for a loaded run, fed a test-only simulated run (test/fixtures/simulator.ts) folded
@@ -90,6 +92,55 @@ describe("live run page", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name })).toBeNull();
     expect(window.location.search).toBe("");
+  });
+
+  it("TDM-232: a failed_subject trial's drawer says what happened to it", async () => {
+    const failed = Object.values(live.trials).find((t) => t.state === "failed_subject");
+    expect(failed).toBeTruthy();
+    const note =
+      "stopped at the token cap; graded on its frozen workspace (87 of 120 hidden tests)";
+    const client = {
+      call: async (route: { id: string }) => {
+        if (route.id !== "trials.get") throw new Error("offline");
+        return {
+          trial: {
+            id: failed!.id,
+            state: "failed_subject",
+            gate: null,
+            metrics: null,
+            outcome_note: note,
+            frozen_workspace: {
+              present: true,
+              manifest: true,
+              files: 3,
+              workspace_files: 1,
+              frozen_at: null,
+              grading: "graded",
+            },
+          },
+        };
+      },
+    } as unknown as ApiClient;
+    await act(async () => {
+      render(
+        <LiveApiContext.Provider value={client}>
+          <LiveRunView live={live} status="live" />
+        </LiveApiContext.Provider>,
+      );
+    });
+    const trials = screen.getByRole("region", { name: "Trials" });
+    const label = trialLabel(live, failed!);
+    const button = [...trials.querySelectorAll<HTMLButtonElement>("button[data-key]")].find((b) =>
+      (b.getAttribute("aria-label") ?? "").startsWith(`${label}: `),
+    );
+    expect(button).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(button!);
+    });
+    const name = button!.getAttribute("aria-label")!.split(": ")[0]!;
+    const drawer = screen.getByRole("dialog", { name });
+    const gate = within(drawer).getByRole("region", { name: "Correctness gate" });
+    expect(within(gate).getByTestId("trial-outcome-note").textContent).toBe(note);
   });
 
   it("searches trials, agents and events from the palette", async () => {
