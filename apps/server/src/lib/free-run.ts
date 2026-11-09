@@ -21,14 +21,27 @@
 //   freeRunRefusalMessage(code, config)   every refusal reason in plain words.
 //   freeRunStatusFor(db, config, userId)  the billing summary's `free_run` (onboarding shows it).
 //
+// TDM-225 adds the read-only estimate the run page shows before Go:
+//
+//   runEstimateFor(deps, {userId, run})   GET /runs/:id/estimate: the normal price line by line,
+//                                         the bound on BYOK tokens (billed by the user's provider,
+//                                         never in our price), and whether the free run covers this
+//                                         run: the same rules Go applies (isStarterRun on the same
+//                                         estimate, the account's eligibility, the pool). `null`
+//                                         when the run has no readable kit yet.
+//
 // All of them run on the privileged pool role (the tenant role cannot write these tables).
 import {
   BYOK_PROVIDERS,
+  byokTokenCeilingMicroUsd,
   estimateRunCost,
   FREE_RUN_MAX_SETUPS,
   FREE_RUN_MIN_GITHUB_AGE_DAYS,
   freePoolStatus,
   freeRunEligibility,
+  isStarterRun,
+  kitSetupCount,
+  kitTokenUse,
   reserveFreeRun,
   type FreeRunConfigInput,
 } from "@anybench/billing";
@@ -38,11 +51,13 @@ import {
   type FreeRunRefusalReason,
   type FreeRunStatus,
   type MicroUsd,
+  type RunEstimate,
 } from "@anybench/core";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
-import { kits, runs, userSecrets, users } from "../db/schema/index.js";
+import { computers, kits, runs, userSecrets, users } from "../db/schema/index.js";
+import { loadBillingAccount } from "./stripe-billing.js";
 import { isUploadedKitRun } from "../orchestrator/ports.js";
 import { isAdminLogin } from "./admin.js";
 
@@ -277,4 +292,124 @@ export async function freeRunStatusFor(
     run_id: null,
     ...base,
   };
+}
+
+// ---- The estimate before Go (TDM-225) -----------------------------------------------------------
+
+export type RunEstimateRun = Pick<typeof runs.$inferSelect, "id" | "kitId" | "intake" | "compedBy">;
+
+/**
+ * GET /runs/:id/estimate (TDM-225): what the run costs, line by line, and whether the account's
+ * free starter run covers it. Read-only: the same rules freeRunAtGo applies at Go (isStarterRun on
+ * the same estimate, with the compute the run already used, the account, the pool), so the page
+ * says "Free" exactly when Go would take the free run. `null` while the run has no readable kit.
+ */
+export async function runEstimateFor(
+  deps: FreeRunGoDeps,
+  input: { userId: string; run: RunEstimateRun },
+): Promise<RunEstimate | null> {
+  const { db, config } = deps;
+  const { run } = input;
+  if (!run.kitId) return null;
+  const [kit] = await db
+    .select({ spec: kits.spec })
+    .from(kits)
+    .where(eq(kits.id, run.kitId))
+    .limit(1);
+  const spec = kit ? safeParseKitSpec(kit.spec) : null;
+  if (!spec?.success) return null;
+  const kitOrigin = isUploadedKitRun(run.intake) ? "uploaded" : "generated";
+  const estimate = estimateRunCost(
+    spec.data,
+    {
+      runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+      uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
+      computeMarkupBps: config.COMPUTE_MARKUP_BPS,
+      defaultBlockPriceMicroUsd: config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+    },
+    { kitOrigin },
+  );
+  const tokens = kitTokenUse(spec.data);
+  const byokProviders = [...new Set(tokens.byok.map((b) => b.provider))].sort();
+  const base = {
+    run_id: run.id as RunEstimate["run_id"],
+    kit_origin: kitOrigin,
+    normal: {
+      run_fee_micro_usd: estimate.runFeeMicroUsd,
+      compute: {
+        computers: estimate.compute.computers,
+        trials: estimate.compute.trials,
+        blocks: Number(estimate.compute.blocks),
+        block_seconds: estimate.compute.blockSeconds,
+        charge_micro_usd: estimate.compute.chargeMicroUsd,
+      },
+      total_micro_usd: estimate.totalMicroUsd,
+    },
+    tokens: {
+      byok_providers: byokProviders,
+      byok_ceiling_micro_usd: byokTokenCeilingMicroUsd(spec.data),
+      managed_contenders: tokens.managed,
+    },
+  } satisfies Omit<RunEstimate, "price" | "total_micro_usd" | "free_run" | "card_needed">;
+  const paid = { price: "paid" as const, total_micro_usd: estimate.totalMicroUsd };
+
+  // Not in play: nothing is billed (BILLING_MODE=off), or the run is comped (an admin's run is
+  // comped by the gate at Go): no free run, and no card.
+  const [owner] = await db
+    .select({ githubLogin: users.githubLogin })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1);
+  if (
+    config.BILLING_MODE === "off" ||
+    run.compedBy !== null ||
+    (owner && isAdminLogin(config, owner.githubLogin))
+  ) {
+    return { ...base, ...paid, free_run: null, card_needed: false };
+  }
+
+  const status = await freeRunStatusFor(db, config, input.userId);
+  const setups = kitSetupCount(spec.data);
+  let applies = false;
+  let refusal: FreeRunRefusal | null = null;
+  if (status.status === "in_use" && status.run_id === run.id) {
+    applies = true; // this run already holds the free run (Go reserved it)
+  } else if (status.status === "available") {
+    const keys = await db
+      .select({ provider: userSecrets.provider })
+      .from(userSecrets)
+      .where(eq(userSecrets.ownerId, input.userId));
+    const [spentRow] = await db
+      .select({ sum: sql<string>`coalesce(sum(${computers.costMicroUsd}), 0)::text` })
+      .from(computers)
+      .where(eq(computers.runId, run.id));
+    const decision = isStarterRun(spec.data, estimate, {
+      byokProviders: keys.map((k) => k.provider),
+      config: freeRunConfigFrom(config),
+      spentCostMicroUsd: BigInt(spentRow?.sum ?? "0"),
+    });
+    if (decision.starter) applies = true;
+    else
+      refusal = refusalOf(
+        decision.reasons.map((r) => r.code),
+        config,
+      );
+  } else if (status.reason) {
+    refusal = refusalOf([status.reason], config);
+  }
+
+  const freeRun = {
+    status: status.status,
+    applies,
+    refusal,
+    limits: status.limits,
+    setups,
+  };
+  if (applies) {
+    return { ...base, price: "free", total_micro_usd: 0n, free_run: freeRun, card_needed: false };
+  }
+  const account = await loadBillingAccount(db, input.userId);
+  const card = account.paymentStatus === "ok" && account.hasPaymentMethod;
+  const covered = account.grantedRemainingMicroUsd >= estimate.totalMicroUsd;
+  return { ...base, ...paid, free_run: freeRun, card_needed: !card && !covered };
 }

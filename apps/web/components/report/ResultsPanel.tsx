@@ -4,7 +4,8 @@
 // chart per requirement (each setup's value with its interval, the difference vs the baseline with
 // its CI and verdict), then the exact numbers: one row per requirement with every setup's value
 // and n, the verdict with the CI of the difference, and the smallest detectable difference. Then how the setups ran (disclosure)
-// and the proof basis. No composite score anywhere.
+// and the proof basis. No composite score anywhere. TDM-225: a starter (free) run states its sample
+// size next to the verdict (model.ts sampleSizeNote): a small run may well say "not significant".
 //
 // All report text is untrusted (it carries agent and kit text): it renders as React text nodes,
 // which escape it. Never dangerouslySetInnerHTML here.
@@ -20,7 +21,7 @@ import { useEffect, useState } from "react";
 import { useLiveApi } from "../../lib/live/client";
 import { RequirementCharts, TaskCharts } from "../bench/Charts";
 import { describeApiError } from "../../lib/live/useLiveRun";
-import { perTaskRows, proofBasis, resultRows, splitAnswer } from "./model";
+import { perTaskRows, proofBasis, resultRows, sampleSizeNote, splitAnswer } from "./model";
 import styles from "./report.module.css";
 import { TimeBreakdownSection } from "../trace/TimeBreakdown";
 import { ScoreboardSection } from "./Scoreboard";
@@ -64,11 +65,14 @@ export function ResultsPanel({
   runState,
   holdReason = null,
   standalone = false,
+  starterRun = false,
 }: {
   runId: string;
   runState: RunState | null;
   holdReason?: string | null;
   standalone?: boolean;
+  /** TDM-225: the run was the free starter run (budget_basis `free_run`). */
+  starterRun?: boolean;
 }) {
   const client = useLiveApi();
   const [state, setState] = useState<ResultsState>({ kind: "loading" });
@@ -92,6 +96,7 @@ export function ResultsPanel({
       runState={runState}
       holdReason={holdReason}
       standalone={standalone}
+      starterRun={starterRun}
     />
   );
 }
@@ -103,12 +108,14 @@ export function ResultsView({
   runState,
   holdReason = null,
   standalone = false,
+  starterRun = false,
 }: {
   runId: string;
   state: ResultsState;
   runState: RunState | null;
   holdReason?: string | null;
   standalone?: boolean;
+  starterRun?: boolean;
 }) {
   const report = state.kind === "report" ? state.report : null;
   const needsHuman = runState === "needs_human";
@@ -155,19 +162,28 @@ export function ResultsView({
           </p>
         )
       ) : (
-        <ReportBody report={state.report} runId={runId} />
+        <ReportBody report={state.report} runId={runId} starterRun={starterRun} />
       )}
     </section>
   );
 }
 
-function ReportBody({ report, runId }: { report: Report; runId: string }) {
+function ReportBody({
+  report,
+  runId,
+  starterRun,
+}: {
+  report: Report;
+  runId: string;
+  starterRun: boolean;
+}) {
   const { headline, proofLabel, disclosure } = splitAnswer(report.answer);
   const proof = proofBasis(report, proofLabel);
   const rows = resultRows(report);
   const taskRows = perTaskRows(report);
   const setups = report.contenders;
   const [lead, rest] = leadSentence(plain(headline));
+  const sample = starterRun ? sampleSizeNote(report) : null;
 
   return (
     <div className={styles.body}>
@@ -175,6 +191,11 @@ function ReportBody({ report, runId }: { report: Report; runId: string }) {
         {lead}
         {rest ? <span className={styles.headRest}>{rest}</span> : null}
       </p>
+      {sample ? (
+        <p className={styles.sampleSize} data-testid="results-sample-size">
+          <span className={styles.tag}>free run</span> {sample}
+        </p>
+      ) : null}
 
       <ScoreboardSection
         runId={runId}

@@ -1915,6 +1915,59 @@ button.feedText:hover {
   font-size: var(--text-sm);
 }
 
+/* TDM-225: the price before Go. A free run shows what it would normally cost, line by line. */
+.estimate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 60ch;
+}
+.estimateSummary {
+  margin: 0;
+  font-size: var(--text-md);
+}
+.estimateTitle {
+  margin: var(--space-2) 0 0;
+  font-family: var(--mono);
+  font-size: var(--text-2xs);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.estimateLines {
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.estimateLines div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.estimateLines dt small {
+  display: block;
+  color: var(--dim);
+  font-size: var(--text-2xs);
+}
+.estimateLines dd {
+  margin: 0;
+  font-family: var(--mono);
+}
+.estimate[data-price="free"] .estimateLines dd {
+  color: var(--muted);
+}
+.estimateLines div[data-line="total"] dt {
+  font-weight: 500;
+}
+.estimateNote {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 /* ---- running: tally, live cards ---- */
 .running {
   display: flex;

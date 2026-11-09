@@ -284,3 +284,11 @@
   flex-direction: column;
   gap: var(--space-4);
 }
+
+/* TDM-225: a starter run's sample size, next to the verdict. */
+.sampleSize {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  max-width: 80ch;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}

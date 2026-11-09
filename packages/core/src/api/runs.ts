@@ -14,6 +14,7 @@ import { RunStateSchema } from "../state/run.js";
 import { TrialStateSchema } from "../state/trial.js";
 import { AlertSchema } from "./alerts.js";
 import {
+  FreeRunRefusalSchema,
   IsoDateTimeSchema,
   PageQuerySchema,
   PaymentRequiredSchema,
@@ -214,6 +215,75 @@ export const SuggestRunBodySchema = z.object({
   }),
 });
 
+// ---------------------------------------------------------------------------------------------
+// Estimate (TDM-225, E20): what the run will cost before Go, line by line, and whether the free
+// starter run covers it. Read-only: Go decides for real (apps/server lib/free-run.ts freeRunAtGo).
+
+/**
+ * GET /runs/:id/estimate. `price` is what the user pays: `free` when the account's free starter
+ * run covers this run (it fits every starter limit and the pool can fund it), else `paid`.
+ * `normal` is the normal price either way, so a free run shows what it would otherwise cost.
+ * Model tokens are never part of our price: on the user's own key, their provider bills them.
+ */
+export const RunEstimateSchema = z.object({
+  run_id: RunIdSchema,
+  kit_origin: RunKitOriginSchema,
+  price: z.enum(["free", "paid"]),
+  /** What the user pays for this run: 0 when free, else `normal.total_micro_usd`. */
+  total_micro_usd: NonNegativeMicroUsdSchema,
+  /** The normal price, line by line (packages/billing estimateRunCost). */
+  normal: z.object({
+    /** RUN_FEE_MICRO_USD (generated kit) or UPLOADED_KIT_RUN_FEE_MICRO_USD (uploaded kit). */
+    run_fee_micro_usd: NonNegativeMicroUsdSchema,
+    compute: z.object({
+      computers: z.int().nonnegative(),
+      /** Trials, warm-ups included. */
+      trials: z.int().nonnegative(),
+      /** Billing blocks over all computers. */
+      blocks: z.int().nonnegative(),
+      block_seconds: z.int().positive(),
+      /** Computer time at the billed price (cost + COMPUTE_MARKUP_BPS). */
+      charge_micro_usd: NonNegativeMicroUsdSchema,
+    }),
+    /** run fee + computer time. Model tokens not included. */
+    total_micro_usd: NonNegativeMicroUsdSchema,
+  }),
+  tokens: z.object({
+    /** Providers of the user's own keys the agent contenders use: that provider bills them. */
+    byok_providers: z.array(z.enum(["anthropic", "openai"])),
+    /**
+     * Upper bound on spend on the user's own key: each BYOK trial at its contender's
+     * token_cap_micro_usd. Null when a BYOK contender sets no spend cap (no honest bound) or
+     * none uses the user's key.
+     */
+    byok_ceiling_micro_usd: NonNegativeMicroUsdSchema.nullable(),
+    /** Contenders on Anybench's tokens: metered as used, not in this estimate. */
+    managed_contenders: z.array(z.string()),
+  }),
+  /** The free starter run. Null when it is not in play (BILLING_MODE=off, a comped run). */
+  free_run: z
+    .object({
+      /** The account's free run, as billing.summary `free_run.status` says it. */
+      status: z.enum(["available", "in_use", "used", "not_eligible", "paused"]),
+      /** The free run covers THIS run (`price` is `free`). */
+      applies: z.boolean(),
+      /** Why it does not: every starter limit the run passes, or the account or pool reason. */
+      refusal: FreeRunRefusalSchema.nullable(),
+      /** The starter limits, from config (FREE_RUN_MAX_TRIALS, FREE_RUN_CAP_MICRO_USD). */
+      limits: z.object({
+        max_setups: z.int().positive(),
+        max_trials: z.int().nonnegative(),
+        compute_cap_micro_usd: NonNegativeMicroUsdSchema,
+      }),
+      /** This run's setups (contenders x their `vary` combinations). */
+      setups: z.int().nonnegative(),
+    })
+    .nullable(),
+  /** Go will ask for a card: the run is paid and the account has no card on file. */
+  card_needed: z.boolean(),
+});
+export type RunEstimate = z.infer<typeof RunEstimateSchema>;
+
 const IdempotencyHeadersSchema = z.object({
   "idempotency-key": z.string().min(8).max(200).optional(),
 });
@@ -279,6 +349,16 @@ export const runRoutes = defineRoutes({
     body: kitRoutes.createVersion.body,
     status: 201,
     response: kitRoutes.createVersion.response,
+  }),
+  estimate: defineRoute({
+    id: "runs.estimate",
+    method: "GET",
+    path: "/runs/:id/estimate",
+    auth: ["session", "apiKey:runs:read"],
+    summary:
+      "What the run costs before Go, line by line, and whether the free starter run covers it (409 until the run has a kit).",
+    params: runParams,
+    response: z.object({ estimate: RunEstimateSchema }),
   }),
   go: defineRoute({
     id: "runs.go",

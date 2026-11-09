@@ -99,7 +99,12 @@ export function parseGithubRepo(input: string): { github: string; ref?: string }
  * source, budget and contenders; runs per setup, approvals, notification targets and the named
  * contenders ride along as plain-language preferences until the contract has fields for them.
  */
-export function composeQuestion(form: NewRunForm): string {
+export interface ComposeOptions {
+  /** TDM-225: the starter run's limits for the kit designer (starter.ts starterPreference). */
+  starter?: string;
+}
+
+export function composeQuestion(form: NewRunForm, opts: ComposeOptions = {}): string {
   const lines = [form.question.trim()];
   const contenders = form.contenders.map((c) => c.trim()).filter(Boolean);
   const prefs: string[] = [];
@@ -108,6 +113,7 @@ export function composeQuestion(form: NewRunForm): string {
   prefs.push(`Approvals: ${APPROVALS_LABEL[form.approvals]}`);
   const notify = [form.notifyEmail && "email", form.notifySlack && "Slack"].filter(Boolean);
   if (notify.length > 0) prefs.push(`Send results to: ${notify.join(" and ")}`);
+  if (opts.starter) prefs.push(opts.starter);
   lines.push("", "Preferences:", ...prefs.map((p) => `- ${p}`));
   return lines.join("\n");
 }
@@ -115,7 +121,11 @@ export function composeQuestion(form: NewRunForm): string {
 export type BuildResult = { ok: true; body: CreateRunBody } | { ok: false; errors: string[] };
 
 /** Validate the form (with any finished uploads) into a runs.create body. */
-export function buildCreateRunBody(form: NewRunForm, uploads: UploadedIds = {}): BuildResult {
+export function buildCreateRunBody(
+  form: NewRunForm,
+  uploads: UploadedIds = {},
+  opts: ComposeOptions = {},
+): BuildResult {
   const errors: string[] = [];
   if (!form.question.trim()) errors.push("Ask a question, e.g. “Is it faster than X?”");
 
@@ -154,7 +164,7 @@ export function buildCreateRunBody(form: NewRunForm, uploads: UploadedIds = {}):
   const budget = parseUsdToMicro(form.budgetUsd);
   if (budget === null || budget <= 0n) errors.push("Set a budget cap in dollars, e.g. 100.");
 
-  const question = composeQuestion(form);
+  const question = composeQuestion(form, opts);
   if (question.length > QUESTION_MAX) errors.push("The question is too long.");
 
   if (errors.length > 0 || !source || budget === null) return { ok: false, errors };

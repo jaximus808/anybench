@@ -6,6 +6,10 @@
 // it, and if the suggester fails the flow carries on by hand without saying so.
 // Submits runs.create with an Idempotency-Key and opens /runs/[id]. Creating a run is free; the
 // estimate shows on the run page and Go is where the billing gate applies.
+// TDM-225: while the account still has its free run, the flow proposes a starter-sized run (the
+// subject plus one alternative, few runs per setup; limits from billing.summary free_run.limits)
+// and the review step says "Free"; enlarge it past the limits and it says the run will be paid
+// and need a card, with one click back to a starter. Free runs paused: it says so (starter.ts).
 // Nothing waits forever (launch-ux): suggest gives up quietly after 20 s, create retries gateway
 // failures with the same key and stops at 25 s with a retry message, and the wait is shown in
 // seconds while it lasts.
@@ -18,7 +22,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { ApiClient, SuggestedAlternative } from "@anybench/core";
+import type { ApiClient, BillingSummary, SuggestedAlternative } from "@anybench/core";
 import Link from "next/link";
 import { api } from "../../../lib/api";
 import {
@@ -59,6 +63,15 @@ import {
   type UploadedIds,
 } from "./new-run";
 import styles from "./new-run.module.css";
+import {
+  plannedSetups,
+  starterAlternatives,
+  starterOffer,
+  starterPreference,
+  starterPrice,
+  starterRunsPerSetup,
+  type StarterOffer,
+} from "./starter";
 
 const SOURCE_LABEL: Readonly<Record<SourceKind, string>> = {
   github: "GitHub repo",
@@ -109,6 +122,9 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
     reviewFirst: false,
   });
   const suggestSeq = useRef(0);
+  // TDM-225: the free starter run, from billing.summary (null: not in play, or not loaded).
+  const [offer, setOffer] = useState<StarterOffer>(null);
+  const offerRef = useRef<StarterOffer>(null);
   // One key per attempt: a retry of the same form reuses it, any edit starts a new one.
   const idempotencyKey = useRef<string | null>(null);
   // Uploads already finished for this exact file, so a retry doesn't upload twice.
@@ -147,6 +163,33 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
       live = false;
     };
   }, [client, router]);
+
+  // TDM-225: does the account still have its free run? Then propose a starter-sized run.
+  useEffect(() => {
+    let live = true;
+    let summary: Promise<BillingSummary>;
+    try {
+      summary = client.billing.summary();
+    } catch {
+      return;
+    }
+    summary.then(
+      (s) => {
+        if (!live) return;
+        const o = starterOffer(s);
+        offerRef.current = o;
+        setOffer(o);
+        if (o?.kind !== "available") return;
+        if (!latest.current.runs)
+          setForm((f) => ({ ...f, runsPerSetup: starterRunsPerSetup(o.limits) }));
+        setKept((k) => k.slice(0, starterAlternatives(o.limits)));
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [client]);
 
   useEffect(() => {
     const n = focusStep.current;
@@ -233,12 +276,25 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
         // Never overwrite what the user typed; replace only an earlier suggestion left as is.
         const fill = !l.question.trim() || l.questionSuggested;
         const top = suggestion.questions[0];
+        // A starter run keeps the first alternative(s) only and its own runs per setup.
+        const o = offerRef.current;
+        const starter = o?.kind === "available" ? o.limits : null;
         setSuggest({ status: "ready", key: req.key, data: suggestion });
-        setKept(suggestion.alternatives);
+        setKept(
+          starter
+            ? suggestion.alternatives.slice(0, starterAlternatives(starter))
+            : suggestion.alternatives,
+        );
         setForm((f) => ({
           ...f,
           ...(fill && top ? { question: top } : {}),
-          ...(l.runs ? {} : { runsPerSetup: suggestion.options.runs_per_setup }),
+          ...(l.runs
+            ? {}
+            : {
+                runsPerSetup: starter
+                  ? starterRunsPerSetup(starter)
+                  : suggestion.options.runs_per_setup,
+              }),
           ...(l.approvals ? {} : { approvals: suggestion.options.approvals }),
         }));
         if (fill && top) {
@@ -266,6 +322,30 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
   const suggestion = active?.status === "ready" ? active.data : null;
   const keptNow = suggestion ? kept : [];
   const names = comparedNames(keptNow, form.contenders);
+  const price = starterPrice(offer, {
+    setups: plannedSetups(names.length),
+    runsPerSetup: form.runsPerSetup,
+  });
+  // Only a run still inside the starter limits tells the kit designer to stay inside them.
+  const composeOpts =
+    price?.kind === "free" && offer ? { starter: starterPreference(offer.limits) } : {};
+
+  /** Back to a starter-sized run: the first alternative(s) kept, runs per setup within limits. */
+  function makeStarter() {
+    if (offer?.kind !== "available") return;
+    const l = offer.limits;
+    const room = starterAlternatives(l);
+    const keepSuggested = keptNow.slice(0, room);
+    idempotencyKey.current = null;
+    setKept(keepSuggested);
+    update(
+      "contenders",
+      form.contenders.filter((c) => c.trim()).slice(0, room - keepSuggested.length),
+    );
+    const rps = form.runsPerSetup;
+    if (!Number.isInteger(rps) || rps * l.max_setups > l.max_trials)
+      update("runsPerSetup", starterRunsPerSetup(l));
+  }
 
   async function ensureUploaded(file: File | undefined, purpose: Parameters<typeof uploadFile>[2]) {
     if (!file) return undefined;
@@ -288,7 +368,11 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
     setFailure(null);
     // Kept suggestions ride along with the typed setups, through the same composeQuestion.
     const sent: FormState = { ...form, contenders: names };
-    const precheck = buildCreateRunBody(sent, placeholderUploads(form.sourceKind, files));
+    const precheck = buildCreateRunBody(
+      sent,
+      placeholderUploads(form.sourceKind, files),
+      composeOpts,
+    );
     const sizeErrors = chosenFiles(form.sourceKind, files)
       .map(([key, file]) => uploadSizeError(file.size, FILE_PURPOSE[key]))
       .filter((m): m is string => m !== null);
@@ -308,7 +392,7 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
         const setup = await ensureUploaded(files.claudeSetup, "claude_setup");
         if (setup) ids.claudeSetup = setup;
       }
-      const built = buildCreateRunBody(sent, ids);
+      const built = buildCreateRunBody(sent, ids, composeOpts);
       if (!built.ok) {
         setErrors(built.errors);
         setBusy(null);
@@ -655,6 +739,15 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
               Restore Anybench&rsquo;s suggestions
             </button>
           )}
+          {offer?.kind === "available" ? (
+            <p className={styles.hint} data-slot="starter-compare">
+              Your free run compares {offer.limits.max_setups} setups: yours and{" "}
+              {starterAlternatives(offer.limits) === 1
+                ? "one alternative"
+                : `${starterAlternatives(offer.limits)} alternatives`}
+              . Add more and the run is paid.
+            </p>
+          ) : null}
           {contenders.map((c, i) => (
             <div key={i} className={styles.setup}>
               <span className={styles.sl}>{String(i + 1).padStart(2, "0")}</span>
@@ -835,6 +928,37 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
               </p>
             </div>
           </Disclosure>
+          {price ? (
+            <p
+              className={styles.notice}
+              role="status"
+              data-slot="new-run-price"
+              data-price={price.kind}
+            >
+              {price.text}
+              {price.kind === "free" && price.needsKey ? (
+                <>
+                  {" "}
+                  It runs on your own model key:{" "}
+                  <Link href="/settings">add your Anthropic or OpenAI key</Link> before Go.
+                </>
+              ) : null}
+              {price.kind === "paid_past_limits" ? (
+                <>
+                  {" "}
+                  <button type="button" className={styles.linkButton} onClick={makeStarter}>
+                    Make it a free starter run
+                  </button>
+                </>
+              ) : null}
+              {price.kind === "paid_paused" ? (
+                <>
+                  {" "}
+                  <Link href="/#pricing">See pricing</Link>
+                </>
+              ) : null}
+            </p>
+          ) : null}
           {alerts}
           <div className={styles.actions}>
             <button

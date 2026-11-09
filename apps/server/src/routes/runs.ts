@@ -4,6 +4,7 @@
 //                            {from: null, to: intake} in the same transaction, enqueue run.advance
 //   GET   /runs/:id          run + counters + open alerts + agent sessions
 //   PATCH /runs/:id/kit      runs.editKit: edit the run's kit (same as kits.createVersion; see kits.ts)
+//   GET   /runs/:id/estimate TDM-225: the cost before Go, line by line, and whether it is free
 //   POST  /runs/:id/go       leave awaiting_go: proven kit, estimate within budget, billing gate
 //   POST  /runs/:id/cancel   set cancel_requested_at, move to cancelled, write the event
 //   POST  /runs/:id/resume   TDM-242: leave needs_human / paused_budget, optionally raising the budget
@@ -96,7 +97,7 @@ import {
 } from "../lib/api-route.js";
 import { requireScope, runIdsOf } from "../lib/auth-key.js";
 import type { BillingGate } from "../lib/billing-gate.js";
-import { freeRunAtGo } from "../lib/free-run.js";
+import { freeRunAtGo, runEstimateFor } from "../lib/free-run.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
@@ -621,6 +622,21 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     });
     if (!detail) return fail(c, "not_found", "run not found");
     return send(c, route, detail);
+  });
+
+  // runs.estimate (TDM-225): read-only, the same rules Go applies. 409 until the run has a kit.
+  r.get("/:id/estimate", readRun, async (c) => {
+    const route = contract.estimate;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const actor = c.get("actor");
+    const [row] = await scopedDb(actor, deps.db).transaction((tx) =>
+      tx.select().from(runs).where(eq(runs.id, parsed.request.params.id)).limit(1),
+    );
+    if (!row) return fail(c, "not_found", "run not found");
+    const estimate = await runEstimateFor(deps, { userId: row.ownerId, run: row });
+    if (!estimate) return fail(c, "conflict", "the run has no test plan to estimate yet");
+    return send(c, route, { estimate });
   });
 
   // runs.editKit: kits.createVersion addressed by run, which also works before the run has a kit

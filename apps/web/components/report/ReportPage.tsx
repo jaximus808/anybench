@@ -47,6 +47,7 @@ function ReportLoader({ runId }: { runId: string }) {
               runState={run.state}
               holdReason={run.paused_reason}
               standalone
+              starterRun={run.budget_basis === "free_run"}
             />
             <SharePanel runId={runId} runState={run.state} client={client} />
           </>

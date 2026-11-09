@@ -251,3 +251,33 @@ export function perTaskRows(report: Report): PerTaskRow[] {
   }
   return [...rows.values()];
 }
+
+/**
+ * TDM-225: a starter (free) run is small, so its report says how small, next to the verdict:
+ * 'n = 6 trials per setup over 2 tasks (3 per task): small; a "not significant" result is expected
+ * unless the gap is large.' The same words the verdicts use (TDM-210's "no detectable difference
+ * at n=…", shown as "not significant"). n is the fewest trials behind any setup's numbers: each
+ * requirement's comparison n (candidate side, or baseline side for the baseline), else the row's
+ * own n. Null when the report carries no n at all.
+ */
+export function sampleSizeNote(report: Report): string | null {
+  const most = new Map<string, number>();
+  const bump = (id: string, n: number) => most.set(id, Math.max(most.get(id) ?? 0, n));
+  let tasks = 0;
+  for (const c of report.contenders) {
+    for (const r of c.requirements) {
+      const cmp = r.comparison ?? null;
+      if (cmp) {
+        bump(c.contender_id, cmp.n.candidate);
+        bump(cmp.baseline_id, cmp.n.baseline);
+        tasks = Math.max(tasks, cmp.n.tasks);
+      } else if (r.n) bump(c.contender_id, r.n);
+    }
+  }
+  const counts = [...most.values()].filter((n) => n > 0);
+  if (counts.length === 0) return null;
+  const n = Math.min(...counts);
+  const per = tasks > 1 && n % tasks === 0 ? ` (${n / tasks} per task)` : "";
+  const over = tasks > 1 ? ` over ${tasks} tasks${per}` : "";
+  return `n = ${n} ${n === 1 ? "trial" : "trials"} per setup${over}: small; a "not significant" result is expected unless the gap is large.`;
+}

@@ -359,7 +359,12 @@ export function LiveRunView({
             onBackToLive={() => setViewing(null)}
           />
           {live.state === "failed" || live.state === "cancelled" ? (
-            <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
+            <ResultsPanel
+              runId={live.runId}
+              runState={live.state}
+              holdReason={live.holdReason}
+              starterRun={live.budgetBasis === "free_run"}
+            />
           ) : null}
         </main>
 

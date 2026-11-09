@@ -25,6 +25,7 @@ import { SharePanel } from "../publish/SharePanel";
 import { ResultsPanel } from "../report/ResultsPanel";
 import { clock, span, usd } from "./format";
 import { GoFailureText, useGoAction } from "./GoBar";
+import { EstimateBreakdown, useRunEstimate } from "./RunEstimate";
 import styles from "./live.module.css";
 import { useStableSlots } from "../../lib/live/slots";
 import { Inspector } from "./Inspector";
@@ -391,7 +392,12 @@ function DeliveredBody({ live }: { live: LiveRun }) {
   return (
     <>
       <SharePanel runId={live.runId} runState={live.state} client={client} />
-      <ResultsPanel runId={live.runId} runState={live.state} holdReason={live.holdReason} />
+      <ResultsPanel
+        runId={live.runId}
+        runState={live.state}
+        holdReason={live.holdReason}
+        starterRun={live.budgetBasis === "free_run"}
+      />
     </>
   );
 }
@@ -529,6 +535,8 @@ function plannedTrials(live: LiveRun): number | null {
 
 function GoBody({ live, reviewing = false }: { live: LiveRun; reviewing?: boolean }) {
   const { busy, started, failure, go } = useGoAction(live.runId);
+  // TDM-225: the price before Go, line by line, and whether the free starter run covers it.
+  const estimate = useRunEstimate(live.runId, `${live.kitId ?? ""}:${live.estimateMicroUsd ?? ""}`);
   const trials = plannedTrials(live);
   const setups = live.contenders.filter((c) => c.id !== "unplaced");
   const tasks = live.workloads.filter((w) => w !== "unplaced");
@@ -552,12 +560,19 @@ function GoBody({ live, reviewing = false }: { live: LiveRun; reviewing?: boolea
           <dd className="num">{live.repeats || "–"}</dd>
         </div>
         <div>
-          <dt>estimated cost</dt>
-          <dd className="num">
-            {live.estimateMicroUsd !== null ? usd(live.estimateMicroUsd) : "–"}
+          <dt>{estimate?.price === "free" ? "price" : "estimated cost"}</dt>
+          <dd className="num" data-testid="go-price">
+            {estimate
+              ? estimate.price === "free"
+                ? "Free"
+                : usd(estimate.total_micro_usd)
+              : live.estimateMicroUsd !== null
+                ? usd(live.estimateMicroUsd)
+                : "–"}
           </dd>
         </div>
       </dl>
+      {estimate ? <EstimateBreakdown estimate={estimate} /> : null}
       {setups.length || tasks.length ? (
         <div className={styles.goWho}>
           {setups.length ? (

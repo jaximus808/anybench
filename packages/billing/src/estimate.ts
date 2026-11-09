@@ -20,6 +20,7 @@ import {
   groupBlocks,
 } from "@anybench/bench";
 import {
+  isAgentDriver,
   KitSpecSchema,
   NonNegativeMicroUsdSchema,
   resolveEnvProvider,
@@ -37,6 +38,7 @@ import {
   naiveBlockPriceMicroUsd,
   runFeeForKit,
 } from "./pricing.js";
+import { BYOK_TOKEN_SOURCES } from "./free-run.js";
 
 export const EstimatePricingSchema = CostPlusPricingSchema.extend({
   /**
@@ -139,4 +141,31 @@ export function estimateRunCost(
     },
     totalMicroUsd: runFee + charge,
   };
+}
+
+/**
+ * TDM-225: an upper bound on what the run's agents spend on the user's OWN model key, which their
+ * provider bills (never part of our price): every planned trial (warm-ups included) of a contender
+ * whose driver reads a BYOK key (AB_TOKEN_SOURCE anthropic_key / openai_key), at that contender's
+ * token_cap_micro_usd (the runner stops the trial there). Null when no contender is on the user's
+ * key, or when one of them sets no spend cap: then there is no honest bound. Bigint only.
+ */
+export function byokTokenCeilingMicroUsd(kitInput: KitSpec | KitSpecInput): MicroUsd | null {
+  const kit = KitSpecSchema.parse(kitInput);
+  const caps = new Map<string, MicroUsd | null>();
+  for (const c of kit.contenders) {
+    const source = c.driver.env?.AB_TOKEN_SOURCE;
+    if (source === undefined || !BYOK_TOKEN_SOURCES[String(source)]) continue;
+    const cap = isAgentDriver(c.driver) ? (c.driver.token_cap_micro_usd ?? null) : null;
+    caps.set(c.id, cap);
+  }
+  if (caps.size === 0) return null;
+  let total = 0n;
+  for (const t of expandTrials(expandTrialsInputFromKit("estimate", kit))) {
+    if (!caps.has(t.contender_id)) continue;
+    const cap = caps.get(t.contender_id);
+    if (cap === null || cap === undefined) return null;
+    total += cap;
+  }
+  return total;
 }
