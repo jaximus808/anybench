@@ -119,6 +119,8 @@ export const RunnerStatusSchema = z.object({
     .object({
       cap_micro_usd: z.string(),
       spent_micro_usd: z.string(),
+      /** TDM-231: the safety margin on the unreported estimate the cap check adds. */
+      margin_micro_usd: z.string().optional(),
       source: z.string(),
       exceeded: z.boolean(),
     })

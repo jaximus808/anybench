@@ -325,13 +325,18 @@ class TrialRun {
   private setupTokenCap(): void {
     const cap = this.job.token_cap_micro_usd;
     if (cap === undefined) return;
-    this.meter = new TokenMeter(cap, this.job.token_prices, (snap) => {
-      this.budgetHit = snap;
-      this.log(
-        `runner: token cap crossed: ${formatUsd(snap.spent_micro_usd)} (${snap.source}) > ${formatUsd(snap.cap_micro_usd)} cap; stopping`,
-      );
-      this.resolveBudget();
-    });
+    this.meter = new TokenMeter(
+      cap,
+      this.job.token_prices,
+      (snap) => {
+        this.budgetHit = snap;
+        this.log(
+          `runner: token cap crossed: ${formatUsd(snap.spent_micro_usd)} (${snap.source}) + ${formatUsd(snap.margin_micro_usd)} margin > ${formatUsd(snap.cap_micro_usd)} cap; stopping`,
+        );
+        this.resolveBudget();
+      },
+      { marginPct: this.job.token_cap_margin_pct },
+    );
   }
 
   private budgetReason(snap: TokenMeterSnapshot, what: string): string {
@@ -339,8 +344,10 @@ class TrialRun {
     return (
       `token cap exceeded during ${what}: spent ${formatUsd(snap.spent_micro_usd)} ` +
       `(${snap.spent_micro_usd} micro-USD, ${snap.source}) over the ${formatUsd(snap.cap_micro_usd)} ` +
-      `cap (${snap.cap_micro_usd} micro-USD); tokens in ${t.input} out ${t.output} ` +
-      `cache_read ${t.cache_read} cache_write ${t.cache_creation}`
+      `cap (${snap.cap_micro_usd} micro-USD) with a ${formatUsd(snap.margin_micro_usd)} margin ` +
+      `(${snap.margin_pct}% of ${snap.open_sessions} unreported session(s)); tokens in ${t.input} ` +
+      `out ${t.output} (estimated; ${snap.usage_output} per-message usage) cache_read ` +
+      `${t.cache_read} cache_write ${t.cache_creation}`
     );
   }
 
@@ -712,6 +719,7 @@ class TrialRun {
       this.status.token_cap = {
         cap_micro_usd: m.cap_micro_usd.toString(),
         spent_micro_usd: m.spent_micro_usd.toString(),
+        margin_micro_usd: m.margin_micro_usd.toString(),
         source: m.source,
         exceeded: m.exceeded,
       };

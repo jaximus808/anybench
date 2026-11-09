@@ -105,6 +105,9 @@ one-sentence clarifications that no hidden test depends on; the full run uses th
    cap before the runner stops it (Tandem: each session reports on its own exit). Budget TDM-213
    with that slack, or fix the meter (e.g. count output from the `result` lines of finished
    sessions plus a per-turn floor).
+   **Fixed by TDM-231** (`docs/findings/token-cap-output-estimate.md`): output is now estimated
+   from the emitted content and Claude Code's thinking-token events, spend is summed per session,
+   and the cap keeps a 10% margin; the replay of this smoke reads +4.9% at the last message.
 3. **A trial that ends `failed_subject` has no gate result.** A trial stopped by the wall cap or
    the spend cap, or whose driver exits non-zero, is final without `trial.gate`; the scorer then
    answers "no score: gate missing" for every gated requirement of the run

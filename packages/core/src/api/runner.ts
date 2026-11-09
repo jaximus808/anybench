@@ -122,6 +122,8 @@ export const RunnerStatusWireSchema = z.object({
     .object({
       cap_micro_usd: NonNegativeMicroUsdSchema,
       spent_micro_usd: NonNegativeMicroUsdSchema,
+      /** TDM-231: the safety margin the cap check adds on the unreported estimate. */
+      margin_micro_usd: NonNegativeMicroUsdSchema.optional(),
       source: z.string(),
       exceeded: z.boolean(),
     })

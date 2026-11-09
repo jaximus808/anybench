@@ -187,6 +187,12 @@ export const TrialJobSchema = z.object({
   token_cap_micro_usd: NonNegativeMicroUsdSchema.optional(),
   /** Prices used to estimate spend from token usage before Claude Code reports its own cost. */
   token_prices: TokenPricesSchema.optional(),
+  /**
+   * Safety margin of the token cap, integer percent (TDM-231): the cap trips when the spend plus
+   * this share of the still-unreported (estimated) spend crosses it. Absent = 10
+   * (`DEFAULT_TOKEN_CAP_MARGIN_PCT`).
+   */
+  token_cap_margin_pct: z.int().min(0).max(100).optional(),
   /** Network probe before `run`; absent = none. */
   network: NetworkProbeConfigSchema.optional(),
   /** Extra non-secret env for the driver. */

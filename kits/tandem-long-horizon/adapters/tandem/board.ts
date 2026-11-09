@@ -317,10 +317,16 @@ async function dump(m: Map<string, string>): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// tap: one session's stream-json goes to its own file whole; run.sh's stdout gets only the two
-// line types the runner's token cap (packages/runner token-cap.ts) reads, as compact lines. Every
-// session's tap writes to the same stdout, and a line under PIPE_BUF (4 KiB) is written atomically,
-// so lines from parallel sessions never interleave. The cost is forwarded as its JSON source text.
+// tap: one session's stream-json goes to its own file whole; run.sh's stdout gets only the lines
+// the runner's token cap (packages/runner token-cap.ts) reads, as compact lines. Every session's
+// tap writes to the same stdout, and a line under PIPE_BUF (4 KiB) is written atomically, so lines
+// from parallel sessions never interleave. The cost is forwarded as its JSON source text.
+//
+// TDM-231: Claude Code's per-message usage carries the output count at message start, so the tap
+// also forwards what the output estimate needs: `session_id` (the cap sums per session), the
+// chars each assistant line emitted (`output_chars`: text + tool name + tool input JSON;
+// `thinking_chars`), each block counted once, and the `system/thinking_tokens` events. Same rule
+// as packages/runner token-cap.ts `contentChars`.
 
 // Anthropic key shapes, and the key values themselves when this process can see them.
 const KEY_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}/g;
@@ -340,8 +346,38 @@ async function redact(): Promise<void> {
 
 const COST = /"total_cost_usd"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/;
 
+function contentChars(id: string, content: unknown, seen: Set<string>): { output: number; thinking: number } {
+  let output = 0;
+  let thinking = 0;
+  if (!Array.isArray(content)) return { output, thinking };
+  for (const b of content) {
+    if (!isObj(b) || typeof b.type !== "string") continue;
+    let key: string;
+    let n = 0;
+    let think = false;
+    if (b.type === "text" && typeof b.text === "string") {
+      key = `t:${id}:${b.text}`;
+      n = b.text.length;
+    } else if (b.type === "thinking" && typeof b.thinking === "string") {
+      key = `k:${id}:${typeof b.signature === "string" ? b.signature : b.thinking}`;
+      n = b.thinking.length;
+      think = true;
+    } else if ("input" in b) {
+      key = `u:${id}:${typeof b.id === "string" ? b.id : JSON.stringify(b)}`;
+      n = (typeof b.name === "string" ? b.name.length : 0) + JSON.stringify(b.input ?? null).length;
+    } else continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (think) thinking += n;
+    else output += n;
+  }
+  return { output, thinking };
+}
+
 async function tap(m: Map<string, string>): Promise<void> {
   const file = need(m, "file");
+  const seen = new Set<string>();
+  let anon = 0;
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const raw of rl) {
     const line = redactLine(raw);
@@ -353,15 +389,31 @@ async function tap(m: Map<string, string>): Promise<void> {
       continue;
     }
     if (!isObj(e)) continue;
-    if (e.type === "assistant" && isObj(e.message) && isObj(e.message.usage)) {
-      const u = e.message.usage;
-      const usage: Obj = {};
-      for (const k of ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"])
-        if (typeof u[k] === "number") usage[k] = u[k];
-      process.stdout.write(`${JSON.stringify({ type: "assistant", message: { id: e.message.id ?? null, usage } })}\n`);
+    const sid: Obj = typeof e.session_id === "string" ? { session_id: e.session_id } : {};
+    if (e.type === "assistant" && isObj(e.message)) {
+      const msg = e.message;
+      const out: Obj = { type: "assistant", ...sid, message: { id: msg.id ?? null } };
+      if (isObj(msg.usage)) {
+        const u = msg.usage;
+        const usage: Obj = {};
+        for (const k of ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"])
+          if (typeof u[k] === "number") usage[k] = u[k];
+        (out.message as Obj).usage = usage;
+      }
+      if (Array.isArray(msg.content)) {
+        const c = contentChars(typeof msg.id === "string" ? msg.id : `anon-${anon++}`, msg.content, seen);
+        out.output_chars = c.output;
+        if (c.thinking > 0) out.thinking_chars = c.thinking;
+      }
+      if (isObj(msg.usage) || Array.isArray(msg.content)) process.stdout.write(`${JSON.stringify(out)}\n`);
+    } else if (e.type === "system" && e.subtype === "thinking_tokens" && typeof e.estimated_tokens_delta === "number") {
+      process.stdout.write(
+        `${JSON.stringify({ type: "system", subtype: "thinking_tokens", ...sid, estimated_tokens_delta: e.estimated_tokens_delta })}\n`,
+      );
     } else if (e.type === "result") {
       const cost = COST.exec(line)?.[1];
-      if (cost !== undefined) process.stdout.write(`{"type":"result","total_cost_usd":${cost}}\n`);
+      const s = typeof e.session_id === "string" ? `"session_id":${JSON.stringify(e.session_id)},` : "";
+      if (cost !== undefined) process.stdout.write(`{"type":"result",${s}"total_cost_usd":${cost}}\n`);
     }
   }
 }
