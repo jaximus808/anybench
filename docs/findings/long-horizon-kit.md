@@ -246,3 +246,99 @@ disclosure follows the kit the spec came from: `tokens: anthropic-key, effort: d
 for this kit, the Naïve-proxy line for the short one. Proof uses this kit's own signed-off PROOF.md
 (`LONG_HORIZON_PROOF_SIGNOFF` in proof-score.ts, sha256 `da916780…`): a regenerated PROOF.md
 holds the run until someone signs it off again.
+
+## The project-tracker-xl oracle and proof (TDM-238)
+
+The reference solution `kits/tandem-long-horizon/proof/oracle/project-tracker-xl/` (10 source
+files, about 5,400 lines, zero dependencies, erasable TypeScript) started as TDM-237's throwaway
+reference, written from `instruction.md` alone, which scored 593/600 through the real gate. Read
+against the whole contract, three things had to change: its own tests imported
+`../.hidden-tests/helpers.ts`, so `npm test` failed in any workspace the gate had not touched (now
+`test/support.ts`, its own client, clock and webhook event log); a label rename rewrote the
+`label` values of every saved view of the team, even views without that label; and a multiselect
+`contains` condition accepted an array as well as one option. `src/main.ts` was dropped from the
+overlay (identical to the starting repo's, which the skeptic blocks as a scoring file copied into
+the workload); `.oracle-delete` removes the skeleton's `router.ts` and `http.ts`.
+
+The 7 misses were bugs in half-1 TESTS, not the oracle (each contradicts the contract):
+
+```
+cards.test.ts       the due job emits card.due once, ...            fake clock past 24 h, default tokenTtlMs
+cards.test.ts       the due job is rescheduled by a new dueDate, ...  same
+persistence.test.ts pending jobs survive a restart ...             same (both apps)
+migration.test.ts   a migrated card gets a due job only ...         same
+sprints.test.ts     burndown has one entry per date ...             same
+sprints.test.ts     burndown reads the current cards ...            same
+audit.test.ts       failed requests, reads, /me routes, ...         watch with a token POST /me/password revoked
+```
+
+The six clock tests now start with `tokenTtlMs: LONG_TTL` (helpers-pipeline.ts's ten years); the
+audit test logs in again and uses the new token. The webhook test "deleting a webhook cancels its
+pending retries" relied on deleting the webhook inside an 800 ms real-timer retry window; it now
+uses `retryDelaysMs: [3000]`, the same deadline polling. Gate on the fixed tests, on the host:
+
+```
+$ gate.sh fix1      # setup.sh, proof/oracle/driver.sh, check.sh with scripts/ab-run-local.sh
+secs=56
+600/600
+```
+
+The partial oracle on xl as TDM-233 wired it (the v1 oracle) applies cleanly but is no near miss:
+
+```
+67/600 hidden tests passed (apikeys 0/23, plans 0/23, fields 0/30, ... search 12/14)
+```
+
+It now cuts the 8 webhook routes out of the xl oracle's `src/r_basics.ts` (the same markers and
+exit-2 guard as v1): 515/600 in Docker, gate fails, all 12 webhooks tests fail, and 73 tests of
+other areas that observe events through a webhook (`eventLog`) fail with them.
+
+Nine points no hidden test depends on are settled in `instruction.md` with one sentence each
+(README "project-tracker-xl (TDM-238)"; `test/contract.test.ts` checks the oracle's reading):
+an empty or non-ASCII `Idempotency-Key` is `400 invalid_header` (checked with a raw socket; fetch
+refuses such a header); archived cards that follow `?moveTo` keep `completedAt`; a view's `label`
+values are rewritten in place, not sorted, and views without the name are untouched; `PATCH
+sprintId` naming a completed sprint is `400 invalid_body` before `409 sprint_state`; a multiselect
+`contains` value is one option; `is_set` takes no value or `null`; `customFields` condition values
+are normalised (text trimmed), `title` values are not; a broken CSV header reports only header
+errors, and `not_found` / `duplicate_row` rows are checked but get no `field_required`; a
+CSV-created card's `createdBy` is the caller.
+
+`scripts/verify-proof.sh` now proves both workloads (`PROOF_WORKLOADS` narrows it) and takes
+`PROOF_CPUSET` (`docker run --cpuset-cpus`), so the test runner sees and starts that many
+processes; the default is unchanged. An oracle miss prints its failing tests. The first run, on
+2 CPUs, overlapped the laptop sleeping:
+
+```
+project-tracker-xl oracle #1: 583/600 (8899 s: the machine slept mid-run)
+project-tracker-xl oracle #2: 591/600 (318 s, host load ~19)
+project-tracker-xl oracle #3: 600/600
+```
+
+The misses were not printed then (they are now). A diagnostic run of the same gate on the same
+2-CPU container afterwards was 600/600 in 155 s, and on the host at `--test-concurrency=2`
+600/600 in 83 s. The recorded run (`PROOF_CPUSET=0-1 scripts/verify-proof.sh --write`, host load
+5.4):
+
+```
+project-tracker oracle #1..#3: 120/120, gate true, 27 s each
+project-tracker do-nothing #1: 1/120
+project-tracker partial-oracle #1: 106/120, gate false
+project-tracker-xl oracle #1: 600/600, gate true, 159 s, own tests 19 pass 0 fail
+project-tracker-xl oracle #2: 600/600, gate true, 166 s, own tests 19 pass 0 fail
+project-tracker-xl oracle #3: 600/600, gate true, 219 s, own tests 19 pass 0 fail
+project-tracker-xl do-nothing #1: 1/600, gate false, 7 s
+project-tracker-xl partial-oracle #1: 515/600, gate false, 262 s
+RESULT: PASS
+```
+
+What this says about the gate: with webhook retries and timeouts on real timers (section 0.6), a
+starved machine (a laptop going to sleep, load ~19 on 2 CPUs) can cost a correct app a handful of
+tests. On a scoring computer that has the CPUs to itself the xl gate has not missed. The kit
+signs off this PROOF.md (`LONG_HORIZON_PROOF_SIGNOFF` in apps/server proof-score.ts).
+
+`anybench.yaml` lists `project-tracker-xl` next to `project-tracker` (same gate, requirements,
+3 h cap, `instruction_kind: contract`). `validateKitDir`: ok, no errors. `runSkepticChecks`: 0
+blocks; the xl contract declaration is a warning ("copies no line of the oracle's code (3609 lines
+compared) or the hidden tests' code (8910 lines compared)"), plus the fixture copy, `quality`
+weight, 2 tasks and 5 repeats.

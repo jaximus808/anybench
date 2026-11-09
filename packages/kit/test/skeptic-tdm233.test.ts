@@ -84,8 +84,18 @@ const fixtureWarnsTdm240 = (fs: readonly SkepticFinding[]) =>
 
 const XL_GATE = "gates/hidden-tests/project-tracker-xl";
 const XL_INSTR = "workloads/project-tracker-xl/instruction.md";
-/** Lists project-tracker-xl in the manifest, as a contract (what TDM-238 will do). */
+/** Takes project-tracker-xl out of the manifest again (the kit lists it since TDM-238). */
+const unlistXlTdm240 = (d: string) => {
+  const p = path.join(d, "anybench.yaml");
+  const yaml = readFileSync(p, "utf8");
+  const a = yaml.indexOf("\n  # The large rung");
+  const b = yaml.indexOf("      hidden_tests: 600\n");
+  if (a < 0 || b < a) throw new Error("anybench.yaml: the project-tracker-xl workload block moved");
+  writeFileSync(p, yaml.slice(0, a) + yaml.slice(b + "      hidden_tests: 600".length));
+};
+/** Lists project-tracker-xl in the manifest, as a contract (the kit itself does since TDM-238). */
 const listXlTdm240 = (d: string) =>
+  readFileSync(path.join(d, "anybench.yaml"), "utf8").includes("  - id: project-tracker-xl\n") ||
   replaceInTdm233(
     path.join(d, "anybench.yaml"),
     "\n# Collectors are omitted on purpose",
@@ -305,7 +315,10 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
   it("holds as project-tracker-xl lands: listed or not yet listed, with the gate's xl fixture copy", async () => {
     // TDM-236/237 write gates/hidden-tests/project-tracker-xl/ (with its own tracker-v1.json copy);
     // TDM-238 the xl oracle and the manifest entry. Before the manifest lists xl, and after.
-    const unlisted = copyKitTdm233(LH_KIT, addXlFixtureTdm240);
+    const unlisted = copyKitTdm233(LH_KIT, (d) => {
+      unlistXlTdm240(d);
+      addXlFixtureTdm240(d);
+    });
     expect(blocksTdm233((await runSkepticChecks(unlisted)).findings)).toEqual([]);
 
     const listed = copyKitTdm233(LH_KIT, (d) => {
@@ -337,6 +350,7 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
     // A new xl test whose name is a contract sentence (both instructions state it): no block,
     // listed or not, and the xl contract disclosure counts it.
     const unlisted = copyKitTdm233(LH_KIT, (d) => {
+      unlistXlTdm240(d);
       addXlFixtureTdm240(d);
       addSyntheticXlTestTdm240(d);
     });

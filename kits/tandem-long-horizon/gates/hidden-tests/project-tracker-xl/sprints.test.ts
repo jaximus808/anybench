@@ -20,6 +20,7 @@ import {
   startApp,
   type User,
 } from "./helpers.ts";
+import { LONG_TTL } from "./helpers-pipeline.ts";
 
 const mkSprint = (api: Api, projectId: string, by: User, body: Record<string, unknown> = {}): Promise<any> =>
   ok(api, 201, "POST", `/projects/${projectId}/sprints`, { name: "Sprint", startDate: "2026-03-01", endDate: "2026-03-14", ...body }, by.token);
@@ -550,7 +551,7 @@ test("GET sprint cards lists its non-archived cards by number ascending, however
 
 test("burndown has one entry per date; dates after today are null; remaining sums points of cards not completed before the end of each date", async (t) => {
   const clock = new Clock(Date.parse("2026-03-03T09:00:00.000Z"));
-  const api = await startApp(t, { now: clock.now });
+  const api = await startApp(t, { now: clock.now, tokenTtlMs: LONG_TTL });
   const w = await setupBoard(api, clock);
   const s = await mkSprint(api, w.project.id, w.owner, { startDate: "2026-03-03", endDate: "2026-03-08" });
   const card: Record<string, any> = {};
@@ -582,7 +583,7 @@ test("burndown has one entry per date; dates after today are null; remaining sum
 
 test("burndown reads the current cards: a reopened card counts on every past date, and a card added later counts too", async (t) => {
   const clock = new Clock(Date.parse("2026-03-01T12:00:00.000Z"));
-  const api = await startApp(t, { now: clock.now });
+  const api = await startApp(t, { now: clock.now, tokenTtlMs: LONG_TTL });
   const w = await setupBoard(api, clock);
   const s = await mkSprint(api, w.project.id, w.owner, { startDate: "2026-03-01", endDate: "2026-03-03" });
   const a = await createCard(api, w.cols[2], w.member, { title: "a", points: 5, sprintId: s.id });

@@ -448,7 +448,9 @@ board, column positions are always `0 .. n-1` with no gaps.
   column from one that is not: `now()`; leaving a done column for one that is not: `null`;
   otherwise unchanged), and their history records nothing (a cascade). Archived cards of a
   deleted column (cascade) get the `columnId` of the `moveTo` column if given, else of the board's
-  column at position 0 after the delete. Remaining columns are renumbered without gaps.
+  column at position 0 after the delete, and keep their `completedAt` whatever that column's
+  category (section 31 sets it when they are restored). Remaining columns are renumbered without
+  gaps.
 - Deleting a board deletes its columns, cards (archived ones included), their comments and
   everything else that belongs to those cards, and the board's recurrences.
 
@@ -491,8 +493,10 @@ A **card** is
 - `points`: `null` (default) or one of the integers `0, 1, 2, 3, 5, 8, 13, 21`.
 - `sprintId`: `null` (default) or the id of a sprint of the card's project whose `state` is
   `planned` or `active` (anything else, a completed sprint or another project's sprint included,
-  is `400 invalid_body`). A completed sprint is frozen: a `PATCH` with `sprintId` (any value) on a
-  card whose current sprint is completed answers `409 sprint_state` (section 19).
+  is `400 invalid_body`). A completed sprint is frozen: a `PATCH` with a valid `sprintId` (`null`
+  included) on a card whose current sprint is completed answers `409 sprint_state` (section 19);
+  the value's own rule runs first (step 7), so a `sprintId` naming a completed sprint answers
+  `400 invalid_body` on such a card too.
 - `customFields`: an object of custom field values (section 15). On create, it is the initial
   set of values (default `{}`); on `PATCH`, it is merged into the card's values: a key with a
   value sets that field, a key with `null` removes it, keys not given are kept.
@@ -1043,7 +1047,8 @@ Every authenticated `POST` route accepts an `Idempotency-Key` request header. Ot
 the public routes (`POST /auth/register`, `POST /auth/login`), ignore it.
 
 - The value must be 1 to 100 characters from `[A-Za-z0-9_.:-]`, else `400 invalid_header`
-  (check 3b).
+  (check 3b). A header sent with an empty value, or with any other character (a non-ASCII one
+  included), is present, so it answers `400 invalid_header` too.
 - When a `POST` carrying the header ends in a `2xx` response, the app stores, under the scope
   (user id, method, path without the query string, key): the response status, the exact response
   body bytes, the exact request body bytes, and the time `now()`. A response that is not `2xx`
@@ -1176,7 +1181,9 @@ across the whole team at once. A **label** is `{ id, teamId, name, color, create
   team, the label values of every rule of the team (conditions on `labels` and the `label` of
   `add_label` and `remove_label` actions, section 22), and the `label` values of every saved view
   of the team (section 26). Every rewrite is a cascade, done even inside archived projects;
-  after a rewrite, a `labels` array is de-duplicated and sorted again.
+  after a rewrite, a `labels` array is de-duplicated and sorted again. A saved view's `label`
+  values are not sorted: the name is replaced where it stands, a value repeated after its first
+  occurrence is dropped, and a view whose `label` values do not hold the name is left as it is.
 - **Rename** (`PATCH` with a `name` different from the current one): the old name is replaced by
   the new one everywhere in the team.
 - **Delete**: the label leaves the catalogue and its name is removed from the `labels` of every
@@ -1508,10 +1515,16 @@ For `customFields.<fieldId>`, `<fieldId>` is a field of a project of the team (e
 `400 invalid_body`). The ops are `is_set` and `is_not_set` (no `value`) for every type; `eq` and
 `ne` for every type except `multiselect`; `contains` and `not_contains` for `multiselect`; and
 `gt`, `gte`, `lt`, `lte` for `number` and `date` (dates compare as strings). `value` must be a
-valid value for the field (section 15.2). A stored condition always has the three keys, with
-`value: null` for `is_set` and `is_not_set`. A card with no value for the field (a card of another
-project included) fails every op except `is_not_set`, `ne` and `not_contains`, which hold. Any
-other `field`, an op not allowed for it, or a bad `value` is `400 invalid_body`.
+valid value for the field (section 15.2), except that for `contains` and `not_contains` on a
+`multiselect` field it is one option (a string equal to one of `options`, not an array), and the
+condition holds when the card's array includes (does not include) it. A stored condition always
+has the three keys, with `value: null` for `is_set` and `is_not_set`. For `is_set` and
+`is_not_set` (on `dueDate` too), `value` may be absent or `null`; any other `value` is
+`400 invalid_body`. A `customFields.<fieldId>` value is stored normalised as section 15.2 stores a
+value (a `text` value is trimmed, so it compares with the stored trimmed string), while a `title`
+value is kept and compared as given, untrimmed. A card with no value for the field (a card of
+another project included) fails every op except `is_not_set`, `ne` and `not_contains`, which hold.
+Any other `field`, an op not allowed for it, or a bad `value` is `400 invalid_body`.
 
 **`actions`**: an array of 1 to 10 actions, run in order:
 
@@ -1862,10 +1875,12 @@ email or `null`; `customFields` maps field **names** to values, in field creatio
   header is `malformed` at `row: 0`.
 - **Rows.** A row whose `number` cell is empty creates a card; a non-empty `number` must be the
   number of a card of the project, which the row updates (else `not_found`); the same number on
-  two rows is `duplicate_row` on the later one. `board` names a board of the project (the first in
-  creation order with exactly that name) and `column` a column of it (the first by position with
-  exactly that name), else `not_found` (when the board is not found, the `column` cell is not
-  checked). The other cells follow the card rules (`invalid_value`
+  two rows is `duplicate_row` on the later one. A row whose `number` is `not_found` or
+  `duplicate_row` still has its other cells checked (their errors are reported too), but never
+  gets `field_required`, since it neither creates nor updates a card. `board` names a board of
+  the project (the first in creation order with exactly that name) and `column` a column of it
+  (the first by position with exactly that name), else `not_found` (when the board is not found,
+  the `column` cell is not checked). The other cells follow the card rules (`invalid_value`
   when broken): `title` is required, and the others use the empty cell for their default or for
   clearing (`null`, `[]`, `none`, no value); `assignee` is an email of a member+ of the team
   (`invalid_assignee`); `labels` and `multiselect` cells split on `;`; `points` a valid points
@@ -1879,9 +1894,11 @@ email or `null`; `customFields` maps field **names** to values, in field creatio
   errors are `row: 0`, in header order, then the missing columns in the order `board`, `column`,
   `title`). A row with a different number of cells than the header, or an unterminated quote,
   is the only error reported: `{ row, column: null, code: "malformed" }`, and parsing stops there.
-- **Effect.** Rows are applied in row order. A created card goes to the end of its column; an
-  updated row sets every column present in the header, and a row naming another board or column
-  moves the card to the end of that column (so created and moved cards land in row order).
+  When the header has an error, the answer lists only the header errors: no data row is checked.
+- **Effect.** Rows are applied in row order. A created card goes to the end of its column, with
+  `createdBy` = the caller; an updated row sets every column present in the header, and a row
+  naming another board or column moves the card to the end of that column (so created and moved
+  cards land in row order).
   A row for an **archived** card updates its other cells only: it is not moved and stays
   archived, whatever its `board` and `column` cells say (they must still resolve). WIP limits and
   `blocked` are not checked; a `dueDate` schedules the due job (section 5); `completedAt` and card history

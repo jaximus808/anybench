@@ -10,8 +10,9 @@ subject:
   summary: >-
     Tandem is a shared task board where a planner splits work into tickets and N Claude Code
     workers claim them, with approvals. This kit compares Tandem with 3 workers against plain
-    Claude Code working alone on one whole-application build (a multi-user project tracker API,
-    12 feature areas) graded by 120 hidden tests. Every setup runs claude-opus-5-5 on Claude Code
+    Claude Code working alone on a whole-application build (a multi-user project tracker API) in
+    two sizes: project-tracker (12 feature areas, 120 hidden tests) and project-tracker-xl (33
+    feature areas, 600 hidden tests). Every setup runs claude-opus-5-5 on Claude Code
     2.1.319 with our own Anthropic key, at Claude Code's default effort with thinking on.
   # TDM-215: the task-horizon judgement this kit is built on. The skeptic's horizon_mismatch blocks
   # a kit that records mixed / long here and ships no workload with a wall cap of at least 2 h.
@@ -22,10 +23,10 @@ subject:
       tickets that workers claim from one board. That planning and handoff cost is paid on every
       task, and it can only pay off when the task is big enough that one solo session has to
       compact its context. Three small tasks (kits/tandem-vs-claude-code) measured the overhead;
-      a whole-application build across 12 feature areas, under a 3 h cap and graded with partial
-      credit, is where the benefit would show, if there is one.
+      a whole-application build across 12 feature areas (33 on project-tracker-xl), under a 3 h
+      cap and graded with partial credit, is where the benefit would show, if there is one.
   better_means:
-    - passes more of the hidden tests (partial credit across 12 feature areas)
+    - passes more of the hidden tests (partial credit across 12 or 33 feature areas)
     - more trials pass every hidden test
     - finishes sooner (wall clock)
     - costs less per task and per hidden test passed (tokens x price)
@@ -133,6 +134,22 @@ workloads:
       feature_areas: 12
       hidden_tests: 120
 
+  # The large rung (README "Two rungs", TDM-235 to TDM-238): v1's contract plus 21 areas, about 5x
+  # v1. Same gate, requirements and caps; its own instruction, starting repo, hidden tests and oracle.
+  - id: project-tracker-xl
+    title: Build a whole multi-user project tracker API, large (33 feature areas)
+    input: workloads/project-tracker-xl/input/
+    instruction: workloads/project-tracker-xl/instruction.md
+    # The same declaration as project-tracker: the instruction is the contract the 600 hidden tests
+    # check (TDM-233).
+    instruction_kind: contract
+    setup: workloads/project-tracker-xl/setup.sh
+    timeout_s: 10800
+    params:
+      shape: whole-app
+      feature_areas: 33
+      hidden_tests: 600
+
 # Collectors are omitted on purpose: each driver type gets its defaults (DRIVER_DEFAULT_COLLECTORS),
 # so A gets stream-json and Tandem also gets tandem-board.
 
@@ -146,23 +163,24 @@ gates:
     # workspace's copy can't change the grade. One `*` segment per workload dir (TDM-233).
     fixtures: [gates/hidden-tests/*/fixtures/]
     description: >-
-      Runs the 120 hidden tests (gates/hidden-tests/project-tracker/, never in the workspace)
-      against a copy of the frozen workspace, offline. Passes only when every hidden test passes;
+      Runs the workload's hidden tests (gates/hidden-tests/<workload>/: 120 for project-tracker,
+      600 for project-tracker-xl; never in the workspace) against a copy of the frozen workspace,
+      offline. Passes only when every hidden test passes;
       also writes hidden_test_fraction, hidden_tests_passed and hidden_tests_total.
     timeout_s: 1800
 
 requirements:
   - id: tests-pass
     type: measured
-    title: Every hidden test passes (120 tests)
+    title: Every hidden test passes (120 or 600 tests)
     metric: gate_pass_rate
     unit: ratio
     better: higher
-    target: at least 1.0 (every trial passes all 120 hidden tests)
+    target: at least 1.0 (every trial passes every hidden test of its workload)
     gate_id: hidden-tests
   - id: tests-fraction
     type: measured
-    title: Share of the 120 hidden tests passed (partial credit, every trial)
+    title: Share of the hidden tests passed (partial credit, every trial)
     metric: hidden_test_fraction
     unit: ratio
     better: higher
@@ -219,14 +237,15 @@ proof:
       driver_patch: proof/do_less/do-nothing/driver.sh
       description: "No-op harness: leaves the starting repo untouched; must fail every hidden test and show 0 claims."
     # A near miss (TDM-233): the reference solution with feature area 8 (webhooks) cut out. It still
-    # passes most hidden tests (106 of 120 in PROOF.md), so the gate is shown to refuse a whole app
-    # with one area missing. On project-tracker-xl it applies the v1 oracle (12 of 33 areas).
+    # passes most hidden tests (PROOF.md: 106 of 120; on project-tracker-xl, where it cuts the xl
+    # oracle's webhook routes, 515 of 600), so the gate is shown to refuse a whole app with one area
+    # missing.
     - id: partial-oracle
       kind: partial-oracle
       dir: proof/do_less/partial-oracle/
       contender: tandem
       driver_patch: proof/do_less/partial-oracle/driver.sh
-      description: "The oracle without the webhooks area (xl: the v1 oracle); must fail the hidden-tests gate."
+      description: "The workload's oracle without the webhooks area; must fail the hidden-tests gate."
   regression:
     id: skip-tests
     dir: proof/regression/skip-tests/

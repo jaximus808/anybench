@@ -169,12 +169,13 @@ test("failed requests, reads, /me routes, watching, dry-run imports and cascades
   await ok(api, 200, "GET", `/teams/${w.team.id}/search`, undefined, w.owner.token);
   await ok(api, 200, "PATCH", "/me", { name: "Changed" }, w.owner.token);
   assertStatus(await api.call("POST", "/me/password", { currentPassword: w.viewer.password, newPassword: "viewer-new-pw" }, w.viewer.token), 204);
-  await ok(api, 200, "POST", "/auth/login", { email: w.viewer.email, password: "viewer-new-pw" });
+  // The password change revoked every session token of the viewer (section 1): use a new one.
+  const viewerToken = (await ok(api, 200, "POST", "/auth/login", { email: w.viewer.email, password: "viewer-new-pw" })).token;
   const key = await createApiKey(api, w.owner, { scope: "read", teamId: w.team.id });
   await ok(api, 200, "PATCH", `/me/api-keys/${key.id}`, { name: "renamed" }, w.owner.token);
   assertStatus(await api.call("DELETE", `/me/api-keys/${key.id}`, undefined, w.owner.token), 204);
-  assertStatus(await api.call("POST", `/cards/${card.id}/watch`, undefined, w.viewer.token), 204);
-  assertStatus(await api.call("DELETE", `/cards/${card.id}/watch`, undefined, w.viewer.token), 204);
+  assertStatus(await api.call("POST", `/cards/${card.id}/watch`, undefined, viewerToken), 204);
+  assertStatus(await api.call("DELETE", `/cards/${card.id}/watch`, undefined, viewerToken), 204);
   await ok(api, 200, "POST", "/me/notifications/read-all", {}, w.member.token);
   const dry = await ok(api, 200, "POST", `/projects/${w.project.id}/import`, { csv: "board,column,title\r\nBoard,To do,dry\r\n", dryRun: true }, w.owner.token);
   assert.deepEqual(dry, { created: 1, updated: 0, dryRun: true });

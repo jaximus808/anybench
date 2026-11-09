@@ -5,10 +5,11 @@
 #
 #   driver.sh run <task> <workspace>      (WORKLOAD or EVAL_WORKLOAD names the workload)
 #
-#   project-tracker     proof/oracle/project-tracker/ with feature area 8 (webhooks, its 9 routes)
-#                       cut out of src/app.ts. Every webhooks hidden test fails, so the gate fails;
-#                       the other areas still pass.
-#   project-tracker-xl  the v1 oracle (proof/oracle/project-tracker/) as is: 12 of xl's 33 areas.
+# Both workloads cut feature area 8 (webhooks) out of their own oracle, so every webhooks hidden
+# test fails and the gate fails, while the other areas still pass:
+#   project-tracker     proof/oracle/project-tracker/, its 9 webhook routes cut out of src/app.ts.
+#   project-tracker-xl  proof/oracle/project-tracker-xl/, its 8 webhook routes cut out of
+#                       src/r_basics.ts (TDM-238; until then it applied the v1 oracle, 67/600).
 #
 # Fails (exit 2) when the cut does not apply, so a changed oracle can't silently turn this
 # overlay into the full oracle.
@@ -24,14 +25,18 @@ task="${2:-}"
 ws="${3:-${EVAL_WS:?EVAL_WS is not set}}"
 workload="${WORKLOAD:-${EVAL_WORKLOAD:?WORKLOAD is not set}}"
 case "$workload" in
-  project-tracker)
-    WORKLOAD=project-tracker "$kit/proof/oracle/driver.sh" run "$task" "$ws"
-    node - "$ws/src/app.ts" <<'JS'
+  project-tracker) file=src/app.ts ;;
+  project-tracker-xl) file=src/r_basics.ts ;;
+  *) echo "no partial oracle for workload '$workload'" >&2; exit 2 ;;
+esac
+WORKLOAD="$workload" "$kit/proof/oracle/driver.sh" run "$task" "$ws"
+# cut <file>: removes the text from the webhooks marker up to the audit log marker.
+node - "$ws/$file" <<'JS'
 const fs = require("node:fs");
 const file = process.argv[2];
 const src = fs.readFileSync(file, "utf8");
 const from = "  // ---- 8. webhooks\n";
-const to = "  // ---- 11. audit log\n";
+const to = "  // ---- 11. audit";
 const a = src.indexOf(from);
 const b = src.indexOf(to);
 if (a < 0 || b <= a || src.indexOf(from, a + 1) >= 0 || src.indexOf(to, b + 1) >= 0) {
@@ -45,9 +50,3 @@ if (!/route\("POST", "\/teams\/:teamId\/webhooks"/.test(cut)) {
 }
 fs.writeFileSync(file, src.slice(0, a) + "  // ---- 8. webhooks: cut by proof/do_less/partial-oracle\n\n" + src.slice(b));
 JS
-    ;;
-  project-tracker-xl)
-    WORKLOAD=project-tracker "$kit/proof/oracle/driver.sh" run "$task" "$ws"
-    ;;
-  *) echo "no partial oracle for workload '$workload'" >&2; exit 2 ;;
-esac

@@ -151,7 +151,11 @@ describe("kits/tandem-long-horizon anybench.yaml (TDM-212)", () => {
       );
     }
     expect(kit.unequal_caps_reason).toBeUndefined();
-    expect(kit.workloads.map((w) => [w.id, w.timeout_s])).toEqual([["project-tracker", 10_800]]);
+    // TDM-238: the large rung, project-tracker-xl, joins with the same 3 h cap.
+    expect(kit.workloads.map((w) => [w.id, w.timeout_s])).toEqual([
+      ["project-tracker", 10_800],
+      ["project-tracker-xl", 10_800],
+    ]);
     expect(kit.contenders[0]!.driver.env?.CC_WALL_CAP_S).toBe("10800");
     expect(readTdm212("adapters/tandem/harness.yaml")).toMatch(/^timeout_s: 10800$/m);
   });

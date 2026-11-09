@@ -68,9 +68,11 @@ describe("kits/tandem-long-horizon proof layout", () => {
   });
 
   it("PROOF.md records a passing Docker run: oracle 120/120 on every run, do-nothing at most 1/120 (GET /health)", () => {
-    const proof = readFileSync(join(KIT_TDM211, "PROOF.md"), "utf8");
-    expect(proof).toContain("`docker run --network none`");
-    expect(proof).toContain("Overall: RESULT: PASS");
+    const all = readFileSync(join(KIT_TDM211, "PROOF.md"), "utf8");
+    expect(all).toContain("`docker run --network none`");
+    // The project-tracker section (TDM-238 added a project-tracker-xl section after it).
+    const proof = all.slice(all.indexOf("### project-tracker\n"), all.indexOf("### project-tracker-xl\n"));
+    expect(all).toContain("Overall: RESULT: PASS");
     const oracleRows = [...proof.matchAll(/^\| oracle \| \d+ \| \w+ \| (\d+)\/(\d+) \|/gm)];
     expect(oracleRows.length).toBeGreaterThanOrEqual(1);
     for (const r of oracleRows) expect([r[1], r[2]]).toEqual(["120", "120"]);

@@ -25,6 +25,7 @@ import {
   startOf,
   upload,
 } from "./helpers.ts";
+import { LONG_TTL } from "./helpers-pipeline.ts";
 
 const CARD_KEYS = [
   "archived",
@@ -416,7 +417,7 @@ test("the cards quota counts every card of the team, archived cards and archived
 
 test("the due job emits card.due once, actor null and via schedule, on the first request at or after the start of the dueDate", async (t) => {
   const clock = new Clock(Date.UTC(2026, 2, 1, 12, 0, 0));
-  const api = await startApp(t, { now: clock.now });
+  const api = await startApp(t, { now: clock.now, tokenTtlMs: LONG_TTL });
   const w = await setupBoard(api, clock);
   const log = await eventLog(t, api, w.team.id, w.admin);
   const card = await createCard(api, w.cols[0], w.member, { title: "due soon", dueDate: "2026-03-03", assigneeId: w.member.id });
@@ -443,7 +444,7 @@ test("the due job emits card.due once, actor null and via schedule, on the first
 
 test("the due job is rescheduled by a new dueDate, cancelled by null, a past date or a delete, and skipped for completed or archived cards", async (t) => {
   const clock = new Clock(Date.UTC(2026, 2, 1, 12, 0, 0));
-  const api = await startApp(t, { now: clock.now });
+  const api = await startApp(t, { now: clock.now, tokenTtlMs: LONG_TTL });
   const w = await setupBoard(api, clock);
   const today = clock.today();
   const d1 = addDays(today, 2);

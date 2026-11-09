@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import { assertQuota, assertStatus, Clock, FIXTURE_V1, fixtureCopy, loadCreateApp, login, ok, signUp, startApp, type Api } from "./helpers.ts";
+import { LONG_TTL } from "./helpers-pipeline.ts";
 
 const T0 = Date.UTC(2025, 5, 1, 9, 0, 0);
 const at = (offset: number): string => new Date(T0 + offset).toISOString();
@@ -322,7 +323,7 @@ test("comments keep parentId only for a parent on the same card, and mentions ar
 
 test("a migrated card gets a due job only when the start of its dueDate is later than now() at load", async (t) => {
   const clock = new Clock(Date.UTC(2026, 0, 1, 12, 0, 0));
-  const api = await startApp(t, { dataFile: fixtureCopy(t), now: clock.now });
+  const api = await startApp(t, { dataFile: fixtureCopy(t), now: clock.now, tokenTtlMs: LONG_TTL });
   const u1 = await login(api, USERS.u1!.email, USERS.u1!.password);
   const u6 = await login(api, USERS.u6!.email, USERS.u6!.password);
   // c3 and c4 are due 2026-01-01, which started before the load; c14 is due 2026-07-20.

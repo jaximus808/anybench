@@ -95,7 +95,8 @@ change to the kit, recorded here with its reason; no trial had run on v2 when it
 `workloads/project-tracker-xl/areas.json` lists its areas with `tests_target` and a `half` (1 or
 2, about 300 tests each), so its hidden tests can be written in two parallel tickets (18.15 and
 18.16) without overlap; the oracle is 18.17. All three are written only from its `instruction.md`.
-Until they land, `anybench.yaml` runs only `project-tracker`. The v2 starting repo is v1's with the
+All three have landed (TDM-236, TDM-237, TDM-238): `anybench.yaml` lists both workloads, with the
+same gate, requirements and 3 h cap. The v2 starting repo is v1's with the
 new options in `AppOptions`, and its `fixtures/tracker-v1.json` is v1's, byte for byte (no new
 fixture: the migration contract is the same).
 
@@ -211,7 +212,7 @@ What changed in the copied adapters, and why:
 | Workload | Shape | Hidden tests | What it is |
 | --- | --- | --- | --- |
 | `project-tracker` | whole application, 12 areas | about 120, tagged by area | Build a multi-user project tracker API (accounts, teams and roles, projects, boards, cards, threaded comments with @mentions, search, signed webhooks with retries, rate limiting, versioned persistence with a 1.x migration, audit log) on a `node:http` skeleton that only serves `GET /health`. |
-| `project-tracker-xl` | whole application, 33 areas (v1's 12 plus 21) | about 600, tagged by area, in two halves | The same tracker grown about 5x: v1's contract plus API keys with scopes, plans and quotas, idempotency keys, custom fields, team labels, checklists, dependencies, sprints and velocity, templates, recurring cards, an automation rule engine, notifications and watchers, attachments, activity and card history, saved views, CSV/JSON import and export, reports, time tracking, invitations, an archive with a trash, and HTML pages. Added 2026-11-08 (see above); hidden tests and oracle to come. |
+| `project-tracker-xl` | whole application, 33 areas (v1's 12 plus 21) | about 600, tagged by area, in two halves | The same tracker grown about 5x: v1's contract plus API keys with scopes, plans and quotas, idempotency keys, custom fields, team labels, checklists, dependencies, sprints and velocity, templates, recurring cards, an automation rule engine, notifications and watchers, attachments, activity and card history, saved views, CSV/JSON import and export, reports, time tracking, invitations, an archive with a trash, and HTML pages. Added 2026-11-08 (see above); 600 hidden tests (TDM-236, TDM-237) and an oracle (TDM-238). |
 
 The feature areas and their test-count targets are in `workloads/project-tracker/areas.json`
 (machine-readable; the hidden tests use these area ids as tags):
@@ -255,8 +256,9 @@ adapters/                                   copied from kits/tandem-vs-claude-co
 rubric.md                                   the code-quality review rubric (requirement `quality`)
 proof/oracle/driver.sh                      applies proof/oracle/<workload>/ (the reference solution)
 proof/oracle/project-tracker/               the reference solution: an overlay on the starting repo
+proof/oracle/project-tracker-xl/            the v2 reference solution (overlay; .oracle-delete drops the skeleton's router)
 proof/do_less/do-nothing/driver.sh          the no-op harness
-proof/do_less/partial-oracle/driver.sh      the oracle with the webhooks area cut out (a near miss; xl: the v1 oracle)
+proof/do_less/partial-oracle/driver.sh      the workload's oracle with the webhooks area cut out (a near miss)
 proof/regression/skip-tests/CLAUDE.md       the planted regression ("skip the tests")
 scripts/verify-proof.sh                     the offline proof (Docker, node:22, --network none); writes PROOF.md
 ```
@@ -299,8 +301,9 @@ node kits/tandem-long-horizon/scripts/gen-seed-v1.mjs --check
 # the hidden-tests gate on a workspace in <run>/workspace:
 AB_RUN=kits/tandem-long-horizon/scripts/ab-run-local.sh AB_RUN_DIR=<run> \
   kits/tandem-long-horizon/gates/hidden-tests/check.sh <out> project-tracker <out>/gate.json
-# the proof (oracle 120/120 three times, do-nothing only /health, partial-oracle fails the gate
-# with >= 100/120 passing); --write rewrites PROOF.md:
+# the proof, both workloads (oracle 120/120 and 600/600 three times each, do-nothing only /health,
+# partial-oracle fails the gate with >= 100/120 and >= 480/600 passing); --write rewrites PROOF.md.
+# PROOF_CPUSET=0-1 pins the container to 2 CPUs (2 test processes); PROOF_WORKLOADS narrows it.
 kits/tandem-long-horizon/scripts/verify-proof.sh --write
 ```
 
@@ -316,6 +319,12 @@ verify, and this README carries the prediction.
 `packages/kit/test/tdm211-long-horizon-proof.test.ts` checks the proof layout, that the oracle is
 zero-dependency erasable TypeScript, that PROOF.md records a passing run, and runs the oracle
 through the real gate (120/120); its `validateKitDir` test skips until `anybench.yaml` exists.
+
+`packages/kit/test/tdm238-long-horizon-xl-proof.test.ts` checks the xl oracle's layout (zero
+dependencies, erasable TypeScript, its own tests, no import of the hidden tests), the sentences
+below in `instruction.md`, that the partial oracle cuts the xl webhook routes (and exits 2 when it
+can't), and that PROOF.md records 600/600 three times, do-nothing under 1% and the partial oracle
+failing. The 600-test gate itself runs only in `verify-proof.sh` (Docker).
 
 ## Proof
 
@@ -338,6 +347,34 @@ settled in `instruction.md` by one sentence, and the oracle's own tests check th
 | When a webhook attempt counts as answered | When the status line and headers arrive; the body is not waited for and never changes the outcome | 8 |
 | Whether `createApp` creates a missing data file | It does not; the first successful state-changing request does | 10.1 |
 
+### project-tracker-xl (TDM-238)
+
+PROOF.md's second section is the same run for `project-tracker-xl`: the reference solution
+(`proof/oracle/project-tracker-xl/`, about 5,400 lines of source in 10 files, plus 17 tests of its
+own) passes 600/600 hidden tests on three fresh workspaces; the untouched starting repo passes
+only `GET /health` (1/600); the oracle without its webhook routes fails the gate. Writing and
+checking it against `instruction.md` found nine points no hidden test depends on; each is now
+settled by one sentence, and `test/contract.test.ts` checks the reading:
+
+| Open point | Settled as | Section |
+| --- | --- | --- |
+| An empty or non-ASCII `Idempotency-Key` | Present, so `400 invalid_header` | 14 |
+| `completedAt` of archived cards that follow `?moveTo` | Kept, whatever the new column's category (restore sets it) | 4 |
+| A saved view's `label` values after a rename or merge | Not sorted: replaced in place, a later repeat dropped; a view without the name untouched | 16 |
+| `PATCH sprintId` naming a completed sprint on a card frozen in one | `400 invalid_body` (step 7 before step 8); a valid value is `409 sprint_state` | 5 |
+| The `value` of a multiselect `contains` / `not_contains` condition | One option (a string), not an array | 22.1 |
+| `value` of `is_set` / `is_not_set` | Absent or `null`; anything else `400 invalid_body` | 22.1 |
+| Trimming of condition values | A `customFields` value is stored as 15.2 stores it (text trimmed); a `title` value as given | 22.1 |
+| CSV import: data rows when the header is broken; a `not_found` / `duplicate_row` row's other cells | Only the header errors; such a row's other cells are checked, but it gets no `field_required` | 27.3 |
+| `createdBy` of a card a CSV import creates | The caller | 27.3 |
+
+Seven hidden tests of the first half contradicted the contract and were fixed, not the oracle:
+six moved the fake clock past 24 h with the default `tokenTtlMs`, so their session tokens expired
+(section 1); they now pass the long token lifetime of `helpers-pipeline.ts`. One reused a token
+that `POST /me/password` had revoked; it now logs in again. And the webhook test that deletes a
+webhook inside its retry window now uses a 3 s retry delay instead of 800 ms (section 0.6 keeps
+webhook retries on real timers), so a loaded machine stays inside the window.
+
 ## What the skeptic says about this kit (TDM-233)
 
 `runSkepticChecks` passes this kit with no blocking finding. Two of its rules meet content that is
@@ -353,4 +390,7 @@ correct by design here, and the kit declares both, so they show as warnings inst
 
 The third block was real: the only do-less was a no-op, so nothing showed that the gate refuses
 a near miss. `proof/do_less/partial-oracle/` fixes that (PROOF.md: 106/120 hidden tests pass, and
-the gate fails).
+the gate fails). On `project-tracker-xl` it first applied the v1 oracle, which passes only 67/600
+(not a near miss); since TDM-238 it cuts the webhook routes out of the xl oracle instead (515/600,
+gate fails: every webhooks test fails, and so do the tests of other areas that watch events through
+a webhook).

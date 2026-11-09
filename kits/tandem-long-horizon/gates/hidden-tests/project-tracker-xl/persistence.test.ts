@@ -21,6 +21,7 @@ import {
   tempDir,
   waitFor,
 } from "./helpers.ts";
+import { LONG_TTL } from "./helpers-pipeline.ts";
 
 const readData = (file: string): any => JSON.parse(readFileSync(file, "utf8"));
 
@@ -211,7 +212,7 @@ test("createApp throws synchronously on invalid JSON and on an unsupported versi
 test("pending jobs survive a restart: a due job and a recurrence run when they are due on the new app", async (t) => {
   const clock = new Clock(Date.UTC(2026, 2, 1, 12, 0, 0));
   const file = join(tempDir(t), "tracker.json");
-  const api = await startApp(t, { dataFile: file, now: clock.now });
+  const api = await startApp(t, { dataFile: file, now: clock.now, tokenTtlMs: LONG_TTL });
   const w = await setupBoard(api, clock);
   const card = await createCard(api, w.cols[0], w.member, { title: "due later", dueDate: "2026-03-03" });
   const rec = await ok(
@@ -225,7 +226,7 @@ test("pending jobs survive a restart: a due job and a recurrence run when they a
   assert.equal(rec.nextRunAt, "2026-03-02T09:00:00.000Z");
   await api.close();
   clock.set(Date.parse("2026-03-03T00:00:01.000Z"));
-  const again = await startApp(t, { dataFile: file, now: clock.now });
+  const again = await startApp(t, { dataFile: file, now: clock.now, tokenTtlMs: LONG_TTL });
   assertStatus(await again.call("GET", "/health"), 200);
   const after = await ok(again, 200, "GET", `/recurrences/${rec.id}`, undefined, w.admin.token);
   assert.equal(after.lastRunAt, clock.iso(), "the recurrence ran on the first request after the restart");

@@ -352,11 +352,13 @@ test("a timeout or a connection error fails the attempt with lastStatusCode null
 });
 
 test("deleting a webhook cancels its pending retries; deactivating one does not", async (t) => {
-  // Both webhooks fail their first attempt and retry 800 ms later. `cancelled` is deleted and
-  // `paused` deactivated right after their first attempts. `cancelled` was pinged first, so its
-  // retry (if it were not cancelled) would be due no later than `paused`'s; once `paused`'s retry
-  // has arrived and one more delivery has gone through a fresh webhook, it would have arrived.
-  const api = await startApp(t, { webhooks: { retryDelaysMs: [800], timeoutMs: 2000 }, defaultPlan: "team" });
+  // Both webhooks fail their first attempt and retry 3 s later (section 0.6: webhook retries run on
+  // real timers, so the delay is the window in which the test must delete `cancelled`; 3 s keeps a
+  // loaded machine well inside it). `cancelled` is deleted and `paused` deactivated right after
+  // their first attempts. `cancelled` was pinged first, so its retry (if it were not cancelled)
+  // would be due no later than `paused`'s; once `paused`'s retry has arrived and one more delivery
+  // has gone through a fresh webhook, it would have arrived.
+  const api = await startApp(t, { webhooks: { retryDelaysMs: [3000], timeoutMs: 2000 }, defaultPlan: "team" });
   const w = await setupTeam(api);
   const rxCancelled = await startReceiver(t, (_r, n) => (n === 1 ? 500 : 200));
   const rxPaused = await startReceiver(t, (_r, n) => (n === 1 ? 500 : 200));

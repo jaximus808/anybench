@@ -297,10 +297,13 @@ describe.skipIf(!available)("demo proof, scoring and summary", () => {
     const proof = kit!.proof as { check: string; pass: boolean; reason: string }[];
     const label = `proof: curated (verified offline at ${LONG_HORIZON_PROOF_SIGNOFF.commit.slice(0, 7)})`;
     expect(proof.filter((p) => p.pass).map((p) => [p.check, p.reason])).toEqual([
-      ["oracle_passes", `${label}: oracle 120/120, 120/120, 120/120 hidden tests passed (3 runs)`],
+      [
+        "oracle_passes",
+        `${label}: oracle 120/120, 120/120, 120/120 hidden tests passed (3 runs), 600/600, 600/600, 600/600 on project-tracker-xl (3 runs)`,
+      ],
       [
         "do_less_fails",
-        `${label}: do-nothing 1/120 passed; partial-oracle 106/120 passed, gate failed`,
+        `${label}: do-nothing 1/120 passed, 1/600 on project-tracker-xl; partial-oracle 106/120 passed, gate failed, 515/600 on project-tracker-xl, gate failed`,
       ],
     ]);
     const outputs = run!.stageOutputs as {

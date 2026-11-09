@@ -91,7 +91,9 @@ describe("kits/tandem-long-horizon partial oracle (TDM-233)", () => {
   }, 60_000);
 
   it("PROOF.md records it: the partial oracle fails the gate with at least 100/120 passing", () => {
-    const proof = readFileSync(join(KIT_TDM233, "PROOF.md"), "utf8");
+    const all = readFileSync(join(KIT_TDM233, "PROOF.md"), "utf8");
+    // The project-tracker section (TDM-238 added a project-tracker-xl section after it).
+    const proof = all.slice(all.indexOf("### project-tracker\n"), all.indexOf("### project-tracker-xl\n"));
     const row = /^\| partial-oracle \| 1 \| \w+ \| (\d+)\/(\d+) \| \d+ \| (true|false) \|/m.exec(
       proof,
     );
@@ -99,7 +101,7 @@ describe("kits/tandem-long-horizon partial oracle (TDM-233)", () => {
     expect(Number(row![1])).toBeGreaterThanOrEqual(100);
     expect(Number(row![1])).toBeLessThan(120);
     expect([row![2], row![3]]).toEqual(["120", "false"]);
-    expect(proof).toContain("Overall: RESULT: PASS");
-    expect(proof).toMatch(/^Totals: .*; partial-oracle \d+\/120 passed, gate failed\.$/m);
+    expect(all).toContain("Overall: RESULT: PASS");
+    expect(all).toMatch(/^Totals: .*; partial-oracle \d+\/120 passed, gate failed[,.]/m);
   });
 });
