@@ -22,11 +22,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  costBasisDisclosure,
   gateResultsOf,
+  kitCostBasis,
   scoreKit,
   TrialGateRecordSchema,
   type Comparison,
   type ContenderScore,
+  type KitCostBasis,
   type KitScore,
   type PerTaskFinding,
   type TrialResult,
@@ -346,6 +349,7 @@ export function gatesOf(raw: unknown): Record<string, GateResult> {
 /** A settled trial → the scorer's TrialResult, or why it is left out. */
 export function trialResultOf(
   t: StageTrial,
+  basis: KitCostBasis = { kind: "compute_proxy" },
 ): { ok: true; result: TrialResult } | { ok: false; why: "warmups" | "infra" | "cancelled" } {
   if (t.repeat < 0) return { ok: false, why: "warmups" };
   if (t.state === "failed_infra") return { ok: false, why: "infra" };
@@ -357,8 +361,15 @@ export function trialResultOf(
   // trial-metrics.ts). When the proxy spend could not be read, compute alone is not the cost: leave
   // it out, so the scorer says "metric missing" instead of reporting a number that is too low.
   // Micro-USD stays an integer; the scorer works on numbers (exact below 2^53).
-  if (t.cost_micro_usd > 0n && metrics.proxy_cost_missing !== 1) {
-    metrics.cost_micro_usd = Number(t.cost_micro_usd);
+  // TDM-246 (rule 5's exception): under the kit's `compute_byok_tokens` basis (every contender on
+  // the Anthropic key with one pinned Claude Code version), cost also counts the scored attempt's
+  // metered model tokens (trial-metrics.ts byok_token_cost_micro_usd). A trial without that
+  // reading has no cost: computer time alone would rank it as cheap.
+  const byok = basis.kind === "compute_byok_tokens" ? metrics.byok_token_cost_micro_usd : 0;
+  if (byok === undefined || !Number.isSafeInteger(byok) || byok < 0) {
+    // no reading under the token basis: cost missing
+  } else if ((t.cost_micro_usd > 0n || byok > 0) && metrics.proxy_cost_missing !== 1) {
+    metrics.cost_micro_usd = Number(t.cost_micro_usd) + byok;
   }
   return {
     ok: true,
@@ -385,8 +396,9 @@ export function kitScore(): PipelinePort["score"] {
 export function storedScoreOf(kit: KitSpec, trials: readonly StageTrial[]): StoredScore {
   const excluded = { warmups: 0, infra: 0, cancelled: 0 };
   const results: TrialResult[] = [];
+  const basis = kitCostBasis(kit);
   for (const t of trials) {
-    const r = trialResultOf(t);
+    const r = trialResultOf(t, basis);
     if (r.ok) results.push(r.result);
     else excluded[r.why]++;
   }
@@ -669,6 +681,9 @@ export function buildSummary(
     (isProven(input.proof) ? "proof: all six checks passed" : "proof: not all six checks passed");
   lines.push(proofLine);
   if (input.disclosure) lines.push(input.disclosure);
+  // TDM-246: say when the cost rows include model tokens (rule 5's exception).
+  const costBasis = costBasisDisclosure(kitCostBasis(input.kit));
+  if (costBasis) lines.push(costBasis);
   const autoAnswered = autoAnswerLine(input.trials, nameOf);
   if (autoAnswered) lines.push(autoAnswered);
   lines.push("");

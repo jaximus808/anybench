@@ -60,6 +60,8 @@ import {
   type ScoringFile,
   type ScoringProfileInput,
   type TrialGateRecord,
+  kitCostBasis,
+  type KitCostBasis,
 } from "@anybench/bench";
 import {
   ArtifactTransferError,
@@ -96,6 +98,7 @@ import type { KitFileStore } from "../lib/kit-upload/store.js";
 import {
   attemptProxySpend,
   autoAnswerMetricsFromBundle,
+  byokInputsOf,
   trialMetrics,
   trialPhaseEdges,
 } from "../orchestrator/trial-metrics.js";
@@ -346,6 +349,8 @@ export async function gateTrial(
    * failed_subject (a fail with no partial credit), grading `unavailable` with the reason, and its
    * cost and wall are recorded here (trial.execute left them to this job).
    */
+  // TDM-246: the kit's cost basis, once the kit is read (recorded on the trial with its metrics).
+  let costBasis: KitCostBasis | undefined;
   async function ungraded(reason: string): Promise<GateTrialReport> {
     const proxy = await attemptProxySpend(deps.proxySpend, trial!);
     const edges = (await trialPhaseEdges(deps.db, trial!.runId, [trial!.id])).get(trial!.id) ?? [];
@@ -356,6 +361,8 @@ export async function gateTrial(
       edges,
       gate: null,
       proxy,
+      ...byokInputsOf(trial!),
+      ...(costBasis ? { costBasis } : {}),
     });
     const updated = await deps.db
       .update(trials)
@@ -439,6 +446,7 @@ export async function gateTrial(
     : [undefined];
   if (!kit) return failInfra("kit", `run ${trial.runId} has no kit`, null);
   const spec = safeParseKitSpec(kit.spec);
+  if (spec.success) costBasis = kitCostBasis(spec.data);
   if (!spec.success) {
     return failInfra("kit", `kit ${kit.id} does not validate: ${spec.errors.join("; ")}`, null);
   }
@@ -546,6 +554,8 @@ export async function gateTrial(
     gate: scored,
     proxy,
     ...(autoAnswer ? { autoAnswer } : {}),
+    ...byokInputsOf(trial),
+    ...(costBasis ? { costBasis } : {}),
   });
   const at = now();
 

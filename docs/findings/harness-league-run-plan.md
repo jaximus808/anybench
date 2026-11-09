@@ -239,16 +239,15 @@ and the account's Anthropic key stored (web: /settings → Model keys; or
 
 ## Open before the results go public
 
-- **The scored cost of a BYOK trial is compute only.** `trials.cost_micro_usd` is compute plus
-  the Naïve proxy spend (`orchestrator/trial-metrics.ts`); a trial on the owner's key has no proxy
-  spend, so the `cost` and `cost-per-test` requirements would rank the setups by computer time,
-  not tokens. The runner's metered spend (`trials.token_spend_micro_usd`, Claude Code's own
-  `total_cost_usd`) is recorded but deliberately not scored (plan.md 17.2 rule 5: it comes from
-  the trial computer). Before the league's cost numbers are published, either score it (a recorded
-  decision) or read the spend provider-side (Anthropic's usage API for the key). Not changed here.
+- ~~The scored cost of a BYOK trial is compute only.~~ Fixed by TDM-246: the league (and E18)
+  have every contender on the Anthropic key with Claude Code 2.1.319, so `cost` and
+  `cost-per-test` now count the scored attempt's metered tokens, and the report says
+  "cost includes model tokens at list price, as reported by Claude Code 2.1.319's session totals"
+  (plan.md 17.2 rule 5's exception; bench `kitCostBasis`).
 - The env build for this kit has run docker-local only (`harness-league-contenders.md`), never on
   Naïve: gstack's Bun and Chromium dependencies are the likeliest to fail. A failure holds the run
   at env_build (needs_human) before any trial; nothing is spent on the key.
-- A retried trial attempt overwrites `trials.token_spend_micro_usd`, so a trial that hit
-  failed_infra after real token use and then ran again under-counts the first attempt's spend.
-  Rare (an infra failure mid-run); the per-trial cap still bounds each attempt.
+- ~~A retried trial attempt overwrites `trials.token_spend_micro_usd`.~~ Fixed by TDM-246: each
+  attempt's spend is kept in `trials.token_spend_by_attempt` (migration 0017) and
+  `token_spend_micro_usd` is their sum, so the BYOK limit counts every attempt and scoring reads
+  only the scored one.

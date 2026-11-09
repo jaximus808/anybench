@@ -5,6 +5,7 @@ export * from "./score.js";
 export * from "./decide.js";
 export * from "./metric.js";
 export * from "./collectors/index.js";
+export * from "./cost-basis.js";
 export * from "./kit-adapter.js";
 export * from "./executor.js";
 export * from "./gate.js";

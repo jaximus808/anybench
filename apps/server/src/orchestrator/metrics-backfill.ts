@@ -9,7 +9,7 @@
 // Records gated before gates returned metric rows have no `metrics` on their outcomes: for those
 // the p95 is read back from a passing verdict's reason ("p95 3.6 ms at 50 req/s ..."), which the
 // api-load check rounds to 0.1 ms. Nothing else is guessed.
-import { gateResultsOf, TrialGateRecordSchema } from "@anybench/bench";
+import { gateResultsOf, kitCostBasis, TrialGateRecordSchema } from "@anybench/bench";
 import { safeParseKitSpec, toJsonValue, type KitSpec } from "@anybench/core";
 import type { ProxySpendSource, TrialProxySpend } from "@anybench/naive";
 import { eq, sql } from "drizzle-orm";
@@ -27,6 +27,7 @@ import { kitContenderSlugs, orchestratorStore } from "./store.js";
 import {
   attemptKey,
   proxySpendByKey,
+  byokInputsOf,
   recordTrialMetrics,
   trialMetrics,
   trialPhaseEdges,
@@ -292,6 +293,8 @@ export async function backfillRunMetrics(
 
   const lines: TrialBackfillLine[] = [];
   const computed = new Map<string, ReturnType<typeof trialMetrics>>();
+  // TDM-246: the kit's cost basis, recorded on each trial.
+  const costBasis = kitCostBasis(kit);
   for (const t of measured) {
     const k = attemptKey(t);
     const proxy: ProxySpendResult =
@@ -312,6 +315,8 @@ export async function backfillRunMetrics(
       gate: t.gate,
       proxy,
       gateMetrics,
+      ...byokInputsOf(t),
+      costBasis,
     });
     computed.set(t.id, m);
     const missing: string[] = [];
@@ -320,7 +325,8 @@ export async function backfillRunMetrics(
     let written = false;
     if (opts.apply) {
       written =
-        (await recordTrialMetrics(db, t, proxy, { gateMetrics, edges: trialEdges })) !== null;
+        (await recordTrialMetrics(db, t, proxy, { gateMetrics, edges: trialEdges, costBasis })) !==
+        null;
     }
     lines.push({
       trialId: t.id,

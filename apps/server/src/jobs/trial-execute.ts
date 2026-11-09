@@ -27,6 +27,7 @@ import {
   AnybenchEventSchema,
   frozenWorkspaceOf,
   RunIdSchema,
+  safeParseKitSpec,
   TrialStateSchema,
   type EventActor,
   type TrialState,
@@ -35,6 +36,7 @@ import {
   EXECUTING_TRIAL_STATES,
   executeTrial,
   gradesFrozenWorkspace,
+  kitCostBasis,
   leaseOwnerBase,
   planTransition,
   reattachOrphans,
@@ -56,12 +58,14 @@ import {
 import { createComputerRegistry, type ComputerStore } from "@anybench/envs";
 import type { ProxySpendSource } from "@anybench/naive";
 import type { ComputeProvider } from "@anybench/providers";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import type { Database, DbTx } from "../db/client.js";
 import { events } from "../db/schema/events.js";
+import { kits } from "../db/schema/kits.js";
+import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
 import {
   artifactStoreFromEnv,
@@ -167,8 +171,26 @@ function toColumns(p: TrialPatch): Partial<typeof trials.$inferInsert> {
   if (p.log_offset !== undefined) c.logOffset = p.log_offset;
   if (p.outage_pauses !== undefined) c.outagePauses = p.outage_pauses;
   if (p.frozen_workspace !== undefined) c.frozenWorkspace = p.frozen_workspace;
-  if (p.token_spend_micro_usd !== undefined) c.tokenSpendMicroUsd = p.token_spend_micro_usd;
+  if (p.token_spend_micro_usd !== undefined)
+    Object.assign(c, tokenSpendColumns(p.token_spend_micro_usd));
   return c;
+}
+
+/**
+ * TDM-246: record THIS attempt's metered token spend (the row's attempt as it stands when the
+ * update runs) under its own key, and keep token_spend_micro_usd the sum over every attempt, so a
+ * retried attempt never overwrites (lowers) what an earlier one spent. Writing the same attempt
+ * again replaces its entry (idempotent). Null clears nothing.
+ */
+export function tokenSpendColumns(
+  spend: bigint | null,
+): Partial<Record<"tokenSpendByAttempt" | "tokenSpendMicroUsd", SQL>> {
+  if (spend === null) return {};
+  const merged = sql`(coalesce(${trials.tokenSpendByAttempt}, '{}'::jsonb) || jsonb_build_object(${trials.attempt}::text, ${spend.toString()}::text))`;
+  return {
+    tokenSpendByAttempt: merged,
+    tokenSpendMicroUsd: sql`(select coalesce(sum(e.value::bigint), 0) from jsonb_each_text(${merged}) as e)`,
+  };
 }
 
 /** SQL: the lease holder's worker ticked within WORKER_MAX_TICK_AGE_MS, as the same process. */
@@ -550,7 +572,17 @@ export async function recordFailedSubjectMetrics(
   const [row] = await db.select().from(trials).where(eq(trials.id, trialId));
   if (!row || row.state !== "failed_subject") return;
   if (gradesFrozenWorkspace({ state: row.state, frozen_workspace: row.frozenWorkspace })) return;
-  await recordTrialMetrics(db, row, await attemptProxySpend(spend, row));
+  // TDM-246: the kit's cost basis, recorded on the trial with its metrics.
+  const [kit] = await db
+    .select({ spec: kits.spec })
+    .from(runs)
+    .innerJoin(kits, eq(kits.id, runs.kitId))
+    .where(eq(runs.id, row.runId))
+    .limit(1);
+  const spec = kit ? safeParseKitSpec(kit.spec) : null;
+  await recordTrialMetrics(db, row, await attemptProxySpend(spend, row), {
+    ...(spec?.success ? { costBasis: kitCostBasis(spec.data) } : {}),
+  });
 }
 
 export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {

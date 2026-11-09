@@ -71,11 +71,18 @@ export const trials = pgTable(
      */
     frozenWorkspace: jsonb("frozen_workspace"),
     /**
-     * TDM-242: the attempt's model-token spend as the runner metered it (status.json token_cap),
-     * integer micro-USD; null when the trial had no token cap. On a trial with no proxy key this
-     * is the user's own key (BYOK): reported, never billed.
+     * TDM-242: the model-token spend as the runner metered it (status.json token_cap), integer
+     * micro-USD; null when no attempt reported one. On a trial with no proxy key this is the
+     * user's own key (BYOK): reported, never billed. TDM-246: the sum over every attempt
+     * (`token_spend_by_attempt`), so a retry never lowers it.
      */
     tokenSpendMicroUsd: microUsd("token_spend_micro_usd"),
+    /**
+     * TDM-246: each attempt's metered spend, `{"<attempt>": "<micro-USD>"}` (decimal strings).
+     * Scoring reads the scored attempt's own; the BYOK limit reads the sum (token_spend_micro_usd).
+     * Migration 0017 moved each older spend under the trial's attempt at the time.
+     */
+    tokenSpendByAttempt: jsonb("token_spend_by_attempt"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

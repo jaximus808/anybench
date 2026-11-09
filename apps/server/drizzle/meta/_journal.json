@@ -120,6 +120,13 @@
       "when": 1794250508893,
       "tag": "0016_byok_token_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794251799833,
+      "tag": "0017_token_spend_by_attempt",
+      "breakpoints": true
     }
   ]
 }

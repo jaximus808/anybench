@@ -21,11 +21,25 @@
 //                      requirement may rest on it (plan.md 17.2 rule 5); it says how often the
 //                      policy fired, which the policy's own events record.
 //
+//   byok_token_cost_micro_usd / cost_includes_model_tokens
+//                      TDM-246: the scored attempt's metered spend on the user's own key
+//                      (trials.token_spend_by_attempt[attempt], the runner's meter over Claude
+//                      Code's session totals), and whether the kit's cost basis adds it to the cost
+//                      (bench kitCostBasis: every contender on the Anthropic key with one pinned
+//                      Claude Code version; plan.md 17.2 rule 5). The scorer adds it to
+//                      cost_micro_usd only under that basis (proof-score.ts trialResultOf). Earlier
+//                      attempts (infra failures, our retries) never count against the contender.
+//
 // trial.gate writes these with the verdict (one update, so the run never scores a trial without
 // them). trial.execute records them for a failed_subject trial right after it settles (its cost
 // counts in "all spend ÷ solved"; its wall is censored at the cap anyway).
 // scripts/ops/backfill-trial-metrics.ts recomputes them for trials settled before this existed.
-import { collectStreamJson, trialGateMetrics, TrialGateRecordSchema } from "@anybench/bench";
+import {
+  collectStreamJson,
+  trialGateMetrics,
+  TrialGateRecordSchema,
+  type KitCostBasis,
+} from "@anybench/bench";
 import type { ProxySpendSource, TrialProxySpend } from "@anybench/naive";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database, DbTx } from "../db/client.js";
@@ -46,7 +60,20 @@ export const OWN_METRIC_KEYS = [
   "proxy_calls",
   "proxy_unpriced_calls",
   "proxy_cost_missing",
+  "byok_token_cost_micro_usd",
+  "cost_includes_model_tokens",
 ] as const;
+
+/**
+ * TDM-246: the metered token spend of `attempt` (trials.token_spend_by_attempt), or null when that
+ * attempt reported none. Never another attempt's: a retry is scored on its own spend.
+ */
+export function attemptTokenSpend(byAttempt: unknown, attempt: number): bigint | null {
+  if (!byAttempt || typeof byAttempt !== "object" || Array.isArray(byAttempt)) return null;
+  const v = (byAttempt as Record<string, unknown>)[String(attempt)];
+  const text = typeof v === "number" && Number.isSafeInteger(v) ? String(v) : v;
+  return typeof text === "string" && /^\d{1,20}$/.test(text) ? BigInt(text) : null;
+}
 
 /**
  * TDM-245: the headless policy's counts (bench stream-json collector), kept in `trials.metrics`
@@ -109,6 +136,13 @@ export interface TrialMetricsInput {
    * the stored ones (none in the bundle clears them). Omitted (bundle not read): stored ones stay.
    */
   autoAnswer?: Record<string, number>;
+  /**
+   * TDM-246: the attempt's metered spend on the user's own key (attemptTokenSpend), for a trial
+   * with no proxy key; null when the attempt reported none. Omitted: not a BYOK trial.
+   */
+  byokTokens?: bigint | null;
+  /** TDM-246: the kit's cost basis (bench kitCostBasis); omitted: not recorded. */
+  costBasis?: KitCostBasis;
 }
 
 function numbersOf(raw: unknown): Record<string, number> {
@@ -171,6 +205,13 @@ export function trialMetrics(input: TrialMetricsInput): {
       const v = input.autoAnswer[k];
       if (v !== undefined && Number.isFinite(v)) metrics[k] = v;
     }
+  }
+
+  if (input.byokTokens !== undefined && input.byokTokens !== null) {
+    metrics.byok_token_cost_micro_usd = Number(input.byokTokens);
+  }
+  if (input.costBasis) {
+    metrics.cost_includes_model_tokens = input.costBasis.kind === "compute_byok_tokens" ? 1 : 0;
   }
 
   // Micro-USD stays integer; jsonb numbers are exact below 2^53.
@@ -304,7 +345,18 @@ export type MetricsTrialRow = ProxyKeyColumns & {
   metrics: unknown;
   gate: unknown;
   costMicroUsd: bigint;
+  /** TDM-246: trials.token_spend_by_attempt. */
+  tokenSpendByAttempt?: unknown;
 };
+
+/** TDM-246: trialMetrics' BYOK inputs for a trial row (no proxy key: the user's own key). */
+export function byokInputsOf(
+  t: Pick<MetricsTrialRow, "attempt" | "proxyKeyId" | "tokenSpendByAttempt">,
+): { byokTokens?: bigint | null } {
+  return t.proxyKeyId === null
+    ? { byokTokens: attemptTokenSpend(t.tokenSpendByAttempt, t.attempt) }
+    : {};
+}
 
 /**
  * Recompute and store one settled trial's metrics and cost, only while it is still in the state
@@ -314,7 +366,11 @@ export async function recordTrialMetrics(
   db: Database,
   t: MetricsTrialRow,
   proxy: ProxySpendResult,
-  opts: { gateMetrics?: Record<string, number>; edges?: readonly PhaseEdge[] } = {},
+  opts: {
+    gateMetrics?: Record<string, number>;
+    edges?: readonly PhaseEdge[];
+    costBasis?: KitCostBasis;
+  } = {},
 ): Promise<{ metrics: Record<string, number>; costMicroUsd: bigint } | null> {
   const edges = opts.edges ?? (await trialPhaseEdges(db, t.runId, [t.id])).get(t.id) ?? [];
   const m = trialMetrics({
@@ -325,6 +381,8 @@ export async function recordTrialMetrics(
     gate: t.gate,
     proxy,
     ...(opts.gateMetrics ? { gateMetrics: opts.gateMetrics } : {}),
+    ...byokInputsOf(t),
+    ...(opts.costBasis ? { costBasis: opts.costBasis } : {}),
   });
   const moved = await db
     .update(trials)
