@@ -5,6 +5,7 @@ import { gzipSync } from "node:zlib";
 import { RunTraceSummarySchema, stringifyJson, TrialTraceSchema } from "@anybench/core";
 import { describe, expect, it } from "vitest";
 import {
+  buildTrialTrace,
   traceFromBundle,
   usdNumberToMicro,
   testSummary,
@@ -192,5 +193,47 @@ describe("trial trace: run summary", () => {
     expect(tandemSetup!.all.sessions).toBe(4);
     expect(tandemSetup!.by_task.map((b) => b.workload_id)).toEqual(["todo-api"]);
     expect(tandemSetup!.all.tokens!.cache_read).toBeGreaterThan(soloSetup!.all.tokens!.cache_read);
+  });
+});
+
+describe("trial trace: a session with several results (TDM-239)", () => {
+  // Claude Code 2.1.319 Tandem workers wrote 2 to 4 results per session: usage and duration_ms
+  // since the previous result, total_cost_usd the running total.
+  const enc = (lines: object[]) =>
+    new TextEncoder().encode(lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 9, 12, 0, s)).toISOString();
+  const turn = (id: string, s: number) => ({
+    type: "assistant",
+    timestamp: at(s),
+    message: { id, usage: { input_tokens: 1, cache_read_input_tokens: 10 }, content: [] },
+  });
+  const result = (s: number, ms: number, cost: number, out: number) => ({
+    type: "result",
+    timestamp: at(s),
+    subtype: "success",
+    duration_ms: ms,
+    total_cost_usd: cost,
+    usage: { input_tokens: 2, output_tokens: out, cache_read_input_tokens: 100 },
+  });
+  const trace = buildTrialTrace({
+    trialId: SOLO_ID,
+    entries: [
+      {
+        name: "tandem/streams/worker-1.jsonl",
+        data: enc([
+          turn("m1", 1),
+          result(2, 2000, 0.4, 30),
+          turn("m2", 5),
+          result(6, 1000, 0.55, 20),
+        ]),
+      } as never,
+    ],
+    now: NOW,
+  });
+
+  it("sums the results' tokens and keeps the latest cost", () => {
+    const w = trace.actors.find((a) => a.id === "worker-1")!;
+    expect(w.totals.tokens).toEqual({ input: 4, output: 50, cache_read: 200, cache_write: 0 });
+    expect(w.totals.cost_micro_usd).toBe(550000n);
   });
 });

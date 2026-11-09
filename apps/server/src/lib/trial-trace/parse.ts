@@ -341,9 +341,26 @@ function parseSession(
   for (const line of lines) {
     const type = str(line.type);
     if (type === "result") {
+      // One session can write several results (TDM-239): `usage` and `duration_ms` cover the
+      // turns since the previous one, `total_cost_usd` is the running total. Sum the first two,
+      // keep the latest cost.
+      const dur = num(line.duration_ms) ?? null;
+      const tok = usageOf(line.usage);
+      const prev = result;
       result = {
-        durationMs: num(line.duration_ms) ?? null,
-        tokens: usageOf(line.usage),
+        durationMs:
+          prev?.durationMs != null && dur !== null
+            ? prev.durationMs + dur
+            : (dur ?? prev?.durationMs ?? null),
+        tokens:
+          prev?.tokens && tok
+            ? {
+                input: prev.tokens.input + tok.input,
+                output: prev.tokens.output + tok.output,
+                cache_read: prev.tokens.cache_read + tok.cache_read,
+                cache_write: prev.tokens.cache_write + tok.cache_write,
+              }
+            : (tok ?? prev?.tokens ?? null),
         costMicro: usdNumberToMicro(line.total_cost_usd),
         outcome:
           (str(line.subtype) ?? (line.is_error === true ? "error" : null))?.slice(0, 60) ?? null,
