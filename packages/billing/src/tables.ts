@@ -11,7 +11,16 @@
 // Money columns are `bigint` in mode "bigint": no money value ever becomes a JS number.
 import { RUN_STATES, TRIAL_STATES } from "@anybench/core";
 import { sql } from "drizzle-orm";
-import { bigint, boolean, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 const microUsd = (name: string) => bigint(name, { mode: "bigint" });
 const tstz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -28,9 +37,11 @@ export const USAGE_TYPES = [
 export type UsageType = (typeof USAGE_TYPES)[number];
 export const CREDIT_GRANT_CATEGORIES = ["promotional", "paid"] as const;
 export type CreditGrantCategory = (typeof CREDIT_GRANT_CATEGORIES)[number];
-export const CREDIT_GRANT_SOURCES = ["signup", "admin"] as const;
+export const CREDIT_GRANT_SOURCES = ["signup", "admin", "free_run"] as const;
 export type CreditGrantSource = (typeof CREDIT_GRANT_SOURCES)[number];
 export const COST_SOURCES = ["naive", "vm", "storage", "vercel"] as const;
+export const FREE_STARTER_RUN_STATES = ["reserved", "consumed", "released"] as const;
+export type FreeStarterRunState = (typeof FREE_STARTER_RUN_STATES)[number];
 export type CostSource = (typeof COST_SOURCES)[number];
 
 export const billingAccounts = pgTable("billing_accounts", {
@@ -108,6 +119,8 @@ export const runs = pgTable("runs", {
   compInterventionId: uuid("comp_intervention_id"),
   /** `user` | `ours` (TDM-54, set by the cancel route and the orchestrator); null = not cancelled. */
   cancelCause: text("cancel_cause"),
+  /** POST /runs' request; free-run.ts reads `kit_origin` (TDM-218) from it. */
+  intake: jsonb("intake"),
 });
 
 /**
@@ -123,6 +136,53 @@ export const computers = pgTable("computers", {
   costMicroUsd: microUsd("cost_micro_usd").notNull(),
 });
 
+/** The global free-run pool (TDM-223): one row, `global`. free-run.ts owns every write. */
+export const freeRunPool = pgTable("free_run_pool", {
+  id: text("id").primaryKey().default("global"),
+  reservedMicroUsd: microUsd("reserved_micro_usd")
+    .notNull()
+    .default(sql`0`),
+  spentMicroUsd: microUsd("spent_micro_usd")
+    .notNull()
+    .default(sql`0`),
+  updatedAt: tstz("updated_at").notNull().defaultNow(),
+});
+
+/** The free starter run entitlement, one row per Go of a free run (TDM-223). */
+export const freeStarterRuns = pgTable("free_starter_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull(),
+  runId: uuid("run_id").notNull(),
+  state: text("state", { enum: FREE_STARTER_RUN_STATES }).notNull().default("reserved"),
+  reservedMicroUsd: microUsd("reserved_micro_usd").notNull(),
+  agentAllowanceMicroUsd: microUsd("agent_allowance_micro_usd")
+    .notNull()
+    .default(sql`0`),
+  poolSpentMicroUsd: microUsd("pool_spent_micro_usd")
+    .notNull()
+    .default(sql`0`),
+  coveredMicroUsd: microUsd("covered_micro_usd")
+    .notNull()
+    .default(sql`0`),
+  releaseReason: text("release_reason"),
+  settledAt: tstz("settled_at"),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+  updatedAt: tstz("updated_at").notNull().defaultNow(),
+});
+
+/** Read-only. Free-run eligibility reads the GitHub account age (TDM-223). */
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  githubCreatedAt: tstz("github_created_at"),
+});
+
+/** Read-only. Which model keys (BYOK) a user has stored; never the secret itself. */
+export const userSecrets = pgTable("user_secrets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull(),
+  provider: text("provider").notNull(),
+});
+
 /** Every mirrored table, for the drift test. */
 export const LEDGER_TABLES = {
   billingAccounts,
@@ -132,4 +192,8 @@ export const LEDGER_TABLES = {
   trials,
   runs,
   computers,
+  freeRunPool,
+  freeStarterRuns,
+  users,
+  userSecrets,
 };

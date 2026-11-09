@@ -6,3 +6,5 @@ export * from "./estimate.js";
 export * from "./stripe.js";
 export * from "./setup.js";
 export * from "./stripe-ops.js";
+export * from "./free-run.js";
+export * from "./signup-grant.js";

@@ -21,6 +21,7 @@ import {
   type ApiErrorCode,
   type RouteResult,
 } from "@anybench/core";
+import { applySignupGrant } from "@anybench/billing";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -280,6 +281,16 @@ export function authRoutes(deps: AppDeps): Hono<AppEnv> {
     }
 
     const userId = await upsertGitHubUser(deps, identity);
+    // SIGNUP_GRANT_MICRO_USD (default 0 since TDM-223: the free starter run replaced it). Once per
+    // account, GitHub accounts older than 90 days; a failure never blocks sign-in.
+    const signupGrant = deps.config.SIGNUP_GRANT_MICRO_USD ?? 0n;
+    if (signupGrant > 0n) {
+      try {
+        await applySignupGrant(deps.db, { userId, amount: signupGrant });
+      } catch (err) {
+        c.get("log").warn({ err, userId }, "auth: signup grant failed");
+      }
+    }
     const { token } = await createSession(deps.db, userId, {
       userAgent: c.req.header("user-agent"),
       ip: c.req.header("x-forwarded-for")?.split(",")[0]?.trim(),

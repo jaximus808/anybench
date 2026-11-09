@@ -99,6 +99,13 @@
       "when": 1794197221252,
       "tag": "0013_trial_frozen_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794220194116,
+      "tag": "0014_free_starter_runs",
+      "breakpoints": true
     }
   ]
 }

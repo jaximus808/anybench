@@ -84,8 +84,17 @@ export const USAGE_TYPES = [
   "refund",
 ] as const;
 export const CREDIT_GRANT_CATEGORIES = ["promotional", "paid"] as const;
-/** `signup` is the automatic once-per-user grant; `admin` needs an interventions row (DB trigger). */
-export const CREDIT_GRANT_SOURCES = ["signup", "admin"] as const;
+/**
+ * `signup` is the automatic once-per-user grant; `admin` needs an interventions row (DB trigger);
+ * `free_run` covers a free starter run's own charges (TDM-223, free_starter_runs), never Stripe.
+ */
+export const CREDIT_GRANT_SOURCES = ["signup", "admin", "free_run"] as const;
+/**
+ * free_starter_runs.state (TDM-223): `reserved` at Go (pool reservation held), `consumed` once the
+ * run ended in a real outcome (the entitlement is used), `released` when it ended in our infra or
+ * pipeline, we cancelled it, or Go never happened (the entitlement is back).
+ */
+export const FREE_STARTER_RUN_STATES = ["reserved", "consumed", "released"] as const;
 export const COST_SOURCES = ["naive", "vm", "storage", "vercel"] as const;
 
 export const PUBLISH_VISIBILITIES = ["public", "unlisted", "withdrawn"] as const;

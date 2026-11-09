@@ -55,7 +55,8 @@ export const CreditGrantSchema = z.object({
   amount_micro_usd: NonNegativeMicroUsdSchema,
   remaining_micro_usd: NonNegativeMicroUsdSchema,
   category: CreditGrantCategorySchema,
-  source: z.enum(["signup", "admin"]),
+  /** `free_run`: covers a free starter run's own charges (TDM-223); never sent to Stripe. */
+  source: z.enum(["signup", "admin", "free_run"]),
   reason: z.string().nullable(),
   expires_at: IsoDateTimeSchema.nullable(),
   created_at: IsoDateTimeSchema,

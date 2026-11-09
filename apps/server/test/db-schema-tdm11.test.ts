@@ -42,6 +42,8 @@ const PLAN_TABLES = [
   "credit_grants",
   "stripe_events",
   "cost_entries",
+  "free_starter_runs", // TDM-223: the free starter run entitlement, one per eligible account
+  "free_run_pool", // TDM-223: the global pool free runs are funded from
   // publish
   "published_benchmarks",
   "publish_versions",

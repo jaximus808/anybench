@@ -60,6 +60,8 @@ import {
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { z } from "zod";
+import { applyNetDelta, balanceFromNet } from "./balance.js";
+import { settleFreeRun, type SettleFreeRunResult } from "./free-run.js";
 import {
   BpsSchema,
   computeChargeMicroUsd,
@@ -227,6 +229,8 @@ export interface RecordRunChargesResult {
   runFee: RecordUsageResult;
   /** One per computer of the run, oldest first. */
   computers: { computerId: string; result: RecordUsageResult }[];
+  /** TDM-223: the free starter run settle that follows the charges (`not_free_run` for most runs). */
+  freeRun: SettleFreeRunResult;
 }
 
 export type ApplyGrantResult =
@@ -258,22 +262,8 @@ export interface MarkReportedResult {
 
 // ---- Balance arithmetic -------------------------------------------------------------------------
 
-interface Balance {
-  unbilled: MicroUsd;
-  granted_remaining: MicroUsd;
-}
-
-/** Split a net position (usage minus grants) into the two cached columns. */
-export function balanceFromNet(net: MicroUsd): Balance {
-  return net >= 0n
-    ? { unbilled: net, granted_remaining: 0n }
-    : { unbilled: 0n, granted_remaining: -net };
-}
-
-/** Add `delta` (usage > 0, grant < 0) to a balance. Grants are spent first, both ways. */
-export function applyNetDelta(balance: Balance, delta: MicroUsd): Balance {
-  return balanceFromNet(balance.unbilled - balance.granted_remaining + delta);
-}
+// balanceFromNet / applyNetDelta live in balance.ts (shared with free-run.ts) and are re-exported.
+export { applyNetDelta, balanceFromNet };
 
 // ---- The ledger ---------------------------------------------------------------------------------
 
@@ -289,13 +279,15 @@ export interface Ledger {
    * the stored rows say it is billable (pricing.ts computeDecision): the run is terminal and
    * compute-billable (delivered, subject-failed or user-cancelled), the computer is destroyed, and
    * it served a trial the run bills. Skips with `run_not_final` while the run is live and with
-   * `computer_not_final` until the registry destroys it.
+   * `computer_not_final` until the registry destroys it. A new charge on a free starter run is
+   * covered right after (free-run.ts settleFreeRun), so a late destroy never bills the user.
    */
   recordComputerUsage(input: RecordComputerUsageInput): Promise<RecordUsageResult>;
   /**
    * The run-terminal hook: recordRunFee, then recordComputerUsage for every computer of the run
-   * (each in its own transaction, all idempotent). Computers destroyed later are billed from their
-   * destroy hook with recordComputerUsage.
+   * (each in its own transaction, all idempotent), then settleFreeRun (TDM-223: a free starter
+   * run's charges are covered by a `free_run` grant and its pool reservation is returned).
+   * Computers destroyed later are billed from their destroy hook with recordComputerUsage.
    */
   recordRunCharges(input: RecordRunChargesInput): Promise<RecordRunChargesResult>;
   recordManagedTokens(input: RecordManagedTokensInput): Promise<RecordUsageResult>;
@@ -469,6 +461,58 @@ async function lockRunTrials(tx: Tx, runId: string, userId: string) {
 
 /** Build the ledger over an injected Drizzle database or transaction. */
 export function createLedger(db: LedgerDb): Ledger {
+  /** recordComputerUsage without the free-run settle (recordRunCharges settles once at the end). */
+  async function computerUsage(raw: RecordComputerUsageInput): Promise<RecordUsageResult> {
+    const input = parse(RecordComputerUsageInputSchema, raw);
+    return db.transaction(async (tx) => {
+      // Unlocked peek for the run id, so the run can be locked first (the lock order).
+      const [peek] = await tx
+        .select({ runId: computers.runId })
+        .from(computers)
+        .where(eq(computers.id, input.computerId));
+      if (!peek || peek.runId === null) {
+        throw new LedgerError(
+          "computer_mismatch",
+          `computer ${input.computerId} is not visible or belongs to no run`,
+        );
+      }
+      if (input.runId && input.runId !== peek.runId) {
+        throw new LedgerError(
+          "computer_mismatch",
+          `computer ${input.computerId} belongs to run ${peek.runId}, not ${input.runId}`,
+        );
+      }
+      const runId = peek.runId;
+      const run = await lockRun(tx, runId, input.userId, input.comped);
+      const [computer] = await tx
+        .select()
+        .from(computers)
+        .where(eq(computers.id, input.computerId))
+        .for("share");
+      if (!computer || computer.runId !== runId) {
+        throw new LedgerError(
+          "computer_mismatch",
+          `computer ${input.computerId} moved off run ${runId} while being billed`,
+        );
+      }
+      const runTrials = await lockRunTrials(tx, runId, input.userId);
+      // runs.cancel_cause (TDM-54): a user cancel bills the compute used, one of ours bills nothing.
+      const decision = computeDecision(computer, run.state, runTrials, run.cancelCause);
+      if (!decision.billable) {
+        return { status: "skipped", reason: decision.reason, detail: decision.detail };
+      }
+      return insertEntry(tx, {
+        userId: input.userId,
+        runId,
+        trialId: decision.entryTrialId,
+        type: "compute",
+        amount: computeChargeMicroUsd(computer.costMicroUsd, input.markupBps),
+        idempotencyKey: computeIdempotencyKey(computer.id),
+        comped: run.comp,
+      });
+    });
+  }
+
   const ledger: Ledger = {
     async recordRunFee(raw) {
       const input = parse(RecordRunFeeInputSchema, raw);
@@ -503,54 +547,12 @@ export function createLedger(db: LedgerDb): Ledger {
     },
 
     async recordComputerUsage(raw) {
-      const input = parse(RecordComputerUsageInputSchema, raw);
-      return db.transaction(async (tx) => {
-        // Unlocked peek for the run id, so the run can be locked first (the lock order).
-        const [peek] = await tx
-          .select({ runId: computers.runId })
-          .from(computers)
-          .where(eq(computers.id, input.computerId));
-        if (!peek || peek.runId === null) {
-          throw new LedgerError(
-            "computer_mismatch",
-            `computer ${input.computerId} is not visible or belongs to no run`,
-          );
-        }
-        if (input.runId && input.runId !== peek.runId) {
-          throw new LedgerError(
-            "computer_mismatch",
-            `computer ${input.computerId} belongs to run ${peek.runId}, not ${input.runId}`,
-          );
-        }
-        const runId = peek.runId;
-        const run = await lockRun(tx, runId, input.userId, input.comped);
-        const [computer] = await tx
-          .select()
-          .from(computers)
-          .where(eq(computers.id, input.computerId))
-          .for("share");
-        if (!computer || computer.runId !== runId) {
-          throw new LedgerError(
-            "computer_mismatch",
-            `computer ${input.computerId} moved off run ${runId} while being billed`,
-          );
-        }
-        const runTrials = await lockRunTrials(tx, runId, input.userId);
-        // runs.cancel_cause (TDM-54): a user cancel bills the compute used, one of ours bills nothing.
-        const decision = computeDecision(computer, run.state, runTrials, run.cancelCause);
-        if (!decision.billable) {
-          return { status: "skipped", reason: decision.reason, detail: decision.detail };
-        }
-        return insertEntry(tx, {
-          userId: input.userId,
-          runId,
-          trialId: decision.entryTrialId,
-          type: "compute",
-          amount: computeChargeMicroUsd(computer.costMicroUsd, input.markupBps),
-          idempotencyKey: computeIdempotencyKey(computer.id),
-          comped: run.comp,
-        });
-      });
+      const result = await computerUsage(raw);
+      // TDM-223: a late charge on a free starter run is covered at once.
+      if (result.status === "recorded" && result.entry.runId) {
+        await settleFreeRun(db, { runId: result.entry.runId });
+      }
+      return result;
     },
 
     async recordRunCharges(raw) {
@@ -570,7 +572,7 @@ export function createLedger(db: LedgerDb): Ledger {
       for (const { id } of rows) {
         results.push({
           computerId: id,
-          result: await ledger.recordComputerUsage({
+          result: await computerUsage({
             computerId: id,
             userId: input.userId,
             runId: input.runId,
@@ -579,7 +581,8 @@ export function createLedger(db: LedgerDb): Ledger {
           }),
         });
       }
-      return { runFee, computers: results };
+      const freeRun = await settleFreeRun(db, { runId: input.runId });
+      return { runFee, computers: results, freeRun };
     },
 
     async recordManagedTokens(raw) {

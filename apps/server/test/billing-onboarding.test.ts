@@ -14,6 +14,7 @@ import { loadConfig } from "../src/config.js";
 import { createDb, type DbHandle } from "../src/db/client.js";
 import {
   billingAccounts,
+  freeStarterRuns,
   interventions,
   runs,
   stripeEvents,
@@ -427,5 +428,56 @@ describe.skipIf(!available)("link a card, then Go (stripe-onboarding)", () => {
     }
     const second = await reportUsageToStripe(db.db, fake.port);
     expect(second.sent + second.duplicate).toBe(0);
+  });
+
+  it("TDM-223: a free starter run's usage never reaches the meter, before or after its settle", async () => {
+    const gina = await seedUserTdm67(db.db, "gina");
+    await req("POST", "/billing/link-card", gina, {});
+    const customer = fake.state.customers.find((c) => c.userId === gina)!.id;
+    const freeRun = await waitingRun(gina);
+    const paidRun = await waitingRun(gina);
+    const { newId, UsageEntryIdSchema } = await import("@anybench/core");
+    // The free run holds its entitlement (Go reserved it); the ledger has billed it, settle not yet.
+    await db.db.insert(freeStarterRuns).values({
+      userId: gina,
+      runId: freeRun,
+      state: "reserved",
+      reservedMicroUsd: 1_000_000n,
+    });
+    await db.db.insert(usageEntries).values({
+      id: newId(UsageEntryIdSchema),
+      userId: gina,
+      runId: freeRun,
+      type: "run_fee",
+      amountMicroUsd: 2_000_000n,
+      idempotencyKey: `run:${freeRun}:fee`,
+    });
+    // Covered by an earlier settle (free_run:<grant>), on a run whose row is consumed.
+    await db.db.insert(usageEntries).values({
+      id: newId(UsageEntryIdSchema),
+      userId: gina,
+      runId: freeRun,
+      type: "compute",
+      amountMicroUsd: 9_000n,
+      idempotencyKey: `computer:free-${freeRun}:compute`,
+      reportedAt: new Date(),
+      stripeMeterEventId: "free_run:00000000-0000-7000-8000-000000000000",
+    });
+    const [paid] = await db.db
+      .insert(usageEntries)
+      .values({
+        id: newId(UsageEntryIdSchema),
+        userId: gina,
+        runId: paidRun,
+        type: "compute",
+        amountMicroUsd: 1_234_567n,
+        idempotencyKey: `computer:paid-${paidRun}:compute`,
+      })
+      .returning({ id: usageEntries.id });
+    const out = await reportUsageToStripe(db.db, fake.port);
+    expect(out).toMatchObject({ sent: 1, failed: 0 });
+    const mine = fake.state.meter.filter((m) => m.customerId === customer);
+    // 123 cents: the covered 9_000 micro-USD carries no remainder into the paid run's cents.
+    expect(mine.map((m) => [m.identifier, m.cents])).toEqual([[paid!.id, 123n]]);
   });
 });

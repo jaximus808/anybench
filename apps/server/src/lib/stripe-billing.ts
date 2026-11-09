@@ -21,6 +21,7 @@ import {
   createBillingStripe,
   createLedger,
   createStripeBillingPort,
+  FREE_RUN_METER_PREFIX,
   meterCents,
   resolveStripeConfig,
   StripeModeError,
@@ -30,7 +31,13 @@ import {
 import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
-import { billingAccounts, stripeEvents, usageEntries, users } from "../db/schema/index.js";
+import {
+  billingAccounts,
+  freeStarterRuns,
+  stripeEvents,
+  usageEntries,
+  users,
+} from "../db/schema/index.js";
 import type { Logger } from "./logger.js";
 
 type StripeConfigFields = Pick<
@@ -289,6 +296,9 @@ export async function reportUsageToStripe(
         isNull(usageEntries.reportedAt),
         isNull(usageEntries.compedBy),
         sql`${usageEntries.amountMicroUsd} > 0`,
+        // TDM-223: a free starter run's entries are covered by its free_run grant (settleFreeRun
+        // stamps them settled); never send one in the window before that settle commits.
+        sql`not exists (select 1 from ${freeStarterRuns} f where f.run_id = ${usageEntries.runId} and f.state in ('reserved', 'consumed'))`,
       ),
     )
     .orderBy(asc(usageEntries.createdAt), asc(usageEntries.id))
@@ -313,6 +323,8 @@ export async function reportUsageToStripe(
             isNotNull(usageEntries.reportedAt),
             isNull(usageEntries.compedBy),
             sql`${usageEntries.amountMicroUsd} > 0`,
+            // Entries a free run covered never reached the meter, so they carry no cents remainder.
+            sql`coalesce(${usageEntries.stripeMeterEventId}, '') not like ${FREE_RUN_METER_PREFIX + "%"}`,
           ),
         );
       const cents = meterCents(BigInt(prior?.sum ?? "0"), entry.amount);

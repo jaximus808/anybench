@@ -257,6 +257,44 @@ export const EnvSchema = z.object({
       .default("0")
       .transform((v) => BigInt(v)),
   ),
+  // ── Free starter run (TDM-223, E20): a new eligible account's first benchmark is free, no card,
+  // funded by a global pool at OUR cost. packages/billing free-run.ts; lib/free-run.ts maps these.
+  /** The pool every free run is funded from, integer micro-USD at our cost ($50). 0 = free runs off. */
+  FREE_RUN_POOL_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("50000000")
+      .transform((v) => BigInt(v)),
+  ),
+  /** A starter run's compute ceiling at our cost, integer micro-USD ($10). */
+  FREE_RUN_CAP_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("10000000")
+      .transform((v) => BigInt(v)),
+  ),
+  /** A starter run's trials, warm-ups included (the reduced trial count). */
+  FREE_RUN_MAX_TRIALS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(0).max(10_000).default(24),
+  ),
+  /**
+   * The once-per-account signup credit grant (GitHub accounts older than 90 days), integer
+   * micro-USD. Default 0: the free starter run replaced the $5 grant. Our ledger only until 10.7
+   * mirrors it to a Stripe credit grant, so keep it 0 in production.
+   */
+  SIGNUP_GRANT_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("0")
+      .transform((v) => BigInt(v)),
+  ),
   // ── Run emails (run.notify, jobs/run-notify.ts): "your benchmark is done" to the run owner. ──
   /**
    * `1`/`0` turns the run-owner emails on/off. Unset = on when MONID_API_KEY and a sending inbox

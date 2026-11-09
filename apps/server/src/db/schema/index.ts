@@ -16,6 +16,8 @@ export * from "./credit_grants.js";
 export * from "./embed_views.js";
 export * from "./envs.js";
 export * from "./events.js";
+export * from "./free_run_pool.js";
+export * from "./free_starter_runs.js";
 export * from "./interventions.js";
 export * from "./invites.js";
 export * from "./kill_switches.js";
