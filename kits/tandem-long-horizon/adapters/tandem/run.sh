@@ -219,7 +219,9 @@ render() { # render <template> <out> <worker-name>
   ' "$1" "$task" "$2" "$workers" "$code" "$3"
 }
 session() { # session <name> <prompt-file>: one headless Claude Code session in the workspace
-  local args=(-p "$(cat "$2")" --output-format stream-json --verbose --dangerously-skip-permissions
+  # The prompt goes in on stdin, never on argv: it carries the whole task, and Linux caps one
+  # argument at 128 KiB (project-tracker-xl's is 150 KB: exit 126, TDM-239).
+  local args=(-p --output-format stream-json --verbose --dangerously-skip-permissions
     --mcp-config "$mcp" --strict-mcp-config)
   args+=(--model "$model")
   (( ${#disallowed[@]} > 0 )) && args+=(--disallowedTools "${disallowed[@]}")
@@ -228,7 +230,7 @@ session() { # session <name> <prompt-file>: one headless Claude Code session in 
     if [[ -n "${EVAL_SECRETS:-}" && -f "$EVAL_SECRETS" ]]; then set -a; . "$EVAL_SECRETS"; set +a; fi
     unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
     exec env TANDEM_AUTOSTART=0 claude "${args[@]}"
-  ) 2> >(board redact >> "$t_out/streams/$1.stderr.log") < /dev/null | board tap --file "$t_out/streams/$1.jsonl"
+  ) 2> >(board redact >> "$t_out/streams/$1.stderr.log") < "$2" | board tap --file "$t_out/streams/$1.jsonl"
 }
 
 render "$planner_prompt" "$t_out/planner-prompt.md" planner

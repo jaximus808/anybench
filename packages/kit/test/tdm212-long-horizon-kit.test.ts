@@ -239,9 +239,11 @@ describe("kits/tandem-long-horizon drivers (TDM-212)", () => {
     join(bin, "claude"),
     `#!/usr/bin/env bash
 if [[ "\${1:-}" == --version ]]; then echo "2.1.319 (Claude Code)"; exit 0; fi
-printf '{"type":"system","subtype":"init","model":"%s","has_key":%s,"base_url":"%s","thinking":"%s","caps":"%s"}\\n' \\
+longest=0; for a in "$@"; do (( \${#a} > longest )) && longest=\${#a}; done
+printf '{"type":"system","subtype":"init","model":"%s","has_key":%s,"base_url":"%s","thinking":"%s","caps":"%s","stdin_bytes":%s,"longest_arg":%s}\\n' \\
   "\${ANTHROPIC_MODEL:-}" "$([[ -n "\${ANTHROPIC_API_KEY:-}" ]] && echo true || echo false)" \\
-  "\${ANTHROPIC_BASE_URL:-}" "\${MAX_THINKING_TOKENS:-}" "\${CLAUDE_CODE_MODEL_CAPABILITIES:-}"
+  "\${ANTHROPIC_BASE_URL:-}" "\${MAX_THINKING_TOKENS:-}" "\${CLAUDE_CODE_MODEL_CAPABILITIES:-}" \\
+  "$(wc -c | tr -d ' ')" "$longest"
 printf '{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5}},"text":"env: ANTHROPIC_API_KEY=%s"}\\n' "\${ANTHROPIC_API_KEY:-}"
 echo "stderr has the key too: \${ANTHROPIC_API_KEY:-}" >&2
 echo built > app.txt
@@ -251,13 +253,13 @@ printf '{"type":"result","total_cost_usd":0.0125}\\n'
   chmodSync(join(bin, "claude"), 0o755);
   const PATH = `${bin}:${process.env.PATH}`;
 
-  function runA(name: string, env: Record<string, string>) {
+  function runA(name: string, env: Record<string, string>, task = "build it\n") {
     const dir = join(root, name);
     const ws = join(dir, "ws");
     const out = join(dir, "out");
     const home = join(dir, "home");
     for (const d of [ws, out, home]) mkdirSync(d, { recursive: true });
-    writeFileSync(join(dir, "task.md"), "build it\n");
+    writeFileSync(join(dir, "task.md"), task);
     const r = spawnSync(
       join(KIT_TDM212, "adapters/claude-code/driver.sh"),
       ["run", join(dir, "task.md"), ws],
@@ -312,6 +314,20 @@ printf '{"type":"result","total_cost_usd":0.0125}\\n'
       token_source: "anthropic_key",
     });
     expect(existsSync(join(home, ".claude/CLAUDE.md"))).toBe(true);
+  });
+
+  it("A: the task reaches Claude Code on stdin, so a 150 KB instruction fits (TDM-239)", () => {
+    // Linux caps one argv string at 128 KiB: project-tracker-xl's instruction on argv exited 126.
+    const task = readTdm212("workloads/project-tracker-xl/instruction.md");
+    expect(Buffer.byteLength(task)).toBeGreaterThan(128 * 1024);
+    const { r, out } = runA("long-task", { ANTHROPIC_API_KEY: "x".repeat(20) }, task);
+    expect(r.status, r.stderr).toBe(0);
+    const init = JSON.parse(readFileSync(join(out, "stream.jsonl"), "utf8").split("\n")[0]!);
+    expect(init.stdin_bytes).toBe(Buffer.byteLength(task));
+    expect(init.longest_arg).toBeLessThan(1024);
+    for (const d of ["adapters/claude-code/driver.sh", "adapters/tandem/run.sh"]) {
+      expect(readTdm212(d), d).not.toMatch(/-p "\$\(cat/);
+    }
   });
 
   it("A: refuses the Naïve proxy, a Naïve model id and a missing key", () => {
