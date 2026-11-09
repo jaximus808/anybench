@@ -33,6 +33,9 @@ export const RequirementComparisonSchema = z
       "mann_whitney_exact",
       "mann_whitney_asymptotic",
       "task_paired",
+      // TDM-210: difference in mean hidden-test fraction, one task's repeats as the unit.
+      "permutation_exact",
+      "permutation_monte_carlo",
     ]),
     p: Probability,
     /** Holm-adjusted across the report's `family` comparisons. */
@@ -40,7 +43,8 @@ export const RequirementComparisonSchema = z
     alpha: z.number().gt(0).lt(1),
     family: z.int().min(1),
     effect: z.object({
-      measure: z.enum(["rate_diff", "cliffs_delta"]),
+      /** `mean_diff` (TDM-210): difference in mean hidden-test fraction, 0–1 like a rate. */
+      measure: z.enum(["rate_diff", "cliffs_delta", "mean_diff"]),
       /** Oriented: positive means the contender is better than the baseline. */
       value: Finite,
       hodges_lehmann: Finite.nullable(),
@@ -137,6 +141,15 @@ export const RequirementResultSchema = z
     gate_id: z.string().nullable(),
     /** Fraction of trials whose gate passed (measured only). */
     gate_pass_rate: z.number().min(0).max(1).nullable(),
+    /**
+     * How the value was computed (TDM-210; optional, older reports lack it). `all_trials`: a
+     * correctness metric (hidden_test_fraction) averaged over EVERY trial, a 0–1 ratio that needs
+     * no passing trial, because it is correctness itself. `per_test_passed`: all spend ÷ hidden
+     * tests passed, present once any hidden test passed.
+     */
+    aggregate: z
+      .enum(["rate", "median", "per_solved", "censored", "review", "all_trials", "per_test_passed"])
+      .optional(),
     score: Score.nullable(),
     /** Applicable trials behind the value (TDM-175). */
     n: z.int().min(0).nullable().optional(),
@@ -172,7 +185,16 @@ export const RequirementResultSchema = z
         path: ["gate_id"],
         message: "measured requirement needs a gate",
       });
-    if (r.value !== null && !(r.gate_pass_rate !== null && r.gate_pass_rate > 0))
+    if (r.aggregate === "all_trials" && r.value !== null && !(r.value >= 0 && r.value <= 1))
+      ctx.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "an all-trials correctness value is a ratio in [0, 1]",
+      });
+    // A correctness value (or a price per verified hidden test) is the gate's own output: it
+    // stands without a fully passing trial. Every speed and quality number still needs one.
+    const correctness = r.aggregate === "all_trials" || r.aggregate === "per_test_passed";
+    if (!correctness && r.value !== null && !(r.gate_pass_rate !== null && r.gate_pass_rate > 0))
       ctx.addIssue({
         code: "custom",
         path: ["value"],

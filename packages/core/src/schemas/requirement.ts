@@ -94,11 +94,43 @@ export const RequirementWorkloadsSchema = z.array(KitSlugSchema).min(1);
  *   divided by the number of passing trials (cost per solved task).
  * - `censored`: time-to-solve: median over every trial, with each failed trial counted at the
  *   cap (`cap`, else the workload's `timeout_s`, else the contenders' `wall_clock_cap_s`).
- * Omit to let the scorer pick: `per_solved` for `cost_micro_usd`, `censored` for `wall_s` when a
- * cap is known, else `median`.
+ * - `all_trials` (TDM-210): the mean of a CORRECTNESS metric over every trial, passing or not
+ *   (`hidden_test_fraction`: the share of hidden tests a trial passed). The metric is itself
+ *   correctness, so it needs no passing gate; the requirement still names the hidden-tests gate
+ *   that produced it (a trial without that gate's result is "gate missing"). Only for
+ *   CORRECTNESS_METRICS: a speed or cost number from a failed trial is never averaged in.
+ * - `per_test_passed` (TDM-210): cost per hidden test passed, i.e. the metric (money) summed over
+ *   every trial divided by the hidden tests those trials passed (`hidden_tests_passed`), so
+ *   partial progress has a price. Integer micro-USD in, integer micro-USD out (halves round up).
+ * Omit to let the scorer pick: `all_trials` for `hidden_test_fraction`, `per_solved` for
+ * `cost_micro_usd`, `censored` for `wall_s` when a cap is known, else `median`.
  */
-export const MeasuredAggregateSchema = z.enum(["median", "per_solved", "censored"]);
+export const MeasuredAggregateSchema = z.enum([
+  "median",
+  "per_solved",
+  "censored",
+  "all_trials",
+  "per_test_passed",
+]);
 export type MeasuredAggregate = z.infer<typeof MeasuredAggregateSchema>;
+
+/**
+ * TDM-210: the share of hidden tests a trial passed, in [0, 1], written by the hidden-tests gate
+ * into `hidden-tests.metrics.jsonl` (TDM-209 [18.2]). The gate's pass/fail stays 100%-only.
+ */
+export const HIDDEN_TEST_FRACTION_METRIC = "hidden_test_fraction";
+/** Hidden tests a trial passed (a count), from the same gate: the denominator of `per_test_passed`. */
+export const HIDDEN_TESTS_PASSED_METRIC = "hidden_tests_passed";
+/** Hidden tests a trial was graded on (a count). */
+export const HIDDEN_TESTS_TOTAL_METRIC = "hidden_tests_total";
+/**
+ * Metrics that ARE correctness (computed by a gate on the scoring computer), so they may be
+ * averaged over every trial (`aggregate: all_trials`). Speed and cost never are.
+ */
+export const CORRECTNESS_METRICS: readonly string[] = [HIDDEN_TEST_FRACTION_METRIC];
+export function isCorrectnessMetric(metric: string): boolean {
+  return CORRECTNESS_METRICS.includes(metric);
+}
 
 /** Measured: a number from the collectors, only counted when its gate passed. */
 export const MeasuredRequirementSchema = z.strictObject({

@@ -20,7 +20,12 @@ import {
   KitPathSchema,
   SubjectKindSchema,
 } from "./kit-primitives.js";
-import { GateSchema, RequirementSchema } from "./requirement.js";
+import {
+  GateSchema,
+  HIDDEN_TEST_FRACTION_METRIC,
+  isCorrectnessMetric,
+  RequirementSchema,
+} from "./requirement.js";
 import {
   GATE_PASS_RATE_METRIC_NAME,
   lookupUnit,
@@ -345,12 +350,18 @@ const WALL_METRIC = "wall_s";
  * - `aggregate: censored` can find a cap for every scoped workload.
  * - agent/harness kits: `wall_s` counts failures at a cap the kit names (no median over solved
  *   trials only, which ranks a contender that solves 1/5 fast above one that solves 5/5).
+ * - TDM-210: `all_trials` averages a metric over failed trials too, so it is only for correctness
+ *   metrics (`hidden_test_fraction`), and `hidden_test_fraction` is only ever `all_trials`;
+ *   `per_test_passed` is only for money metrics. Both read the hidden-tests gate's counts, so
+ *   their `gate_id` must be a `hidden-tests` gate.
  */
 function checkRequirementScoringTdm174(
-  kit: Pick<KitSpec, "subject" | "requirements" | "workloads" | "contenders">,
+  kit: Pick<KitSpec, "subject" | "requirements" | "workloads" | "contenders"> &
+    Partial<Pick<KitSpec, "gates">>,
   issue: (path: PropertyKey[], message: string) => void,
 ): void {
   const workloads = new Map(kit.workloads.map((w) => [w.id, w]));
+  const gateKinds = new Map((kit.gates ?? []).map((g) => [g.id, g.kind]));
   const agentKit = kit.subject.kind === "agent" || kit.subject.kind === "harness";
   kit.requirements.forEach((r, i) => {
     const seen = new Set<string>();
@@ -373,6 +384,39 @@ function checkRequirementScoringTdm174(
           `${GATE_PASS_RATE} is always a rate: drop aggregate`,
         );
       if (r.cap !== undefined) issue(["requirements", i, "cap"], `${GATE_PASS_RATE} has no cap`);
+      return;
+    }
+    // TDM-210: correctness metrics over every trial, and cost per hidden test passed.
+    const fraction = isCorrectnessMetric(r.metric);
+    if (fraction && r.aggregate !== undefined && r.aggregate !== "all_trials") {
+      issue(
+        ["requirements", i, "aggregate"],
+        `${r.metric} is correctness itself: it is averaged over every trial (aggregate 'all_trials')`,
+      );
+    }
+    if (r.aggregate === "all_trials" && !fraction) {
+      issue(
+        ["requirements", i, "aggregate"],
+        `'all_trials' counts failed trials' values, so it is only for correctness metrics (${HIDDEN_TEST_FRACTION_METRIC}); speed and cost need a passing gate`,
+      );
+    }
+    if (r.aggregate === "per_test_passed") {
+      const unit = r.unit ?? metricUnit(r.metric);
+      if (unit === undefined || lookupUnit(unit)?.dim !== "money")
+        issue(
+          ["requirements", i, "aggregate"],
+          `'per_test_passed' is a cost per hidden test passed: the metric must be money (e.g. cost_micro_usd)`,
+        );
+    }
+    if (fraction || r.aggregate === "all_trials" || r.aggregate === "per_test_passed") {
+      const kind = gateKinds.get(r.gate_id);
+      if (kind !== undefined && kind !== "hidden-tests")
+        issue(
+          ["requirements", i, "gate_id"],
+          `${fraction ? r.metric : `aggregate '${r.aggregate}'`} reads the hidden-tests gate's counts: gate '${r.gate_id}' is '${kind}'`,
+        );
+      if (r.cap !== undefined)
+        issue(["requirements", i, "cap"], `cap only applies to aggregate 'censored'`);
       return;
     }
     if (r.cap !== undefined && r.aggregate !== undefined && r.aggregate !== "censored") {

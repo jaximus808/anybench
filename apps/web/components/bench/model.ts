@@ -143,7 +143,9 @@ export function requirementViews(report: Report): RequirementView[] {
       .filter((x): x is { c: (typeof report.contenders)[number]; r: RequirementResult } => !!x.r);
     const first = rows[0]!.r;
     const lib = lowerIsBetter(rows.find((x) => x.r.comparison)?.r ?? first);
-    const rate = isRate(first.unit);
+    // A pass rate (solved/n, Wilson). A mean hidden-test fraction (TDM-210 `all_trials`) is a
+    // ratio too, but not a count of successes: no Wilson interval and no "k/n" for it.
+    const rate = isRate(first.unit) && first.aggregate !== "all_trials";
     const cis = rows.map(({ r }): [number, number] | null => {
       if (rate && r.n) {
         const v = r.value ?? r.gate_pass_rate;
@@ -212,7 +214,8 @@ function diffItem(
   // Rates: the observed difference (oriented = raw, since higher is better); metrics: the
   // Hodges–Lehmann shift; otherwise the CI midpoint.
   const point =
-    k.diff_ci.unit === "rate" && k.effect.measure === "rate_diff"
+    k.diff_ci.unit === "rate" &&
+    (k.effect.measure === "rate_diff" || k.effect.measure === "mean_diff")
       ? k.effect.value
       : k.diff_ci.unit === "metric" && k.effect.hodges_lehmann !== null
         ? k.effect.hodges_lehmann

@@ -257,6 +257,10 @@ export function scoreCells(
       .map((t) => (t.metrics as Record<string, unknown> | null)?.wall_s)
       .filter((w): w is number => typeof w === "number" && Number.isFinite(w) && w >= 0);
     const cost = ts.reduce((a, t) => a + t.costMicroUsd, 0n);
+    // TDM-210: the hidden-test fraction is correctness itself: every graded trial counts.
+    const fractions = ts
+      .map((t) => (t.metrics as Record<string, unknown> | null)?.hidden_test_fraction)
+      .filter((f): f is number => typeof f === "number" && f >= 0 && f <= 1);
     return {
       contender_id: id as PublicationScoreCell["contender_id"],
       workload_id: task,
@@ -265,6 +269,12 @@ export function scoreCells(
       cost_micro_usd: Number(cost),
       wall_s_mean: walls.length ? walls.reduce((a, w) => a + w, 0) / walls.length : null,
       wall_n: walls.length,
+      ...(fractions.length
+        ? {
+            hidden_test_fraction_mean: fractions.reduce((a, f) => a + f, 0) / fractions.length,
+            hidden_test_fraction_n: fractions.length,
+          }
+        : {}),
     };
   };
   return setupIds.flatMap((id) => [cell(id, null), ...tasks.map((w) => cell(id, w))]);

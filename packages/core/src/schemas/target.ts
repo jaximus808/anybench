@@ -119,6 +119,8 @@ export const GATE_PASS_RATE_METRIC_NAME = "gate_pass_rate";
  */
 export const KNOWN_METRIC_UNITS: Readonly<Record<string, string>> = {
   [GATE_PASS_RATE_METRIC_NAME]: "ratio",
+  // hidden-tests gate (TDM-210): share of hidden tests passed, and the counts behind it
+  hidden_test_fraction: "ratio",
   // time -v
   wall_s: "s",
   cpu_s: "s",

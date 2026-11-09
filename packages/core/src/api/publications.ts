@@ -57,6 +57,12 @@ export const PublicationScoreCellSchema = z.object({
   /** Mean wall clock over the gate-passing trials (no speed number without the gate). */
   wall_s_mean: z.number().nonnegative().nullable(),
   wall_n: Count,
+  /**
+   * TDM-210: mean share of hidden tests passed over EVERY graded trial (correctness itself, so
+   * failed trials count), when the gate wrote `hidden_test_fraction`. Absent in older snapshots.
+   */
+  hidden_test_fraction_mean: z.number().min(0).max(1).optional(),
+  hidden_test_fraction_n: Count.optional(),
 });
 export type PublicationScoreCell = z.infer<typeof PublicationScoreCellSchema>;
 

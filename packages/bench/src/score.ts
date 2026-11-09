@@ -44,6 +44,20 @@
 //   `survivorship: true`.
 // - `gate_pass_rate`: the share of applicable trials whose gate passed. Reviewed requirements:
 //   the median review over the solved trials (all trials when ungated).
+// - `all_trials` (TDM-210; the default for `hidden_test_fraction`): the mean of a correctness
+//   metric over EVERY applicable trial, passing or not. It is correctness itself (the hidden-tests
+//   gate computed it on the scoring computer), so it needs no passing trial and a failed trial's
+//   partial progress counts. The requirement still names that gate: a trial without the gate's
+//   result is "gate missing", and an N/A trial leaves, as for every gated requirement. A trial
+//   without the metric counts as its gate's verdict (pass = every hidden test passed = 1, fail =
+//   0: no partial credit without evidence); a value outside [0, 1] is `metric_invalid`.
+// - `per_test_passed` (TDM-210): cost per hidden test passed, all spend over every applicable
+//   trial ÷ the hidden tests those trials passed (`hidden_tests_passed`, else
+//   round(hidden_test_fraction × hidden_tests_total); a failed trial with neither passed 0, a
+//   passing one is `metric_missing`). Integer micro-USD in gives integer micro-USD out, rounded
+//   to the nearest micro-USD with halves up. No test passed anywhere: `unsolved`.
+// Speed and cost stay gated: `wall_s` and `cost_micro_usd` count only as above (a failed trial
+// at the cap, or its spend against the solves), never as a mean over failed trials.
 //
 // Fractions. Each measured cell becomes a fraction in [0, 1]:
 // - a bound `target` in the requirement's unit ("under 120 ms", "under 2 min" on seconds; a
@@ -51,8 +65,8 @@
 //   meeting it is 1, missing it is the ratio to it (T/v when lower is better, v/T when higher);
 // - no usable target: relative to the best measured contender on that workload (min/v when lower
 //   is better, v/max when higher); values below zero switch to min–max scaling;
-// - `gate_pass_rate` and reviewed requirements are absolute: the rate, and
-//   (median review − scale.min) / (scale.max − scale.min).
+// - `gate_pass_rate`, `all_trials` and reviewed requirements are absolute: the rate, the mean
+//   fraction, and (median review − scale.min) / (scale.max − scale.min).
 // The requirement's fraction is the mean over the common set (0 when the set is empty), times
 // its weight. The contender total is the sum of points; weights sum to 100.
 //
@@ -75,7 +89,11 @@
 // rank is shown only next to them.
 import {
   GateResultSchema,
+  HIDDEN_TEST_FRACTION_METRIC,
+  HIDDEN_TESTS_PASSED_METRIC,
+  HIDDEN_TESTS_TOTAL_METRIC,
   convertUnit,
+  isCorrectnessMetric,
   lookupUnit,
   metricUnit,
   parseRequirementTarget,
@@ -99,7 +117,15 @@ import {
   type RawComparison,
   type Verdict,
 } from "./decide.js";
-import { clopperPearsonCi, median, medianCi, mulberry32, SMALL_N_RATE, wilsonCi } from "./stats.js";
+import {
+  clopperPearsonCi,
+  meanCi,
+  median,
+  medianCi,
+  mulberry32,
+  SMALL_N_RATE,
+  wilsonCi,
+} from "./stats.js";
 
 /** Reserved metric: fraction of a contender's trials whose gate passed. Always gated. */
 export const GATE_PASS_RATE_METRIC = "gate_pass_rate";
@@ -107,6 +133,11 @@ export const GATE_PASS_RATE_METRIC = "gate_pass_rate";
 export const COST_METRIC = "cost_micro_usd";
 /** Metric scored as time-to-solve (failures at the cap) when a cap is known. */
 export const WALL_METRIC = "wall_s";
+/**
+ * TDM-210: share of hidden tests a trial passed (0–1), averaged over every trial (`all_trials`).
+ * Correctness itself, so it needs no passing gate.
+ */
+export const HIDDEN_FRACTION_METRIC = HIDDEN_TEST_FRACTION_METRIC;
 
 /**
  * One finished trial as the scorer sees it: collector metrics plus gate results. Defined here
@@ -131,6 +162,8 @@ type ParsedTrial = z.output<typeof TrialResultSchema>;
 export const NO_SCORE_REASONS = {
   gate_missing: "no score: gate missing",
   metric_missing: "no score: metric missing",
+  /** TDM-210: a correctness fraction outside [0, 1], or a negative test count. */
+  metric_invalid: "no score: metric out of range",
   not_reviewed: "no score: not reviewed",
   no_trials: "no score: no trials",
   no_cap: "no score: no cap to count failed trials at",
@@ -172,8 +205,9 @@ export interface WorkloadCell {
   /**
    * Raw per-trial values behind `value`, in trial order: the passing trials' metric (`median`),
    * every applicable trial's metric with failures at the cap (`censored`), every applicable
-   * trial's metric (`per_solved`), 1/0 per applicable trial (`rate`), the solved trials'
-   * reviews (`review`).
+   * trial's metric (`per_solved`, `per_test_passed`: its spend), 1/0 per applicable trial
+   * (`rate`), every applicable trial's fraction (`all_trials`), the solved trials' reviews
+   * (`review`).
    */
   samples: number[];
   /** Applicable trials of this contender on this workload. */
@@ -182,6 +216,8 @@ export interface WorkloadCell {
   solved: number;
   /** `censored` only: the value a failed trial counts as. */
   cap?: number;
+  /** `per_test_passed` only (TDM-210): hidden tests passed over the cell's trials (Σ). */
+  testsPassed?: number;
   /** CI of `value` (null when unsolved, or when it has no finite bound). */
   ci: CellInterval | null;
   /** Software kits: this cell vs the baseline's (null for the baseline and in agent kits). */
@@ -204,9 +240,10 @@ export interface CellInterval {
   attained: boolean;
   /**
    * `clopper_pearson` (exact, pass rates under 30 trials), `wilson` (score, 30+), the
-   * distribution-free `order_statistic` interval for a median, or a seeded `bootstrap`.
+   * distribution-free `order_statistic` interval for a median, a seeded `bootstrap`, or
+   * `student_t` for a mean fraction (TDM-210; clipped to [0, 1], the whole range at n = 1).
    */
-  method: "clopper_pearson" | "wilson" | "order_statistic" | "bootstrap";
+  method: "clopper_pearson" | "wilson" | "order_statistic" | "bootstrap" | "student_t";
 }
 
 interface RequirementScoreBase {
@@ -424,7 +461,10 @@ function relativeFraction(v: number, pool: readonly number[], better: "higher" |
   return v === 0 ? 1 : clamp01(min / v);
 }
 
-/** Σ samples ÷ solved. Integer samples give an integer, rounded half away from zero. */
+/**
+ * Σ samples ÷ solved (a count > 0). Integer samples give an integer, rounded half away from zero
+ * (halves up for spend, which is never negative).
+ */
 function perSolved(samples: readonly number[], solved: number): number {
   if (samples.every((x) => Number.isSafeInteger(x))) {
     const sum = samples.reduce((s, x) => s + BigInt(x), 0n);
@@ -509,6 +549,8 @@ function planFor(req: Requirement, kit: ScoreKitInput, workloadIds: readonly str
 
   let aggregate: RequirementAggregate;
   if (req.metric === GATE_PASS_RATE_METRIC) aggregate = "rate";
+  // Correctness itself: over every trial (KitSpecSchema allows no other aggregate for it).
+  else if (isCorrectnessMetric(req.metric)) aggregate = "all_trials";
   else if (req.aggregate !== undefined) aggregate = req.aggregate;
   else if (req.metric === COST_METRIC) aggregate = "per_solved";
   else if (req.metric === WALL_METRIC) {
@@ -532,8 +574,11 @@ interface RawCell {
   trials: number;
   solved: number;
   cap?: number;
+  testsPassed?: number;
   /** Internal: pass/fail of each applicable trial, in trial order (not on WorkloadCell). */
   passed: boolean[];
+  /** Internal, `per_test_passed`: hidden tests each applicable trial passed, in trial order. */
+  tests?: number[];
 }
 type RawCells =
   { ok: true; cells: Map<string, RawCell> } | { ok: false; code: NoScoreCode; workloadId?: string };
@@ -658,6 +703,48 @@ function rawCells(
         );
         break;
       }
+      case "all_trials": {
+        // Correctness itself: every applicable trial, passing or not (see the header).
+        const samples: number[] = [];
+        for (const j of js) {
+          const v = metricOf(j.trial);
+          const x = v === undefined ? (j.passed ? 1 : 0) : v;
+          if (!(x >= 0 && x <= 1)) return { ok: false, code: "metric_invalid" };
+          samples.push(x);
+        }
+        const mean = samples.reduce((a, x) => a + x, 0) / samples.length;
+        cells.set(w, { status: "measured", value: mean, samples, ...base });
+        break;
+      }
+      case "per_test_passed": {
+        const samples: number[] = [];
+        const tests: number[] = [];
+        for (const j of js) {
+          const v = metricOf(j.trial);
+          if (v === undefined) return { ok: false, code: "metric_missing" };
+          const k = testsPassedOf(j.trial);
+          if (k === undefined && j.passed) return { ok: false, code: "metric_missing" };
+          if (k !== undefined && !(Number.isFinite(k) && k >= 0))
+            return { ok: false, code: "metric_invalid" };
+          samples.push(v);
+          tests.push(k ?? 0);
+        }
+        const testsPassed = tests.reduce((a, x) => a + x, 0);
+        cells.set(
+          w,
+          testsPassed === 0
+            ? { ...unsolved(samples), testsPassed, tests }
+            : {
+                status: "measured",
+                value: perSolved(samples, testsPassed),
+                samples,
+                ...base,
+                testsPassed,
+                tests,
+              },
+        );
+        break;
+      }
       case "review": {
         if (base.solved === 0) {
           cells.set(w, unsolved([]));
@@ -676,13 +763,25 @@ function rawCells(
   return { ok: true, cells };
 }
 
+/**
+ * Hidden tests a trial passed: `hidden_tests_passed`, else round(hidden_test_fraction ×
+ * hidden_tests_total); undefined when the gate wrote neither.
+ */
+function testsPassedOf(t: ParsedTrial): number | undefined {
+  const k = t.metrics[HIDDEN_TESTS_PASSED_METRIC];
+  if (k !== undefined) return k;
+  const f = t.metrics[HIDDEN_TEST_FRACTION_METRIC];
+  const total = t.metrics[HIDDEN_TESTS_TOTAL_METRIC];
+  return f === undefined || total === undefined ? undefined : Math.round(f * total);
+}
+
 function cellFraction(plan: Plan, value: number, pool: readonly number[]): number {
   const { req } = plan;
   if (req.type === "reviewed") {
     return clamp01((value - req.scale.min) / (req.scale.max - req.scale.min));
   }
   if (plan.target) return thresholdFraction(value, plan.target);
-  if (plan.aggregate === "rate") return clamp01(value);
+  if (plan.aggregate === "rate" || plan.aggregate === "all_trials") return clamp01(value);
   return relativeFraction(value, pool, req.better);
 }
 
@@ -725,7 +824,8 @@ function commonWorkloads(
   covered: readonly string[],
   raws: Iterable<RawCells>,
 ): string[] {
-  if (plan.aggregate === "rate") return [...covered];
+  // Correctness is scored on every covered workload: failing one is a 0, never a gap.
+  if (plan.aggregate === "rate" || plan.aggregate === "all_trials") return [...covered];
   const keep = new Set<string>();
   for (const r of raws) {
     if (!r.ok) continue;
@@ -806,7 +906,7 @@ export function scoreKit(
       }
       const cells: WorkloadCell[] = common.map((workloadId) => {
         // Every covered workload has a cell (else the requirement is incomplete).
-        const { passed, ...cell } = mine.cells.get(workloadId)!;
+        const { passed, tests, ...cell } = mine.cells.get(workloadId)!;
         const fraction =
           cell.status === "measured" ? cellFraction(plan, cell.value!, pools.get(workloadId)!) : 0;
         const ci = cellInterval(
@@ -815,6 +915,7 @@ export function scoreKit(
           passed,
           seedFor(seed, "cell", req.id, c, workloadId),
           iterations,
+          tests,
         );
         return { workloadId, ...cell, fraction, n: cell.samples.length, ci, comparison: null };
       });
@@ -888,10 +989,11 @@ export function scoreKit(
 
 function cellInterval(
   aggregate: RequirementAggregate,
-  cell: Omit<RawCell, "passed">,
+  cell: Omit<RawCell, "passed" | "tests">,
   passed: readonly boolean[],
   seed: number,
   iterations: number,
+  tests?: readonly number[],
 ): CellInterval | null {
   if (cell.status !== "measured" || cell.samples.length === 0) return null;
   const level = DECISION_RULE.level;
@@ -922,11 +1024,27 @@ function cellInterval(
         method: "order_statistic",
       };
     }
-    case "per_solved": {
-      // Spend ÷ solves over trials resampled with replacement; a resample with no solve has no
-      // finite value, and then the interval has no finite upper bound: report none.
+    case "all_trials": {
+      // A mean of 0–1 values: Student t, clipped to [0, 1] (the whole range from one trial).
+      const m = meanCi(cell.samples, level);
+      return {
+        lo: m.lo,
+        hi: m.hi,
+        level,
+        requestedLevel: level,
+        attained: cell.samples.length > 1,
+        method: "student_t",
+      };
+    }
+    case "per_solved":
+    case "per_test_passed": {
+      // Spend ÷ solves (or ÷ hidden tests passed) over trials resampled with replacement; a
+      // resample with none has no finite value, and then the interval has no finite upper bound:
+      // report none.
       const rand = mulberry32(seed);
       const n = cell.samples.length;
+      const weightOf = (k: number) =>
+        aggregate === "per_test_passed" ? (tests?.[k] ?? 0) : passed[k] ? 1 : 0;
       const stats: number[] = [];
       for (let i = 0; i < iterations; i++) {
         let spend = 0;
@@ -934,7 +1052,7 @@ function cellInterval(
         for (let j = 0; j < n; j++) {
           const k = Math.floor(rand() * n);
           spend += cell.samples[k]!;
-          if (passed[k]) solved++;
+          solved += weightOf(k);
         }
         stats.push(solved === 0 ? Infinity : spend / solved);
       }
@@ -962,18 +1080,32 @@ function isClustered(kit: ScoreKitInput, opts: ScoreOptions): boolean {
 }
 
 function comparisonKind(aggregate: RequirementAggregate): ComparisonKind {
-  return aggregate === "rate" ? "rate" : "continuous";
+  if (aggregate === "rate") return "rate";
+  // TDM-210: a mean of 0–1 values, compared by the difference in means.
+  if (aggregate === "all_trials") return "mean";
+  return "continuous";
 }
 
 /**
  * The per-trial values a comparison ranks: the cell's samples, except spend ÷ solves, where a
- * failed trial bought nothing and counts as infinitely expensive (worse than any solved trial).
+ * failed trial bought nothing and counts as infinitely expensive (worse than any solved trial),
+ * and spend ÷ hidden tests passed (TDM-210), per trial, infinite when it passed none.
  */
-function armCell(aggregate: RequirementAggregate, cell: WorkloadCell, passed: boolean[]): ArmCell {
+function armCell(
+  aggregate: RequirementAggregate,
+  cell: WorkloadCell,
+  raw: Pick<RawCell, "passed" | "tests">,
+): ArmCell {
+  const { passed, tests } = raw;
   const samples =
     aggregate === "per_solved"
       ? cell.samples.map((v, i) => (passed[i] ? v : Infinity))
-      : cell.samples;
+      : aggregate === "per_test_passed"
+        ? cell.samples.map((v, i) => {
+            const k = tests?.[i] ?? 0;
+            return k > 0 ? v / k : Infinity;
+          })
+        : cell.samples;
   return { workloadId: cell.workloadId, samples, trials: cell.trials, solved: cell.solved };
 }
 
@@ -1033,7 +1165,7 @@ function attachVerdicts(
       const mineRaw = raw.get(s.contenderId)!;
       if (!mine.scored || !mineRaw.ok) continue;
       const arms = (cells: WorkloadCell[], r: { cells: Map<string, RawCell> }) =>
-        cells.map((cell) => armCell(plan.aggregate, cell, r.cells.get(cell.workloadId)!.passed));
+        cells.map((cell) => armCell(plan.aggregate, cell, r.cells.get(cell.workloadId)!));
       const common = {
         kind,
         better,
@@ -1120,6 +1252,10 @@ export function perTaskAdjective(req: Requirement, verdict: "better" | "worse"):
   const good = verdict === "better";
   if (req.type === "reviewed") return `${good ? "better" : "worse"} on ${req.id}`;
   if (req.metric === WALL_METRIC) return good ? "faster" : "slower";
+  if (req.aggregate === "per_test_passed")
+    return good ? "cheaper per hidden test passed" : "more expensive per hidden test passed";
+  if (isCorrectnessMetric(req.metric))
+    return good ? "passed more hidden tests" : "passed fewer hidden tests";
   if (req.metric === COST_METRIC) return good ? "cheaper" : "more expensive";
   if (req.metric === GATE_PASS_RATE_METRIC) return good ? "solved more often" : "solved less often";
   const higher = (req.better === "higher") === good;
@@ -1165,10 +1301,8 @@ function perTaskVerdicts(
           unit,
           iterations: opts.iterations,
           rateTest: "fisher_exact",
-          candidate: [armCell(plan.aggregate, cell, mineRaw.cells.get(cell.workloadId)!.passed)],
-          baseline: [
-            armCell(plan.aggregate, baseCell, baseRaw.cells.get(baseCell.workloadId)!.passed),
-          ],
+          candidate: [armCell(plan.aggregate, cell, mineRaw.cells.get(cell.workloadId)!)],
+          baseline: [armCell(plan.aggregate, baseCell, baseRaw.cells.get(baseCell.workloadId)!)],
           clustered: false,
           seed: seedFor(opts.seed, "task", req.id, s.contenderId, baseline, cell.workloadId),
         });

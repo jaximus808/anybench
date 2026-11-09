@@ -351,6 +351,18 @@ function requirementValue(r: ContenderScore["requirements"][number]): number | n
     const solved = r.byWorkload.reduce((s, x) => s + x.solved, 0);
     return trials > 0 ? solved / trials : null;
   }
+  // TDM-210: the mean hidden-test fraction over every trial, pooled over tasks.
+  if (r.aggregate === "all_trials") {
+    const xs = r.byWorkload.flatMap((x) => x.samples);
+    return xs.length > 0 ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
+  }
+  // TDM-210: all spend ÷ every hidden test passed, pooled over tasks (integer micro-USD, halves up).
+  if (r.aggregate === "per_test_passed") {
+    const tests = r.byWorkload.reduce((s, x) => s + (x.testsPassed ?? 0), 0);
+    if (tests === 0) return null;
+    const spend = r.byWorkload.reduce((s, x) => s + x.samples.reduce((a, v) => a + v, 0), 0);
+    return Math.floor((2 * spend + tests) / (2 * tests));
+  }
   const only = r.byWorkload.length === 1 ? r.byWorkload[0]! : null;
   return only && only.status === "measured" ? only.value : null;
 }
@@ -599,18 +611,27 @@ export function buildSummary(
           const rate = tally && tally.total > 0 ? tally.passed / tally.total : null;
           const raw = r ? requirementValue(r) : null;
           // No number without a correctness gate: a measured value needs a passing gated trial.
-          const value = req.type === "measured" && !(rate !== null && rate > 0) ? null : raw;
+          // TDM-210: except correctness itself (the mean hidden-test fraction over every trial)
+          // and the price per hidden test the gate verified, which stand on the gate's own counts.
+          const ownCorrectness =
+            r?.scored === true &&
+            (r.aggregate === "all_trials" || r.aggregate === "per_test_passed");
+          const value =
+            req.type === "measured" && !ownCorrectness && !(rate !== null && rate > 0) ? null : raw;
           return {
             requirement_id: req.id,
             type: req.type,
             title: req.title,
             value,
-            unit: req.type === "measured" ? (req.unit ?? null) : null,
+            unit:
+              req.type === "measured"
+                ? (req.unit ?? (r?.scored && r.aggregate === "all_trials" ? "ratio" : null))
+                : null,
             ci95: null,
             gate_id: req.gate_id ?? null,
             gate_pass_rate: req.type === "measured" ? rate : null,
             score: null,
-            ...(r?.scored ? { n: r.n, survivorship: r.survivorship } : {}),
+            ...(r?.scored ? { n: r.n, survivorship: r.survivorship, aggregate: r.aggregate } : {}),
             ...(decided && r?.scored ? { comparison: reportComparison(r.comparison) } : {}),
             ...(perTask && r?.scored && c.contenderId !== ks.stats.baseline
               ? {

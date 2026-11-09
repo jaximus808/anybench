@@ -15,11 +15,23 @@
 //   tasks, then trials within each task. Seeded, so the same trials give the same verdict.
 // - Cost per solved task (`per_solved`) compares trials with a failed trial counted as infinitely
 //   expensive (it bought no solve), the same idea as time-to-solve counting failures at the cap.
+//   Cost per hidden test passed (`per_test_passed`, TDM-210) does the same per trial: spend ÷ the
+//   tests it passed, ∞ when it passed none.
+// - Mean hidden-test fraction (kind `mean`, TDM-210): a bounded 0–1 value on the same scale on
+//   every task, so the effect is the DIFFERENCE IN MEANS (in points, like a pass rate), not a rank
+//   statistic. Agent kits: task-paired like a pass rate (per-task mean difference, the exact
+//   sign-flip test over tasks and the two-stage task bootstrap). One task's repeats (per task) or
+//   software cells: the exact permutation test on the difference in means, with a Welch t CI.
+//   No |δ| floor, like pass rates.
 //
 // Verdict rule: `pAdjusted < α` (Holm) and, for continuous metrics, |δ| ≥ 0.33; the sign of the
 // oriented effect (positive = the candidate is better) says better or worse. Otherwise the
 // verdict is `indistinguishable`, phrased "no detectable difference at n=…, smallest detectable
 // difference=…", where the smallest detectable difference is at 80% power and α / (family size).
+//
+// Too small to tell (TDM-210): when the test's exact floor (2 / 2^T over T tasks, 2 / C(n1+n2, n1)
+// for an exact two-sample test) is at least α, no data at this n could be significant, and the
+// statement says "not significant" with the n that could be.
 //
 // Honesty rules on top:
 // - A requirement scored as a median over solved trials only (`survivorship: true`) can never be
@@ -42,9 +54,11 @@ import {
   newcombeCi,
   newcombePValue,
   normalQuantile,
+  permutationMeanTest,
   robustSd,
   shiftForCliffsDelta,
   signFlipTest,
+  welchDiffCi,
   type EffectMagnitude,
 } from "./stats.js";
 
@@ -92,7 +106,14 @@ const MAX_REPEATS = 100;
  * tasks, two-stage task bootstrap), CI from the bootstrap.
  */
 export type ComparisonTest =
-  "newcombe" | "fisher_exact" | "mann_whitney_exact" | "mann_whitney_asymptotic" | "task_paired";
+  | "newcombe"
+  | "fisher_exact"
+  | "mann_whitney_exact"
+  | "mann_whitney_asymptotic"
+  | "task_paired"
+  /** TDM-210: difference in mean hidden-test fraction, one cell per arm. */
+  | "permutation_exact"
+  | "permutation_monte_carlo";
 
 /** The over-tasks detail of a `task_paired` comparison. */
 export interface TaskPairing {
@@ -110,9 +131,10 @@ export interface DiffInterval {
   level: number;
   requestedLevel: number;
   attained: boolean;
-  method: "newcombe" | "hodges_lehmann" | "task_bootstrap";
+  method: "newcombe" | "hodges_lehmann" | "task_bootstrap" | "welch_t";
   /**
-   * `rate`: difference in pass rate (0–1); `cliffs_delta`: Cliff's δ (task-averaged in clustered
+   * `rate`: difference of two 0–1 quantities, in points: pass rates, or (effect `mean_diff`,
+   * TDM-210) mean hidden-test fractions; `cliffs_delta`: Cliff's δ (task-averaged in clustered
    * kits). Both oriented so positive means the candidate is better. `metric`: Hodges–Lehmann
    * shift in the requirement's unit, raw candidate − baseline (lower is better for a time).
    */
@@ -120,15 +142,18 @@ export interface DiffInterval {
 }
 
 export interface Effect {
-  /** `rate_diff`: candidate − baseline pass rate. `cliffs_delta`: P(cand better) − P(base better). */
-  measure: "rate_diff" | "cliffs_delta";
+  /**
+   * `rate_diff`: candidate − baseline pass rate. `cliffs_delta`: P(cand better) − P(base better).
+   * `mean_diff` (TDM-210): candidate − baseline mean of a 0–1 metric (hidden_test_fraction).
+   */
+  measure: "rate_diff" | "cliffs_delta" | "mean_diff";
   /** Oriented: positive means the candidate is better. */
   value: number;
   /** Cliff's δ magnitude (continuous only). */
   magnitude: EffectMagnitude | null;
   /** Hodges–Lehmann shift, candidate − baseline, in the metric's unit (software, finite data). */
   hodgesLehmann: number | null;
-  /** Pass rates (rate_diff only). */
+  /** Pass rates (rate_diff) or mean fractions (mean_diff); null for cliffs_delta. */
   candidateRate: number | null;
   baselineRate: number | null;
 }
@@ -182,7 +207,8 @@ export interface ArmCell {
   solved: number;
 }
 
-export type ComparisonKind = "rate" | "continuous";
+/** `mean` (TDM-210): a 0–1 metric compared by its mean (hidden_test_fraction). */
+export type ComparisonKind = "rate" | "continuous" | "mean";
 
 export interface ComparisonSpec {
   kind: ComparisonKind;
@@ -399,6 +425,69 @@ function compareContinuousCell(spec: ComparisonSpec): RawComparison {
   };
 }
 
+/** z for a two-sided test at `alpha` with `power`. */
+const zFor = (alpha: number, power: number) =>
+  normalQuantile(1 - alpha / 2) + normalQuantile(power);
+
+/**
+ * Smallest detectable difference in mean of 0–1 values with `nC` and `nB` effectively
+ * independent trials and spread `sd` (when the data show none, the worst case for [0, 1]: 0.5).
+ * Null when it is above 1 (nothing on the scale is detectable).
+ */
+function mdeMean(nC: number, nB: number, sd: number, alpha: number, power: number): number | null {
+  const s = sd > 0 ? sd : 0.5;
+  const v = zFor(alpha, power) * s * Math.sqrt(1 / nC + 1 / nB);
+  return v > 1 ? null : v;
+}
+
+function compareMeanCell(spec: ComparisonSpec): RawComparison {
+  const x = spec.candidate[0]!.samples;
+  const y = spec.baseline[0]!.samples;
+  const level = spec.level ?? DECISION_RULE.level;
+  const power = spec.power ?? DECISION_RULE.power;
+  const sign = orient(spec.better);
+  const perm = permutationMeanTest(x, y, { seed: spec.seed });
+  const w = welchDiffCi(x, y, level);
+  const pooledSd = Math.sqrt(
+    (sum(x.map((v) => (v - mean(x)) ** 2)) + sum(y.map((v) => (v - mean(y)) ** 2))) /
+      Math.max(1, x.length + y.length - 2),
+  );
+  return {
+    spec,
+    test: perm.method === "exact" ? "permutation_exact" : "permutation_monte_carlo",
+    p: perm.p,
+    effect: {
+      measure: "mean_diff",
+      value: z0(sign * w.estimate),
+      magnitude: null,
+      hodgesLehmann: null,
+      candidateRate: mean(x),
+      baselineRate: mean(y),
+    },
+    ci: {
+      lo: z0(sign > 0 ? w.lo : -w.hi),
+      hi: z0(sign > 0 ? w.hi : -w.lo),
+      level,
+      requestedLevel: level,
+      attained: true,
+      method: "welch_t",
+      unit: "rate",
+    },
+    n: { candidate: x.length, baseline: y.length, tasks: 1 },
+    mdeAt: (alpha) => ({
+      // The permutation test can't go below 2 / C(n1+n2, n1), like exact Mann–Whitney.
+      value:
+        minMannWhitneyP(x.length, y.length) >= alpha
+          ? null
+          : mdeMean(x.length, y.length, pooledSd, alpha, power),
+      unit: "rate",
+      metricShift: null,
+      alpha,
+      power,
+    }),
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Clustered (agent, harness): one comparison per requirement, tasks as the unit.
 
@@ -420,9 +509,11 @@ function compareClustered(spec: ComparisonSpec): RawComparison {
   const pairs = paired.map(({ c, b }) => [c, b] as const);
   const T = pairs.length;
   const rate = spec.kind === "rate";
+  // A mean of 0–1 values is on one scale on every task: per-task mean difference, like a rate.
+  const byMean = rate || spec.kind === "mean";
 
   const perTask = (c: readonly number[], b: readonly number[]) =>
-    rate ? sign * (mean(c) - mean(b)) : sign * cliffsDelta(c, b);
+    byMean ? sign * (mean(c) - mean(b)) : sign * cliffsDelta(c, b);
   const diffs = pairs.map(([c, b]) => z0(perTask(c, b)));
   const statistic = z0(mean(diffs));
   // Exact over tasks: the per-task differences' signs under "no difference" are coin flips.
@@ -472,6 +563,31 @@ function compareClustered(spec: ComparisonSpec): RawComparison {
           : Math.max(analytic, fromBoot);
       return { value, unit: "rate", metricShift: null, alpha, power };
     };
+  } else if (byMean) {
+    const cMean = sum(pairs.map(([c]) => sum(c))) / nC;
+    const bMean = sum(pairs.map(([, b]) => sum(b))) / nB;
+    effect = {
+      measure: "mean_diff",
+      value: statistic,
+      magnitude: null,
+      hodgesLehmann: null,
+      candidateRate: cMean,
+      baselineRate: bMean,
+    };
+    const groups = pairs.flatMap(([c, b]) => [c, b]);
+    const icc = intraClassCorrelation(groups);
+    const mBar = (nC + nB) / Math.max(1, groups.length);
+    const deff = 1 + (mBar - 1) * icc;
+    const spread = sd(groups.flat());
+    mdeAt = (alpha) => {
+      const analytic = mdeMean(nC / deff, nB / deff, spread, alpha, power);
+      const fromBoot = zFor(alpha, power) * se;
+      const value =
+        analytic === null || fromBoot > 1 || flip.minP >= alpha
+          ? null
+          : Math.max(analytic, fromBoot);
+      return { value, unit: "rate", metricShift: null, alpha, power };
+    };
   } else {
     effect = {
       measure: "cliffs_delta",
@@ -509,7 +625,7 @@ function compareClustered(spec: ComparisonSpec): RawComparison {
       requestedLevel: level,
       attained: true,
       method: "task_bootstrap",
-      unit: rate ? "rate" : "cliffs_delta",
+      unit: byMean ? "rate" : "cliffs_delta",
     },
     n: { candidate: nC, baseline: nB, tasks: T },
     mdeAt,
@@ -539,7 +655,7 @@ export function compareArms(spec: ComparisonSpec): RawComparison | null {
     return compareRateCell(spec);
   }
   if (c.samples.length === 0 || b.samples.length === 0) return null;
-  return compareContinuousCell(spec);
+  return spec.kind === "mean" ? compareMeanCell(spec) : compareContinuousCell(spec);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -586,10 +702,18 @@ function effectText(r: RawComparison): string {
     newcombe: "Newcombe score",
     hodges_lehmann: r.test === "mann_whitney_exact" ? "exact Hodges–Lehmann" : "Hodges–Lehmann",
     task_bootstrap: "task-bootstrap",
+    welch_t: "Welch t",
   }[r.ci.method];
   const lvl = `${Math.round(r.ci.level * 1000) / 10}% ${method} CI${r.ci.attained ? "" : `, the most this n attains`}`;
   if (e.measure === "rate_diff") {
     return `${signedPts(e.value)} pass rate (${lvl} ${signedPts(r.ci.lo)} to ${signedPts(r.ci.hi)})`;
+  }
+  if (e.measure === "mean_diff") {
+    const means =
+      e.candidateRate !== null && e.baselineRate !== null
+        ? `, ${pts(e.candidateRate)} vs ${pts(e.baselineRate)}`
+        : "";
+    return `${signedPts(e.value)} mean fraction${means} (${lvl} ${signedPts(r.ci.lo)} to ${signedPts(r.ci.hi)})`;
   }
   const delta = `Cliff's δ ${fmtDelta(e.value)}`;
   if (r.ci.unit === "metric" && e.hodgesLehmann !== null) {
@@ -600,6 +724,24 @@ function effectText(r: RawComparison): string {
     return `${delta} averaged over tasks (${lvl} ${fmtDelta(r.ci.lo)} to ${fmtDelta(r.ci.hi)})`;
   }
   return delta;
+}
+
+/**
+ * The smallest p the comparison's test can give at its n, whatever the data: 2 / 2^T for the exact
+ * sign-flip test over T tasks, 2 / C(n1+n2, n1) for an exact two-sample test (Fisher, exact
+ * Mann–Whitney, permutation), 0 for an asymptotic one.
+ */
+function attainableFloor(r: RawComparison): number {
+  switch (r.test) {
+    case "task_paired":
+      return Math.min(1, 2 / 2 ** r.n.tasks);
+    case "fisher_exact":
+    case "mann_whitney_exact":
+    case "permutation_exact":
+      return minMannWhitneyP(r.n.candidate, r.n.baseline);
+    default:
+      return 0;
+  }
 }
 
 /**
@@ -644,8 +786,12 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
       else if (downgraded === "multiplicity")
         statement += `; p=${fmtP(r.p)} is not significant after Holm correction across ${m} comparisons`;
       // Tasks are the unit: too few of them and no data can show a general difference.
-      if (r.spec.clustered && 2 / 2 ** r.n.tasks >= alpha / Math.max(1, m))
-        statement += `; insufficient tasks for a general claim: the exact test over ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"} can't go below p=${fmtP(Math.min(1, 2 / 2 ** r.n.tasks))}, ≥${minTasksForSignificance(alpha / Math.max(1, m))} tasks needed`;
+      const floor = attainableFloor(r);
+      if (r.spec.clustered && floor >= alpha / Math.max(1, m))
+        statement += `; ${floor >= alpha ? "not significant: " : ""}insufficient tasks for a general claim: the exact test over ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"} can't go below p=${fmtP(floor)}, ≥${minTasksForSignificance(alpha / Math.max(1, m))} tasks needed`;
+      else if (!r.spec.clustered && floor >= alpha)
+        // TDM-210: too few trials for ANY result to be significant, whatever they show.
+        statement += `; not significant: n=${nText(r)} is too small for any difference to be significant (the exact test can't go below p=${fmtP(floor)}), ≥${minRepeatsForPerTask(m, alpha)} trials per setup needed across ${m} comparison${m === 1 ? "" : "s"}`;
     } else {
       const where =
         claim === "these_tasks" ? ` on these ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"}` : "";

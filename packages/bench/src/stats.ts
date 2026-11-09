@@ -996,3 +996,181 @@ export function signFlipTest(
   }
   return { p: Math.min(1, (hits + 1) / (samples + 1)), method: "monte_carlo", minP };
 }
+
+// --- Means of bounded values (TDM-210: hidden_test_fraction) ----------------------------------
+
+/**
+ * P(|T| < t) for Student's t with integer `df` ≥ 1, exactly (Abramowitz & Stegun 26.7.3–26.7.4:
+ * the finite trigonometric series in θ = atan(t / √df)).
+ */
+function studentTCentral(t: number, df: number): number {
+  const theta = Math.atan(t / Math.sqrt(df));
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  const c2 = c * c;
+  if (df % 2 === 1) {
+    let term = c;
+    let acc = df > 1 ? c : 0;
+    for (let k = 3; k <= df - 2; k += 2) {
+      term *= (c2 * (k - 1)) / k;
+      acc += term;
+    }
+    return (2 / Math.PI) * (theta + s * acc);
+  }
+  let term = 1;
+  let acc = 1;
+  for (let k = 2; k <= df - 2; k += 2) {
+    term *= (c2 * (k - 1)) / k;
+    acc += term;
+  }
+  return s * acc;
+}
+
+/**
+ * Student-t quantile t⁻¹(p; df), by bisection on the exact distribution function (integer df; a
+ * non-integer df, from Welch, is rounded DOWN, which widens the interval: conservative). Above
+ * 1000 df the normal quantile is used. df ≥ 1.
+ */
+export function studentTQuantile(p: number, df: number): number {
+  if (Number.isNaN(p) || p <= 0 || p >= 1) throw new RangeError(`p must be in (0, 1), got ${p}`);
+  if (!(df >= 1)) throw new RangeError(`df must be at least 1, got ${df}`);
+  if (p < 0.5) return -studentTQuantile(1 - p, df);
+  if (p === 0.5) return 0;
+  const d = Math.floor(df);
+  if (d > 1000) return normalQuantile(p);
+  if (d === 1) return Math.tan(Math.PI * (p - 0.5));
+  const target = 2 * p - 1; // P(|T| < t)
+  let lo = 0;
+  let hi = 1;
+  while (studentTCentral(hi, d) < target) hi *= 2;
+  for (let i = 0; i < 200 && hi - lo > 1e-12 * hi; i++) {
+    const m = (lo + hi) / 2;
+    if (studentTCentral(m, d) < target) lo = m;
+    else hi = m;
+  }
+  return (lo + hi) / 2;
+}
+
+export interface MeanInterval {
+  estimate: number;
+  lo: number;
+  hi: number;
+  level: number;
+}
+
+const meanOf = (xs: readonly number[]) => xs.reduce((s, x) => s + x, 0) / xs.length;
+function variance(xs: readonly number[]): number {
+  if (xs.length < 2) return 0;
+  const m = meanOf(xs);
+  return xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1);
+}
+
+/**
+ * Student-t CI of the mean of values in [lo, hi] (default [0, 1]), clipped to that range. One
+ * value has no spread to estimate: the interval is the whole range. With no spread at n ≥ 2 the
+ * interval is the point (the data can't say more).
+ */
+export function meanCi(
+  xs: readonly number[],
+  level = 0.95,
+  range: readonly [number, number] = [0, 1],
+): MeanInterval {
+  assertSample(xs);
+  if (!(level > 0 && level < 1)) throw new RangeError(`level must be in (0, 1), got ${level}`);
+  const m = meanOf(xs);
+  const n = xs.length;
+  if (n < 2) return { estimate: m, lo: range[0], hi: range[1], level };
+  const half = studentTQuantile(1 - (1 - level) / 2, n - 1) * Math.sqrt(variance(xs) / n);
+  return {
+    estimate: m,
+    lo: Math.max(range[0], m - half),
+    hi: Math.min(range[1], m + half),
+    level,
+  };
+}
+
+/**
+ * Welch's t CI of mean(x) − mean(y) (Welch–Satterthwaite df), clipped to [−width, width]. Either
+ * sample with one value leaves the spread unknown: the interval is the whole range.
+ */
+export function welchDiffCi(
+  x: readonly number[],
+  y: readonly number[],
+  level = 0.95,
+  width = 1,
+): MeanInterval {
+  assertSample(x, "x");
+  assertSample(y, "y");
+  const d = meanOf(x) - meanOf(y);
+  if (x.length < 2 || y.length < 2) return { estimate: d, lo: -width, hi: width, level };
+  const vx = variance(x) / x.length;
+  const vy = variance(y) / y.length;
+  const se = Math.sqrt(vx + vy);
+  if (se === 0) return { estimate: d, lo: d, hi: d, level };
+  const df = (vx + vy) ** 2 / (vx ** 2 / (x.length - 1) + vy ** 2 / (y.length - 1));
+  const half = studentTQuantile(1 - (1 - level) / 2, Math.max(1, df)) * se;
+  return { estimate: d, lo: Math.max(-width, d - half), hi: Math.min(width, d + half), level };
+}
+
+/** Up to this many splits the permutation test enumerates every one. */
+export const PERMUTATION_EXACT_MAX = 50_000;
+
+export interface PermutationResult {
+  /** Two-sided p of "x and y come from the same distribution", on the difference in means. */
+  p: number;
+  method: "exact" | "monte_carlo";
+}
+
+/**
+ * Two-sample permutation (Fisher–Pitman) test on mean(x) − mean(y), two-sided: the share of the
+ * C(n1+n2, n1) relabellings whose |difference| is at least the observed one. Exact up to
+ * PERMUTATION_EXACT_MAX splits, else `samples` seeded random relabellings
+ * (p = (hits + 1) / (samples + 1)). Its floor is 2 / C(n1+n2, n1) (`minMannWhitneyP`): 3 vs 3
+ * can't go below 0.1, so no result at that n is significant.
+ */
+export function permutationMeanTest(
+  x: readonly number[],
+  y: readonly number[],
+  opts: { seed?: number; samples?: number } = {},
+): PermutationResult {
+  assertSample(x, "x");
+  assertSample(y, "y");
+  const all = [...x, ...y];
+  const n1 = x.length;
+  const N = all.length;
+  const total = all.reduce((s, v) => s + v, 0);
+  const diffOf = (s1: number) => s1 / n1 - (total - s1) / (N - n1);
+  const observed = Math.abs(diffOf(x.reduce((s, v) => s + v, 0)));
+  const eps = 1e-12 * Math.max(1, Math.abs(total));
+  let splits = 1;
+  for (let i = 1; i <= n1; i++) splits = (splits * (N - n1 + i)) / i;
+  if (splits <= PERMUTATION_EXACT_MAX) {
+    let hits = 0;
+    let count = 0;
+    const walk = (start: number, left: number, s1: number) => {
+      if (left === 0) {
+        count++;
+        if (Math.abs(diffOf(s1)) >= observed - eps) hits++;
+        return;
+      }
+      for (let i = start; i <= N - left; i++) walk(i + 1, left - 1, s1 + all[i]!);
+    };
+    walk(0, n1, 0);
+    return { p: Math.min(1, hits / count), method: "exact" };
+  }
+  const samples = opts.samples ?? 20_000;
+  const rand = mulberry32(opts.seed ?? 0);
+  const idx = all.map((_, i) => i);
+  let hits = 0;
+  for (let k = 0; k < samples; k++) {
+    // Partial Fisher–Yates: the first n1 slots are a uniform random subset.
+    let s1 = 0;
+    for (let i = 0; i < n1; i++) {
+      const j = i + Math.floor(rand() * (N - i));
+      [idx[i], idx[j]] = [idx[j]!, idx[i]!];
+      s1 += all[idx[i]!]!;
+    }
+    if (Math.abs(diffOf(s1)) >= observed - eps) hits++;
+  }
+  return { p: Math.min(1, (hits + 1) / (samples + 1)), method: "monte_carlo" };
+}

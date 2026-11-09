@@ -1,5 +1,6 @@
 // The scoreboard: each setup's raw numbers side by side, as bars. Success rate (hidden tests
-// passed over graded trials), average time and average cost, overall and per task. Plain counts,
+// passed over graded trials), the share of hidden tests passed (TDM-210, when the gate wrote it:
+// every graded trial, failed ones too), average time and average cost, overall and per task. Plain counts,
 // no verdict: the statistics live in the table under it, and the reader draws the conclusion.
 // One builder over plain cells; the live page makes cells from trials + the trace summary, the
 // public page reads them from the signed snapshot.
@@ -16,6 +17,9 @@ export type ScoreCell = {
   costMicro: number;
   timeMs: number | null;
   timeN: number;
+  /** TDM-210: mean hidden_test_fraction over every graded trial; absent when no gate wrote it. */
+  fractionMean?: number | null;
+  fractionN?: number;
 };
 
 export type Bar = {
@@ -103,6 +107,19 @@ export function buildBoard(
         ),
       },
     ];
+    if (cs.some((c) => c?.fractionMean != null))
+      out.push({
+        key: `tests${keyTail}`,
+        title: "Hidden tests passed",
+        hint: "share of hidden tests, every graded trial",
+        bars: scaled(
+          setups,
+          cs.map((c) => c?.fractionMean ?? null),
+          (v) => `${Math.round(v * 100)}%`,
+          (i) => (cs[i]?.fractionN ? `n=${cs[i]!.fractionN}` : ""),
+          { lowerIsBetter: false, max: 1 },
+        ),
+      });
     if (cs.some((c) => c && c.timeMs !== null))
       out.push({
         key: `time${keyTail}`,
@@ -183,6 +200,9 @@ export function cellsFromPublication(cells: PublicationScoreCell[]): ScoreCell[]
     costMicro: c.cost_micro_usd,
     timeMs: c.wall_s_mean === null ? null : c.wall_s_mean * 1000,
     timeN: c.wall_n,
+    ...(c.hidden_test_fraction_mean === undefined
+      ? {}
+      : { fractionMean: c.hidden_test_fraction_mean, fractionN: c.hidden_test_fraction_n ?? 0 }),
   }));
 }
 
