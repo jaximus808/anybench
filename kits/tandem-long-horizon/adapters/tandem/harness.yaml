@@ -10,8 +10,9 @@ worker_prompt: worker-prompt.md
 # The env var that sets the worker count (the kit's `vary` axis).
 workers_env: TANDEM_WORKERS
 # Passed to every planner and worker session: the parallelism under test is the board's workers,
-# not Claude Code subagents (both of Claude Code's names for its subagent tool).
-disallowed_tools: Task Agent
+# not Claude Code subagents (both of Claude Code's names for its subagent tool, and 2.1.319's
+# Workflow tool, which runs multi-agent scripts; TDM-212).
+disallowed_tools: Task Agent Workflow
 # Done when every approved epic has drained (each ticket done or failed) and the planner exited.
 completion: epics-drained
 # Hard wall-clock cap for the whole run; ANYBENCH_WALL_CAP_S (the driver's wall_clock_cap_s)

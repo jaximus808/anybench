@@ -64,8 +64,8 @@ significant result, so the token budget buys repeats rather than setups):
 
 | | Contender | How |
 | --- | --- | --- |
-| A | `claude-code-solo` (baseline) | headless Claude Code, subagent tool disallowed |
-| D | `tandem` with `TANDEM_WORKERS=3` (subject) | planner + 3 workers on a fresh Tandem canvas, approvals automatic |
+| A | `claude-code-solo` (baseline) | headless Claude Code, subagent (`Task`, `Agent`) and multi-agent `Workflow` tools disallowed |
+| D | `tandem` with `TANDEM_WORKERS=3` (subject) | planner + 3 workers on a fresh Tandem canvas, approvals automatic; the same tools disallowed in every session |
 
 `claude-code-subagents` (B: headless Claude Code with the implementer, test-writer and reviewer
 subagents of `kits/tandem-vs-claude-code`) is the planned third setup if budget remains after the

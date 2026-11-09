@@ -55,10 +55,15 @@ describe("kits/tandem-long-horizon anybench.yaml (TDM-212)", () => {
     ]);
     expect(kit.vary).toEqual({});
     expect(kit.contenders[1]!.driver.env?.TANDEM_WORKERS).toBe("3");
+    // Subagents off under both names, and 2.1.319's multi-agent Workflow tool, for A and Tandem.
     expect(kit.contenders[0]!.driver.env?.CC_DISALLOWED_TOOLS?.split(/\s+/).sort()).toEqual([
       "Agent",
       "Task",
+      "Workflow",
     ]);
+    expect(readTdm212("adapters/tandem/harness.yaml")).toMatch(
+      /^disallowed_tools: Task Agent Workflow$/m,
+    );
     expect(kit.human_in_loop).toEqual({ kind: "tandem", policy: "auto" });
     // B is a planned third setup, not in the kit yet.
     expect(readTdm212("README.md")).toMatch(

@@ -66,7 +66,9 @@ contenders:
         ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
         ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
         # Claude Code calls its subagent tool Task in older versions and Agent in newer ones.
-        CC_DISALLOWED_TOOLS: "Task Agent"
+        # 2.1.319 also ships a Workflow tool that runs multi-agent scripts: disallowed too, for
+        # A here and for every Tandem session (adapters/tandem/harness.yaml disallowed_tools).
+        CC_DISALLOWED_TOOLS: "Task Agent Workflow"
     versions: { CLAUDE_CODE_VERSION: "2.1.319" }
     found_by: "researcher: the plain default (subagents removed)"
 
