@@ -28,6 +28,13 @@ npm install -g --no-audit --no-fund "bun@${BUN_VERSION:-1.4.2}"
 
 tool_home="$HOME/.anybench/homes/gstack"
 dir="$tool_home/.claude/skills/gstack"
+# The pinned Bun must win over any Bun the image already has on PATH (a Naïve trial computer
+# ships Bun 1.3.x ahead of npm's global bin). Link npm's Bun into this home's bin, which
+# healthcheck.sh and adapters/tool-home/driver.sh put first on PATH for this contender only.
+mkdir -p "$tool_home/bin"
+ln -sf "$(npm prefix -g)/bin/bun" "$tool_home/bin/bun"
+export PATH="$tool_home/bin:$PATH"
+[[ "$(bun --version)" == "${BUN_VERSION:-1.4.2}" ]] || { echo "bun $(bun --version) after install, want ${BUN_VERSION:-1.4.2}" >&2; exit 1; }
 rm -rf "$dir"
 mkdir -p "$dir"
 git -C "$dir" init -q -b main

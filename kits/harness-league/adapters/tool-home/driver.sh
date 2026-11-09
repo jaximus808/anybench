@@ -27,4 +27,6 @@ tool_home="$HOME/.anybench/homes/$name"
 # The secrets file and the runner's paths are absolute; git identity, if the image has one, follows.
 [[ -f "$HOME/.gitconfig" && ! -e "$tool_home/.gitconfig" ]] && cp "$HOME/.gitconfig" "$tool_home/.gitconfig"
 export HOME="$tool_home"
+# A tool home may pin its own binaries (gstack's Bun: adapters/gstack/install.sh); they win on PATH.
+[[ -d "$tool_home/bin" ]] && export PATH="$tool_home/bin:$PATH"
 exec "$kit/adapters/headless-policy/driver.sh" "$@"

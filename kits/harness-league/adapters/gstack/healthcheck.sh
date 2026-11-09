@@ -8,6 +8,7 @@ set -euo pipefail
 commit="${GSTACK_COMMIT:-910093087dec4877f99dfaed6600784942ed7a7b}"
 tool_home="$HOME/.anybench/homes/gstack"
 dir="$tool_home/.claude/skills/gstack"
+export PATH="$tool_home/bin:$PATH"   # the pinned Bun first, as the driver does (install.sh says why)
 claude --version >/dev/null
 node -e 'if (!process.features.typescript) process.exit(1)'   # Node 22.18+ type stripping
 git --version >/dev/null
