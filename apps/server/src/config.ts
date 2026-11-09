@@ -245,6 +245,18 @@ export const EnvSchema = z.object({
       .default("2000000")
       .transform((v) => BigInt(v)),
   ),
+  /**
+   * TDM-218: the run fee for a run from an uploaded kit (the user's own agent built it, so none of
+   * our kit-generation agents ran). Integer micro-USD; default 0: the user pays trial compute only.
+   */
+  UPLOADED_KIT_RUN_FEE_MICRO_USD: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^\d{1,15}$/, "must be a non-negative integer of micro-USD")
+      .default("0")
+      .transform((v) => BigInt(v)),
+  ),
   // ── Run emails (run.notify, jobs/run-notify.ts): "your benchmark is done" to the run owner. ──
   /**
    * `1`/`0` turns the run-owner emails on/off. Unset = on when MONID_API_KEY and a sending inbox

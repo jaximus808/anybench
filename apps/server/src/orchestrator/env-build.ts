@@ -47,6 +47,7 @@ import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { envs } from "../db/schema/envs.js";
 import { kits } from "../db/schema/kits.js";
+import { localKitDir, type KitDirResult } from "./kit-files.js";
 import { stageHold, stageOk, type EnvBuild, type PipelinePort } from "./ports.js";
 
 /** Bump to invalidate every cached env image (a change in how images are built). */
@@ -245,6 +246,11 @@ export interface EnvBuildDeps {
   provider: ComputeProvider;
   runner: () => Promise<RunnerInstaller | null>;
   catalog?: () => Promise<RecipeCatalog>;
+  /**
+   * The kit's files as a local directory (TDM-218: an uploaded kit's artifact: tarball is
+   * unpacked). Default: localKitDir with no artifact store (file:// only).
+   */
+  kitDir?: (filesUrl: string) => Promise<KitDirResult>;
   log?: (msg: string, data?: Record<string, unknown>) => void;
 }
 
@@ -314,12 +320,12 @@ export function providerEnvBuild(deps: EnvBuildDeps): PipelinePort["buildEnv"] {
       .select({ filesUrl: kits.filesUrl })
       .from(kits)
       .where(eq(kits.id, input.kit_id));
-    if (!row?.filesUrl?.startsWith("file://")) {
-      return stageHold(
-        `env build: kit ${input.kit_id} has no file:// files_url (${row?.filesUrl ?? "none"})`,
-      );
+    if (!row?.filesUrl) {
+      return stageHold(`env build: kit ${input.kit_id} has no files_url (none)`);
     }
-    const kitDir = fileURLToPath(row.filesUrl);
+    const local = await (deps.kitDir ?? ((u: string) => localKitDir(u)))(row.filesUrl);
+    if (!local.ok) return stageHold(`env build: kit ${input.kit_id}: ${local.reason}`);
+    const kitDir = local.dir;
     const catalog = await (deps.catalog ?? (() => loadRecipeCatalog()))();
     // TDM-60: the kit's declared toolchains go on BOTH images: the subject runs the project's
     // tests while it works, and the scoring image runs the hidden tests. Unknown → hold.

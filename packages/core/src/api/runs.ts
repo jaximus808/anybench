@@ -28,6 +28,14 @@ import { UploadIdSchema } from "./uploads.js";
 // ---------------------------------------------------------------------------------------------
 // Entities
 
+/**
+ * Where a run's kit came from (TDM-218, E19): `generated` by our agents (understand, research,
+ * kit design), or `uploaded` by the user's own coding agent. An uploaded kit skips kit generation
+ * (and its run fee) but never skips the six proof checks on our computers.
+ */
+export const RunKitOriginSchema = z.enum(["generated", "uploaded"]);
+export type RunKitOrigin = z.infer<typeof RunKitOriginSchema>;
+
 export const RunSchema = z.object({
   id: RunIdSchema,
   project_id: ProjectIdSchema.nullable(),
@@ -37,6 +45,8 @@ export const RunSchema = z.object({
   spent_micro_usd: MicroUsdSchema,
   estimate_micro_usd: NonNegativeMicroUsdSchema.nullable(),
   kit_id: KitIdSchema.nullable(),
+  /** `uploaded`: the run page says "kit: uploaded by you". Older servers omit it: `generated`. */
+  kit_origin: RunKitOriginSchema.default("generated"),
   paused_reason: z.string().nullable(),
   cancel_requested_at: IsoDateTimeSchema.nullable(),
   /** Comped runs show "comped" on the report and on /company. */

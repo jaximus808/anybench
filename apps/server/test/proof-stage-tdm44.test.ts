@@ -198,7 +198,7 @@ describe("proofStage (TDM-44)", () => {
     const upload = proofStage({ db, provider: null, kitFilesUrl: async () => "upload:abc" });
     const r = await upload(ctxTdm44(), { kit_id: "k6", kit: kit.spec, env: ENV });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toContain("has no file:// files_url");
+    if (!r.ok) expect(r.reason).toContain("is neither file:// nor artifact:");
   });
 
   it("configuredSecretValues takes secrets by name only", () => {

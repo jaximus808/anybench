@@ -25,6 +25,11 @@ export interface KitFileStore {
   ): Promise<{ bytes: Uint8Array; sha256: string } | null>;
   deleteKitUpload(ownerId: string, uploadId: string): Promise<void>;
   putKitFiles(ownerId: string, kitId: string, body: Uint8Array): Promise<{ key: string }>;
+  /**
+   * TDM-218: a stored kit tarball's bytes (a kits/files/ key only), for the worker to unpack and
+   * prove. Null when it does not exist; throws over `maxBytes` or on a sha256 mismatch.
+   */
+  getKitFiles(key: string, maxBytes: number): Promise<Uint8Array | null>;
   createKitDownload(
     key: string,
     expiresInSec?: number,

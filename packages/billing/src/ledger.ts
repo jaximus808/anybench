@@ -486,6 +486,10 @@ export function createLedger(db: LedgerDb): Ledger {
             detail: `run ${input.runId} is ${run.state}: ${decision.reason}`,
           };
         }
+        // A zero fee (an uploaded kit at UPLOADED_KIT_RUN_FEE_MICRO_USD=0) makes no entry.
+        if (input.amount === 0n) {
+          return { status: "skipped", reason: "zero_cost", detail: `run ${input.runId}: fee 0` };
+        }
         return insertEntry(tx, {
           userId: input.userId,
           runId: input.runId,

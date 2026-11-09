@@ -506,7 +506,7 @@ describe("demo summary wording (no DB)", () => {
 
   it("proofAccepted: all six passed, or a curated basis for exactly this kit row", () => {
     const six = PROOF_CHECKS.map((check) => ({ check, pass: true, reason: "", evidence: [] }));
-    expect(proofAccepted({ id: "k1", proof: six }, {})).toBe(true);
+    expect(proofAccepted({ id: "k1", proof: six }, {}, {})).toBe(true);
     const curated = PROOF_CHECKS.map((check) => ({
       check,
       pass: check === "oracle_passes" || check === "do_less_fails",
@@ -522,10 +522,10 @@ describe("demo summary wording (no DB)", () => {
       verified: ["oracle_passes", "do_less_fails"],
       kit_id: "k1",
     };
-    expect(proofAccepted({ id: "k1", proof: curated }, {})).toBe(false);
-    expect(proofAccepted({ id: "k1", proof: curated }, { proof_basis: basis })).toBe(true);
-    expect(proofAccepted({ id: "k2", proof: curated }, { proof_basis: basis })).toBe(false);
+    expect(proofAccepted({ id: "k1", proof: curated }, {}, {})).toBe(false);
+    expect(proofAccepted({ id: "k1", proof: curated }, { proof_basis: basis }, {})).toBe(true);
+    expect(proofAccepted({ id: "k2", proof: curated }, { proof_basis: basis }, {})).toBe(false);
     const broken = curated.map((p) => (p.check === "oracle_passes" ? { ...p, pass: false } : p));
-    expect(proofAccepted({ id: "k1", proof: broken }, { proof_basis: basis })).toBe(false);
+    expect(proofAccepted({ id: "k1", proof: broken }, { proof_basis: basis }, {})).toBe(false);
   });
 });

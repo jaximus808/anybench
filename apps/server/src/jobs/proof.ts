@@ -3,6 +3,9 @@
 //   a curated Tandem kit    (files_url = kits/tandem-long-horizon or kits/tandem-vs-claude-code,
 //                           or no files_url at all, as kits drafted before contract C1) →
 //                           curatedProof: that kit's committed, signed-off offline proof.
+//   an uploaded kit         (TDM-218, runs.intake.kit_origin = uploaded) → never the curated
+//                           proof, whatever its files_url or spec hash (a copy of the curated kit
+//                           uploaded by a user is still an upload): always the six checks below.
 //   any other kit           → load the kit from kits.files_url (file://), run the six proof checks
 //                           (@anybench/kit runProofSuite) on the run's env: trials fork env.env_id,
 //                           gates fork env.detail.scoring_snapshot_id (apps/server/src/jobs/
@@ -33,12 +36,14 @@ import { drizzleComputerStore } from "../lib/computer-store.js";
 import { kitSpecHash } from "../routes/kits.js";
 import { CURATED_KIT_IDS, defaultKitsDir } from "../orchestrator/curated.js";
 import {
+  isUploadedKitRun,
   stageHold,
   stageOk,
   type EnvBuild,
   type PipelinePort,
   type StageContext,
 } from "../orchestrator/ports.js";
+import { localKitDir, type KitDirResult } from "../orchestrator/kit-files.js";
 import { curatedProof } from "../orchestrator/proof-score.js";
 import { providerProofRunner, type ProviderProofRunnerOptions } from "./proof-runner.js";
 
@@ -46,6 +51,11 @@ export interface ProofStageOptions {
   db: Database;
   /** kits.files_url of a kit (default: read from `db`). */
   kitFilesUrl?: (kitId: string) => Promise<string | null>;
+  /**
+   * The kit's files as a local directory (TDM-218): file:// as is, an uploaded kit's artifact:
+   * tarball unpacked (orchestrator/kit-files.ts). Default: localKitDir with no artifact store.
+   */
+  kitDir?: (filesUrl: string) => Promise<KitDirResult>;
   /** The trials' provider (Naïve in production). Null: non-curated kits hold. */
   provider: ComputeProvider | null;
   /** ANYBENCH_KITS_DIR (the curated kits). */
@@ -124,22 +134,29 @@ export function proofStage(opts: ProofStageOptions): PipelinePort["prove"] {
 
   return async (ctx, input) => {
     const filesUrl = await (opts.kitFilesUrl ?? filesUrlFromDb(opts.db))(input.kit_id);
-    // The curated kit keeps its signed-off offline proof (and so does a pre-C1 kit row).
+    const uploaded = isUploadedKitRun(ctx.run.intake);
+    // The curated kit keeps its signed-off offline proof (and so does a pre-C1 kit row). An
+    // uploaded kit never does: the proof is the trust anchor, an upload is never trusted as is.
     if (
-      filesUrl === null ||
-      (filesUrl.startsWith("file://") && curatedDirs.has(real(fileURLToPath(filesUrl))))
+      !uploaded &&
+      (filesUrl === null ||
+        (filesUrl.startsWith("file://") && curatedDirs.has(real(fileURLToPath(filesUrl)))))
     ) {
       return curated(ctx, input);
     }
-    if (!filesUrl.startsWith("file://")) {
+    if (filesUrl === null) {
+      return stageHold(`proof: the uploaded kit ${input.kit_id} has no files (kits.files_url)`);
+    }
+    const dir = await (opts.kitDir ?? ((u: string) => localKitDir(u)))(filesUrl);
+    if (!dir.ok) {
       return stageHold(
-        `proof: kit ${input.kit_id} has no file:// files_url (${filesUrl}); the proof suite reads the kit's files from disk`,
+        `proof: kit ${input.kit_id}: ${dir.reason}; the proof suite reads the kit's files from disk`,
       );
     }
 
     let kit: LoadedKit;
     try {
-      kit = await loadKit(fileURLToPath(filesUrl));
+      kit = await loadKit(dir.dir);
     } catch (err) {
       if (!(err instanceof KitLoadError)) throw err;
       // The designer's kit does not load: every check fails with why, and the designer repairs it.
@@ -160,6 +177,8 @@ export function proofStage(opts: ProofStageOptions): PipelinePort["prove"] {
       env,
       runId: ctx.run.id,
       store: drizzleComputerStore(opts.db),
+      // TDM-218: an uploaded kit's proof computers are billed to the run (never infra failures).
+      billToRun: uploaded,
       ...(opts.pricePerBlockMicroUsd !== undefined
         ? { pricePerBlockMicroUsd: opts.pricePerBlockMicroUsd }
         : {}),

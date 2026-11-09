@@ -23,6 +23,7 @@ import {
   ContenderRoleSchema,
   ProofCheckResultSchema,
   ReportSchema,
+  RunKitOriginSchema,
   RunSourceSchema,
   RunStateSchema,
   ContenderSchema,
@@ -45,8 +46,29 @@ export const RunIntakeSchema = z.object({
   contenders: z.array(ContenderSchema).default([]),
   auto_go: z.boolean().default(true),
   idempotency_key: z.string().optional(),
+  /**
+   * TDM-218: `uploaded` when POST /runs started the run from a kit the user uploaded (the source
+   * kit row's origin, read from the database, never from the request body). Such a run skips
+   * understand, research and kit design (no Naïve agent spend), never gets a kit designer repair,
+   * and is never accepted on a curated sign-off: only all six proof checks on our computers.
+   * Absent (every run before TDM-218, and every non-upload run) means `generated`.
+   */
+  kit_origin: RunKitOriginSchema.optional(),
 });
 export type RunIntake = z.infer<typeof RunIntakeSchema>;
+
+/**
+ * Did the user upload this run's kit (TDM-218)? Reads the raw stored intake, so a run whose intake
+ * no longer parses as a whole still counts as uploaded when it says so (the safe side: it then
+ * gets only the full six-check proof).
+ */
+export function isUploadedKitRun(intake: unknown): boolean {
+  return (
+    typeof intake === "object" &&
+    intake !== null &&
+    (intake as { kit_origin?: unknown }).kit_origin === "uploaded"
+  );
+}
 
 export interface StageRun {
   id: string;

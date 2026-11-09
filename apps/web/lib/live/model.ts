@@ -35,7 +35,12 @@ export interface LiveSnapshot {
     | "spent_micro_usd"
     | "estimate_micro_usd"
     | "created_at"
-  > & { paused_reason?: string | null; kit_id?: string | null };
+  > & {
+    paused_reason?: string | null;
+    kit_id?: string | null;
+    /** TDM-218: `uploaded` when the user's own agent built the kit; absent = `generated`. */
+    kit_origin?: "generated" | "uploaded";
+  };
   contenders: LiveContender[];
   trials: Trial[];
   agents: AgentSession[];
@@ -133,6 +138,8 @@ export interface LiveRun {
   estimateMicroUsd: bigint | null;
   /** The run's kit once kit_draft wrote one (the Go hero reads its plan). */
   kitId: string | null;
+  /** TDM-218: the user uploaded the kit (no kit generation; the proof still runs on ours). */
+  kitOrigin: "generated" | "uploaded";
   createdAt: string;
   contenders: LiveContender[];
   workloads: string[];
@@ -228,6 +235,7 @@ export function initLive(s: LiveSnapshot): LiveRun {
     spentMicroUsd: s.run.spent_micro_usd,
     estimateMicroUsd: s.run.estimate_micro_usd,
     kitId: s.run.kit_id ?? null,
+    kitOrigin: s.run.kit_origin ?? "generated",
     createdAt: s.run.created_at,
     contenders: s.contenders,
     workloads: workloadsOf(Object.values(trials)),

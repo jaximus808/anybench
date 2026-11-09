@@ -29,6 +29,12 @@
 // checks, or a curated kit's signed-off offline proof accepted for that kit row: proof-score.ts
 // proofAccepted; the checks it did not run stay `pass: false`), and the analyst's report must parse with ReportSchema, whose refinements refuse a
 // measured value without a passing gate.
+//
+// An uploaded kit (TDM-218, runs.intake.kit_origin = `uploaded`, source {kind: 'kit'}): intake,
+// understand and research pass straight through and kit_draft never calls the kit designer, so no
+// Naïve agent runs before proof. The kit then goes through env_build and the six proof checks on
+// our computers like any other; a curated sign-off never applies to it, and a failed proof holds
+// the run for the user (no designer repair: their own agent fixes the kit) instead of repairing.
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -72,6 +78,7 @@ import { proofAccepted } from "./proof-score.js";
 import {
   AnalysisSchema,
   EnvBuildSchema,
+  isUploadedKitRun,
   ProofResultsSchema,
   CuratedProofSchema,
   type ProofBasis,
@@ -162,6 +169,8 @@ export interface RunChargesHook {
     userId: string;
     state: "delivered" | "failed" | "cancelled";
     cancelCause: CancelCause | null;
+    /** TDM-218: an uploaded kit's run pays no kit-generation fee (billing runFeeForKit). */
+    kitOrigin: "generated" | "uploaded";
   }): Promise<unknown>;
 }
 
@@ -687,11 +696,20 @@ class RunAdvance {
     return this.stageRun(run).intake.source.kind === "kit";
   }
 
+  /** TDM-218: the user uploaded this run's kit (never designed, repaired or curated by us). */
+  private isUploaded(run: RunRow): boolean {
+    return isUploadedKitRun(run.intake);
+  }
+
+  private skipReason(run: RunRow): string {
+    return this.isUploaded(run) ? "uploaded kit: no kit generation" : "rerun of a saved kit";
+  }
+
   // ----- stages -----
 
   private async intake(run: RunRow): Promise<Step> {
     if (this.isRerun(run) || (await this.loadDigest(run))) {
-      return this.advance(run, { reason: this.isRerun(run) ? "rerun of a saved kit" : undefined });
+      return this.advance(run, { reason: this.isRerun(run) ? this.skipReason(run) : undefined });
     }
     const r = await this.callStage(run, (ctx) => this.deps.pipeline.ingest(ctx));
     if (r === "interrupted") return CONTINUE;
@@ -711,7 +729,7 @@ class RunAdvance {
   }
 
   private async understand(run: RunRow): Promise<Step> {
-    if (this.isRerun(run)) return this.advance(run, { reason: "rerun of a saved kit" });
+    if (this.isRerun(run)) return this.advance(run, { reason: this.skipReason(run) });
     const digest = await this.loadDigest(run);
     if (!digest) return this.hold(run, "needs_human", "no project digest to understand");
     const r = await this.callStage(run, (ctx) => this.deps.agents.understand(ctx, { digest }));
@@ -729,7 +747,7 @@ class RunAdvance {
   }
 
   private async research(run: RunRow): Promise<Step> {
-    if (this.isRerun(run)) return this.advance(run, { reason: "rerun of a saved kit" });
+    if (this.isRerun(run)) return this.advance(run, { reason: this.skipReason(run) });
     const digest = await this.loadDigest(run);
     const understanding = this.outputs(run).understand;
     if (!digest || !understanding) {
@@ -764,6 +782,16 @@ class RunAdvance {
     const current = await this.store.kit(run);
     // A version nobody has proven yet (the designer's, a user edit, a rerun's copy): prove it.
     if (current && current.proof === null) return this.advance(run);
+    // An uploaded kit is the user's: our kit designer never drafts or repairs it (no agent spend).
+    if (this.isUploaded(run)) {
+      return this.hold(
+        run,
+        "needs_human",
+        current
+          ? "the uploaded kit did not pass its proof; fix it locally and upload a new version"
+          : "the run's uploaded kit is missing",
+      );
+    }
     const outputs = this.outputs(run);
     const previous = current ? { spec: current.spec, proof: proofOf(current.proof) } : null;
     const r = await this.callStage(run, async (ctx) =>
@@ -831,6 +859,14 @@ class RunAdvance {
       "the proof results",
     );
     if (!proof.ok) return proof.step;
+    if (!Array.isArray(proof.value) && this.isUploaded(run)) {
+      // Never: a curated sign-off is for our own curated kit, not a kit someone uploaded.
+      return this.hold(
+        run,
+        "needs_human",
+        "an uploaded kit is never accepted on a curated sign-off: it needs all six proof checks",
+      );
+    }
     const kitId = kit.row.id;
     // A curated kit's signed-off offline proof: its checks go on the kit row as they are (the
     // ones not run say so), and the sign-off it was accepted on goes in stage_outputs.
@@ -882,7 +918,7 @@ class RunAdvance {
     const kit = await this.loadKit(run);
     if (!kit) return this.hold(run, "needs_human", "proof needs a valid kit");
     if (kit.row.proof === null) return this.prove(run, kit);
-    if (proofAccepted(kit.row, run.stageOutputs)) {
+    if (proofAccepted(kit.row, run.stageOutputs, run.intake)) {
       return this.estimate(run, kit, (estimate) =>
         this.advance(run, { set: { estimateMicroUsd: estimate } }),
       );
@@ -892,6 +928,10 @@ class RunAdvance {
     const failed = proofOf(kit.row.proof).filter((p: ProofCheckResult) => !p.pass);
     const named = failed.map((p) => `${p.check} (${p.reason.replace(/\s+/g, " ").slice(0, 400)})`);
     const what = (named.length > 0 ? named.join("; ") : "missing checks").slice(0, 1700);
+    if (this.isUploaded(run)) {
+      // No designer repair for an uploaded kit: the user's own agent fixes it and re-uploads.
+      return this.hold(run, "needs_human", `the uploaded kit failed its proof: ${what}`);
+    }
     const repairs = await this.store.repairs(run.id);
     if (repairs < RUN_MAX_PROOF_REPAIRS) {
       return this.commit(
@@ -912,7 +952,7 @@ class RunAdvance {
     if (!kit) return this.wait(run.state, "no valid kit");
     // A kit edited in awaiting_go starts unproven: rerun the proof here (no edge back to proof).
     if (kit.row.proof === null) return this.prove(run, kit);
-    if (!proofAccepted(kit.row, run.stageOutputs)) {
+    if (!proofAccepted(kit.row, run.stageOutputs, run.intake)) {
       return this.wait(run.state, "the kit has not passed its proof");
     }
     if (run.estimateMicroUsd === null) {
@@ -1100,7 +1140,10 @@ class RunAdvance {
     const proof = proofOf(kit.row.proof);
     const outputs = this.outputs(run);
     const score = outputs.score ?? null;
-    const basis = outputs.proof_basis?.kit_id === kit.row.id ? outputs.proof_basis : null;
+    const basis =
+      !this.isUploaded(run) && outputs.proof_basis?.kit_id === kit.row.id
+        ? outputs.proof_basis
+        : null;
     const r = await this.callStage(run, (ctx) =>
       this.deps.agents.analyze(ctx, {
         kit_id: kit.row.id,
@@ -1183,6 +1226,7 @@ class RunAdvance {
         userId: run.ownerId,
         state,
         cancelCause,
+        kitOrigin: this.isUploaded(run) ? "uploaded" : "generated",
       });
     } else {
       this.deps.logger?.info({ runId: run.id, state, cancelCause }, "run ended (no billing hook)");

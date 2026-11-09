@@ -14,8 +14,10 @@
 //             time (so a reference the proof just captured is in it).
 //
 // Every computer goes through a ComputerRegistry, so it is tagged `ab-<run>-<proof trial>` and has
-// a `computers` row the reaper can find; the row carries no run or trial id (proof compute is our
-// pipeline's cost, not billed to the run, and proof trials have no `trials` row for the FK). The
+// a `computers` row the reaper can find; the row carries no trial id (proof trials have no
+// `trials` row for the FK) and no run id (proof compute is our pipeline's cost, not billed to the
+// run), except for an uploaded kit's proof (TDM-218, `billToRun`), whose rows carry the run id so
+// the ledger bills them with the run like any run-level computer. The
 // executor and the gate runner destroy their computers on every path; `sweep()` destroys anything
 // tagged with this proof that is still up (call it in `finally`).
 import { readFile } from "node:fs/promises";
@@ -71,6 +73,14 @@ export interface ProviderProofRunnerOptions {
   runId: string;
   /** Where computers rows go: drizzleComputerStore(db) in the worker, memory in tests. */
   store?: ComputerStore;
+  /**
+   * TDM-218: an uploaded kit's proof runs for the user, not for our own kit design, so its
+   * computers rows carry the run id and are billed like the run's other run-level computers (cost +
+   * COMPUTE_MARKUP_BPS, only when the run bills compute: never for our infra failures or our
+   * cancels). Off: the rows carry no run id and the proof is our cost (a generated kit's, covered
+   * by RUN_FEE_MICRO_USD).
+   */
+  billToRun?: boolean;
   /** Integer micro-USD per billing block, for the rows' cost. */
   pricePerBlockMicroUsd?: bigint;
   /** Naïve proxy keys for agent contenders (AB_TOKEN_SOURCE=naive_proxy): proxyDepsFromConfig. */
@@ -92,11 +102,14 @@ export interface ProviderProofRunner extends ProofRunner {
   sweep(): Promise<string[]>;
 }
 
-/** A ComputerStore that writes the row without run / trial ids (see the header). */
-function unbilledStore(base: ComputerStore): ComputerStore {
+/**
+ * A ComputerStore that writes the row without a trial id (proof trials have no `trials` row), and
+ * without a run id unless `billRunId` is set (see the header).
+ */
+export function proofStore(base: ComputerStore, billRunId: string | null): ComputerStore {
   // Bound explicitly: a class-based store (MemoryComputerStore) keeps its methods on the prototype.
   return {
-    insert: (row) => base.insert({ ...row, runId: null, trialId: null }),
+    insert: (row) => base.insert({ ...row, runId: billRunId, trialId: null }),
     update: (id, patch) => base.update(id, patch),
     get: (id) => base.get(id),
     findByProviderId: (provider, providerId) => base.findByProviderId(provider, providerId),
@@ -154,7 +167,10 @@ export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderP
   const spec = kit.spec;
   const detail = (env.detail ?? {}) as Partial<EnvBuildDetail>;
   const kitDir = detail.kit_dir ?? KIT_DIR_REL;
-  const store = unbilledStore(opts.store ?? new MemoryComputerStore());
+  const store = proofStore(
+    opts.store ?? new MemoryComputerStore(),
+    opts.billToRun ? opts.runId : null,
+  );
   const registry = createComputerRegistry({
     provider,
     store,

@@ -85,6 +85,15 @@ describe.skipIf(!available)("cost-plus ledger entries (TDM-171, local Postgres)"
       expect((await ledger.auditAccount(u.userId)).ok).toBe(true);
     });
 
+    it("TDM-218: a zero run fee (an uploaded kit) makes no entry", async () => {
+      const u = await seedUserTdm87(h.pool, 2);
+      await setRunStateTdm171(h.pool, u.runId, "delivered");
+      const r = await ledger.recordRunFee({ runId: u.runId, userId: u.userId, amount: 0n });
+      expect(r).toMatchObject({ status: "skipped", reason: "zero_cost" });
+      expect(await entries(u.userId)).toEqual([]);
+      expect((await ledger.getAccountSummary(u.userId)).unbilled).toBe(0n);
+    });
+
     it("bills a run that failed because of the subject", async () => {
       const u = await seedUserTdm87(h.pool, 3, {
         states: ["failed_subject", "failed_subject", "cancelled"],

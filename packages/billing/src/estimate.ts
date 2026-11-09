@@ -1,6 +1,8 @@
 // Run cost estimate for the test-plan screen and the run gate on Go (TDM-171, plan.md section 8).
 //
-// Estimate = RUN_FEE_MICRO_USD + projected compute, where projected compute is priced exactly the
+// Estimate = run fee + projected compute. The run fee is RUN_FEE_MICRO_USD for a kit our agents
+// generated, UPLOADED_KIT_RUN_FEE_MICRO_USD (default 0) for a kit the user uploaded (TDM-218: no
+// kit generation on our side; pricing.ts runFeeForKit). Projected compute is priced exactly the
 // way the ledger will bill it: one charge per eval computer, cost (blocks x block price) plus
 // COMPUTE_MARKUP_BPS rounded down per computer. The computer layout is the scheduler's own
 // (@anybench/bench expandTrials + groupBlocks): one computer per trial, or one per packed block,
@@ -8,7 +10,9 @@
 // max(1, ceil(busy / block_seconds)) blocks, since Naïve bills the first block at create.
 //
 // Not included: model tokens (the user's own key by default; managed tokens are metered as used)
-// and the proof runs before Go (covered by the run fee). Bigint only: no float path.
+// and the proof runs before Go: a generated kit's proof computers are ours (RUN_FEE_MICRO_USD
+// covers them); an uploaded kit's are billed with the run like any run-level computer (cost +
+// COMPUTE_MARKUP_BPS, never for our infra failures) but not projected here. Bigint only.
 import {
   estTrialSecondsFromKit,
   expandTrials,
@@ -19,9 +23,11 @@ import {
   KitSpecSchema,
   NonNegativeMicroUsdSchema,
   resolveEnvProvider,
+  RunKitOriginSchema,
   type KitSpec,
   type KitSpecInput,
   type MicroUsd,
+  type RunKitOrigin,
 } from "@anybench/core";
 import { z } from "zod";
 import {
@@ -29,6 +35,7 @@ import {
   computeChargeMicroUsd,
   CostPlusPricingSchema,
   naiveBlockPriceMicroUsd,
+  runFeeForKit,
 } from "./pricing.js";
 
 export const EstimatePricingSchema = CostPlusPricingSchema.extend({
@@ -37,10 +44,15 @@ export const EstimatePricingSchema = CostPlusPricingSchema.extend({
    * COMPUTER_BLOCK_PRICE_MICRO_USD, the price the registry costs computers at.
    */
   defaultBlockPriceMicroUsd: NonNegativeMicroUsdSchema,
+  /** UPLOADED_KIT_RUN_FEE_MICRO_USD: the run fee when the kit was uploaded (TDM-218). */
+  uploadedKitRunFeeMicroUsd: NonNegativeMicroUsdSchema.default(0n),
 });
 export type EstimatePricingInput = z.input<typeof EstimatePricingSchema>;
 
 export interface RunCostEstimate {
+  /** Where the kit came from: `uploaded` pays no kit-generation fee. */
+  kitOrigin: RunKitOrigin;
+  /** The run fee for that origin (runFeeForKit). */
   runFeeMicroUsd: MicroUsd;
   compute: {
     /** Eval computers the scheduler will create (one per block). */
@@ -77,13 +89,21 @@ function blockPrice(
   };
 }
 
+export interface EstimateOptions {
+  /** Where the run's kit came from; default `generated` (our agents designed it). */
+  kitOrigin?: RunKitOrigin;
+}
+
 /** What a run of this kit will cost the user: run fee + projected compute (no tokens). */
 export function estimateRunCost(
   kitInput: KitSpec | KitSpecInput,
   pricingInput: EstimatePricingInput,
+  opts: EstimateOptions = {},
 ): RunCostEstimate {
   const kit = KitSpecSchema.parse(kitInput);
   const pricing = EstimatePricingSchema.parse(pricingInput);
+  const kitOrigin = RunKitOriginSchema.parse(opts.kitOrigin ?? "generated");
+  const runFee = runFeeForKit(kitOrigin, pricing);
   const plan = expandTrials(expandTrialsInputFromKit("estimate", kit));
   const blocks = groupBlocks(plan);
   const estTrialSeconds = estTrialSecondsFromKit(kit);
@@ -104,7 +124,8 @@ export function estimateRunCost(
   }
 
   return {
-    runFeeMicroUsd: pricing.runFeeMicroUsd,
+    kitOrigin,
+    runFeeMicroUsd: runFee,
     compute: {
       computers: blocks.length,
       trials: plan.length,
@@ -116,6 +137,6 @@ export function estimateRunCost(
       costMicroUsd: cost,
       chargeMicroUsd: charge,
     },
-    totalMicroUsd: pricing.runFeeMicroUsd + charge,
+    totalMicroUsd: runFee + charge,
   };
 }

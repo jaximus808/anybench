@@ -36,7 +36,6 @@
 // Enqueue with payload `{trial_id, attempt}` and job key `trialGateJobKey(trialId, attempt)` (the
 // trial executor, [5.4] TDM-49, does this after `collecting`). TRIAL_GATE_JOB, trialGateJobKey and
 // TrialGatePayloadSchema are defined once, in trial-execute.ts, and re-exported here.
-import { fileURLToPath } from "node:url";
 import {
   AnybenchEventSchema,
   frozenWorkspaceOf,
@@ -87,6 +86,13 @@ import {
   computeProviderFromConfig,
   proxyDepsFromConfig,
 } from "../lib/compute.js";
+import {
+  kitArtifactSource,
+  localKitDir,
+  type KitArtifactSource,
+  type KitDirOptions,
+} from "../orchestrator/kit-files.js";
+import type { KitFileStore } from "../lib/kit-upload/store.js";
 import { attemptProxySpend, trialMetrics, trialPhaseEdges } from "../orchestrator/trial-metrics.js";
 import { defineJob, type JobContext } from "./types.js";
 import {
@@ -170,19 +176,24 @@ export interface KitFilesPort {
 }
 
 /**
- * Local-first worker: `kits.files_url` is a `file://` directory on the worker host.
+ * Local-first worker: `kits.files_url` is a `file://` directory on the worker host, or (TDM-218)
+ * an uploaded kit's `artifact:` tarball, unpacked once per worker (orchestrator/kit-files.ts).
  * TODO([16.2] subject/scoring bundle split): read a stored scoring bundle instead.
  */
-export const localKitFiles: KitFilesPort = {
-  async scoringFiles(kit, gates) {
-    if (!kit.filesUrl?.startsWith("file://")) {
-      throw new Error(
-        `kit ${kit.id}: files_url ${kit.filesUrl ?? "(none)"} is not a file:// directory; no scoring bundle source`,
-      );
-    }
-    return collectScoringFiles(fileURLToPath(kit.filesUrl), gates);
-  },
-};
+export function kitFilesFrom(opts: KitDirOptions = {}): KitFilesPort {
+  return {
+    async scoringFiles(kit, gates) {
+      const local = await localKitDir(kit.filesUrl, opts);
+      if (!local.ok) {
+        throw new Error(`kit ${kit.id}: ${local.reason}; no scoring bundle source`);
+      }
+      return collectScoringFiles(local.dir, gates);
+    },
+  };
+}
+
+/** file:// kits only (no artifact store). */
+export const localKitFiles: KitFilesPort = kitFilesFrom();
 
 /**
  * The run's scoring image (env_build: the base recipes only, never a subject file), from
@@ -622,6 +633,8 @@ export interface TrialGateJobOptions {
   /** Presigned downloads (ArtifactStore). */
   artifacts?: (ctx: JobContext) => ArtifactDownloads | null;
   kitFiles?: KitFilesPort;
+  /** TDM-218: where uploaded kits' tarballs are read from (production: the ArtifactStore). */
+  kitStore?: (ctx: JobContext) => Pick<KitFileStore, "getKitFiles"> | null;
   /** TODO([3.9] VM profiles): the scoring profile snapshot. Default: a fresh base computer. */
   profile?: (ctx: JobContext) => ScoringProfileInput | undefined;
   sandbox?: GateSandbox;
@@ -633,6 +646,11 @@ export interface TrialGateJobOptions {
   breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
   /** Trial traces after scoring (production: the artifact store). Default: none. */
   traces?: (ctx: JobContext) => TraceDeps | null;
+}
+
+function kitSourceOf(options: TrialGateJobOptions, ctx: JobContext): KitArtifactSource | null {
+  const store = options.kitStore?.(ctx) ?? null;
+  return store ? kitArtifactSource(store) : null;
 }
 
 export function createTrialGateJob(options: TrialGateJobOptions = {}) {
@@ -681,7 +699,8 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
             db: ctx.db,
             registry,
             frozen: artifactFrozenOutputs(artifacts),
-            kitFiles: options.kitFiles ?? localKitFiles,
+            // TDM-218: an uploaded kit's gates/ and reference/ come from its artifact: tarball.
+            kitFiles: options.kitFiles ?? kitFilesFrom({ artifacts: kitSourceOf(options, ctx) }),
             ...(profile ? { profile } : {}),
             ...(options.sandbox ? { sandbox: options.sandbox } : {}),
             ...(options.gateOptions ? { gateOptions: options.gateOptions } : {}),
@@ -721,6 +740,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
 export const trialGateJob = createTrialGateJob({
   provider: (ctx) => computeProviderFromConfig(ctx.config),
   artifacts: () => artifactStoreFromEnv(),
+  kitStore: () => artifactStoreFromEnv(),
   proxySpend: (ctx) => proxyDepsFromConfig(ctx.config)?.spend ?? null,
   traces: () => {
     const store = artifactStoreFromEnv();

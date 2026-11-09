@@ -155,6 +155,12 @@ export function fakeKitStoreTdm217(): KitFileStore & {
       objects.set(key, new Uint8Array(body));
       return { key };
     },
+    async getKitFiles(key, maxBytes) {
+      const b = objects.get(key);
+      if (!b) return null;
+      if (b.byteLength > maxBytes) throw new ArtifactTransferError("too_large", "over the cap");
+      return b;
+    },
     async createKitDownload(key, expiresInSec = 3600) {
       if (!objects.has(key)) throw new ArtifactTransferError("not_found", `${key} does not exist`);
       return {

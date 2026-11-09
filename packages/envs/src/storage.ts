@@ -700,6 +700,37 @@ export class ArtifactStore {
     return { key, sizeBytes: body.byteLength, sha256, ...(res.ETag ? { etag: res.ETag } : {}) };
   }
 
+  /**
+   * TDM-218: a stored kit tarball's bytes (a kitFilesKey only), or null when it does not exist.
+   * Refuses one over `maxBytes` and one whose bytes do not hash to the recorded sha256.
+   */
+  async getKitFiles(key: string, maxBytes: number): Promise<Uint8Array | null> {
+    if (!KIT_FILES_KEY_RE.test(key)) {
+      throw new ArtifactTransferError("not_found", `${key} is not a stored kit`);
+    }
+    const head = await this.head(key);
+    if (!head) return null;
+    if (head.sizeBytes > maxBytes) {
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    if ((res.ContentLength ?? 0) > maxBytes) {
+      await res.Body?.transformToWebStream().cancel();
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    const bytes = res.Body ? await res.Body.transformToByteArray() : new Uint8Array(0);
+    if (bytes.byteLength > maxBytes) {
+      throw new ArtifactTransferError("too_large", `${key} is over ${maxBytes} bytes`);
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== head.sha256) {
+      throw new ArtifactTransferError(
+        "checksum_mismatch",
+        `${key}: bytes differ from the recorded sha256`,
+      );
+    }
+    return bytes;
+  }
+
   /** A presigned GET for a stored kit tarball (a kitFilesKey only). */
   async createKitDownload(
     key: string,

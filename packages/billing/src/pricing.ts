@@ -16,8 +16,10 @@
 import {
   isTerminalRunState,
   NonNegativeMicroUsdSchema,
+  RunKitOriginSchema,
   withMarkupBps,
   type MicroUsd,
+  type RunKitOrigin,
   type RunState,
   type TrialState,
 } from "@anybench/core";
@@ -78,6 +80,32 @@ export function computeChargeMicroUsd(cost: MicroUsd, markupBps: bigint | number
 }
 
 // ---- Run fee ------------------------------------------------------------------------------------
+
+/**
+ * Where a run's eval kit came from (TDM-218, E19). `generated`: our Naïve agents understood the
+ * project, researched baselines and designed the kit, which RUN_FEE_MICRO_USD pays for.
+ * `uploaded`: the user's own coding agent built the kit and uploaded it, so no kit generation runs
+ * on our side and the run fee is UPLOADED_KIT_RUN_FEE_MICRO_USD (default 0). The proof still runs
+ * on our computers either way. An uploaded kit's proof computers carry the run id (proof-runner.ts
+ * billToRun), so they are billed as compute with the run (computeDecision folds a run-level
+ * computer into the run's trials: never for our infra failures or our cancels).
+ */
+
+export const RunFeePricingSchema = z.object({
+  /** RUN_FEE_MICRO_USD: a run whose kit our agents generated. */
+  runFeeMicroUsd: NonNegativeMicroUsdSchema,
+  /** UPLOADED_KIT_RUN_FEE_MICRO_USD: a run from an uploaded kit (no kit generation). */
+  uploadedKitRunFeeMicroUsd: NonNegativeMicroUsdSchema.default(0n),
+});
+export type RunFeePricingInput = z.input<typeof RunFeePricingSchema>;
+
+/** The run fee for a run whose kit has this origin, integer micro-USD. */
+export function runFeeForKit(origin: RunKitOrigin, pricingInput: RunFeePricingInput): MicroUsd {
+  const pricing = RunFeePricingSchema.parse(pricingInput);
+  return RunKitOriginSchema.parse(origin) === "uploaded"
+    ? pricing.uploadedKitRunFeeMicroUsd
+    : pricing.runFeeMicroUsd;
+}
 
 export type RunFeeDecision =
   | { billable: true; outcome: "delivered" | "failed_subject" }

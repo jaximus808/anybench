@@ -5,6 +5,7 @@ import {
   classifyEnvLine,
   envBuildSteps,
   phaseLog,
+  phaseSummary,
   phaseView,
   runningView,
 } from "../lib/live/phase";
@@ -282,5 +283,23 @@ describe("stable slots (anti-jump)", () => {
     expect(s).toEqual(["d", "b", "c", null, null]);
     s = assignSlots(s, ["b", "c", "d", "e", "f", "g"], 5);
     expect(s).toEqual(["d", "b", "c", "e", "f"]);
+  });
+});
+
+describe("an uploaded kit (TDM-218)", () => {
+  it("the run carries its origin, and the kit-generation phases say they were skipped", () => {
+    const uploaded = initLive({
+      ...demo.snapshot,
+      run: { ...demo.snapshot.run, kit_origin: "uploaded" },
+    });
+    expect(uploaded.kitOrigin).toBe("uploaded");
+    for (const s of ["understand", "research", "kit_draft"] as const) {
+      expect(phaseSummary(uploaded, s)).toBe("skipped: kit uploaded by you");
+    }
+    // The proof phase is never skipped: it keeps its own summary line.
+    expect(phaseSummary(uploaded, "proof")).not.toBe("skipped: kit uploaded by you");
+    const generated = initLive(demo.snapshot);
+    expect(generated.kitOrigin).toBe("generated");
+    expect(phaseSummary(generated, "understand")).not.toBe("skipped: kit uploaded by you");
   });
 });

@@ -70,4 +70,14 @@ describe("ArtifactStore kit uploads (TDM-217)", () => {
       await expect(store.createKitDownload(key)).rejects.toMatchObject({ code: "not_found" });
     }
   });
+
+  it("TDM-218: reads back only stored kit keys (never an untrusted upload)", async () => {
+    for (const key of [
+      kitUploadKey(owner, upload),
+      "runs/r/trials/t/out.tar.gz",
+      `kits/files/${owner}/../x.tar.gz`,
+    ]) {
+      await expect(store.getKitFiles(key, 1024)).rejects.toMatchObject({ code: "not_found" });
+    }
+  });
 });

@@ -8,7 +8,7 @@
 //   kitTrialSource      trial.execute's TrialSource: the run's kit → TrialJob (trialJobFromKit).
 //   billingEstimate     PipelinePort.estimate: packages/billing estimateRunCost ([10.12]).
 //   ledgerCharges       the run-terminal billing hook: packages/billing ledger.recordRunCharges.
-import { createLedger, estimateRunCost } from "@anybench/billing";
+import { createLedger, estimateRunCost, runFeeForKit } from "@anybench/billing";
 import { IngestError, ingestGitHubRepo } from "@anybench/kit";
 import type { NaiveClient } from "@anybench/naive";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -19,6 +19,7 @@ import type { Config } from "../config.js";
 import type { JobsPort, RunChargesHook } from "./advance.js";
 import { writeRepoIngestCache } from "./repo-ingest-cache.js";
 import {
+  isUploadedKitRun,
   stageFail,
   stageHold,
   stageOk,
@@ -169,21 +170,30 @@ export { kitTrialSource } from "./trial-source.js";
 
 type PricingConfig = Pick<
   Config,
-  "RUN_FEE_MICRO_USD" | "COMPUTE_MARKUP_BPS" | "COMPUTER_BLOCK_PRICE_MICRO_USD"
+  | "RUN_FEE_MICRO_USD"
+  | "UPLOADED_KIT_RUN_FEE_MICRO_USD"
+  | "COMPUTE_MARKUP_BPS"
+  | "COMPUTER_BLOCK_PRICE_MICRO_USD"
 >;
 
 /**
  * PipelinePort.estimate: run fee + projected eval-computer charge for the kit, integer micro-USD.
+ * An uploaded kit's run (TDM-218) pays UPLOADED_KIT_RUN_FEE_MICRO_USD instead of the run fee.
  * TODO([6.x] agent sessions on Naïve): our own agents' token spend is not in the estimate yet.
  */
 export function billingEstimate(config: PricingConfig): PipelinePort["estimate"] {
-  return async (_ctx, input) =>
+  return async (ctx, input) =>
     stageOk(
-      estimateRunCost(input.kit, {
-        runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
-        computeMarkupBps: config.COMPUTE_MARKUP_BPS,
-        defaultBlockPriceMicroUsd: config.COMPUTER_BLOCK_PRICE_MICRO_USD,
-      }).totalMicroUsd,
+      estimateRunCost(
+        input.kit,
+        {
+          runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+          uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
+          computeMarkupBps: config.COMPUTE_MARKUP_BPS,
+          defaultBlockPriceMicroUsd: config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+        },
+        { kitOrigin: isUploadedKitRun(ctx.run.intake) ? "uploaded" : "generated" },
+      ).totalMicroUsd,
     );
 }
 
@@ -200,7 +210,11 @@ export function ledgerCharges(db: Database, config: PricingConfig): RunChargesHo
         runId: input.runId,
         userId: input.userId,
         pricing: {
-          runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+          // TDM-218: no kit-generation fee for an uploaded kit (a zero fee makes no entry).
+          runFeeMicroUsd: runFeeForKit(input.kitOrigin, {
+            runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+            uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
+          }),
           computeMarkupBps: config.COMPUTE_MARKUP_BPS,
         },
       }),

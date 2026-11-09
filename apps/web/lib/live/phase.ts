@@ -381,6 +381,13 @@ function lastMessage(live: LiveRun, state: RunState): string | null {
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 export function phaseSummary(live: LiveRun, state: RunState): string | null {
+  // TDM-218: an uploaded kit skips kit generation (the proof still runs on our computers).
+  if (
+    live.kitOrigin === "uploaded" &&
+    (state === "understand" || state === "research" || state === "kit_draft")
+  ) {
+    return "skipped: kit uploaded by you";
+  }
   switch (state) {
     case "kit_draft": {
       const lines = phaseLog(live, "kit_draft").filter((l) => l.kind === "message");

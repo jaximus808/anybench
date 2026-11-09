@@ -63,6 +63,7 @@ import { sweepCandidates } from "../orchestrator/store.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { notifySettings, runNotifyEnqueuer } from "./run-notify.js";
 import { configuredSecretValues, proofStage } from "./proof.js";
+import { workerKitDir } from "../orchestrator/kit-files.js";
 import { defineJob, type JobContext } from "./types.js";
 
 export { RUN_ADVANCE_JOB } from "../orchestrator/advance.js";
@@ -97,6 +98,8 @@ export interface RunAdvanceJobOptions {
 /** Production pipeline: real GitHub ingest and estimate, the rest held until its ticket lands. */
 export function defaultPipeline(ctx: JobContext): PipelinePort {
   const provider = computeProviderFromConfig(ctx.config);
+  // TDM-218: an uploaded kit's files (artifact: in R2) unpacked on this worker for env build and proof.
+  const kitDir = workerKitDir(artifactStoreFromEnv());
   return {
     ...unbuiltPipeline,
     ingest: githubIngest(ctx.config.GITHUB_TOKEN ? { githubToken: ctx.config.GITHUB_TOKEN } : {}),
@@ -111,6 +114,7 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
       pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD,
       ...(proxyDepsFromConfig(ctx.config) ? { naiveProxy: proxyDepsFromConfig(ctx.config)! } : {}),
       proxyCapMicroUsd: ctx.config.TRIAL_PROXY_CAP_MICRO_USD,
+      kitDir,
       log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),
     }),
     score: kitScore(),
@@ -125,6 +129,7 @@ export function defaultPipeline(ctx: JobContext): PipelinePort {
                 binDir: defaultRunnerBinDir(ctx.config.ANYBENCH_RUNNER_BIN_DIR),
                 artifacts: artifactStoreFromEnv(),
               }),
+            kitDir,
             log: (msg, data) => ctx.logger.info({ job: RUN_ADVANCE_JOB, ...data }, msg),
           }),
         }

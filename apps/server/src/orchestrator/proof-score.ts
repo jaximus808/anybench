@@ -60,6 +60,7 @@ import {
   type CuratedKitId,
 } from "./curated.js";
 import {
+  isUploadedKitRun,
   RunStageOutputsShape,
   stageHold,
   stageOk,
@@ -218,9 +219,18 @@ export function curatedProof(opts: { kitsDir?: string } = {}): PipelinePort["pro
 /**
  * May this kit leave proof (and pass Go)? All six checks passed, or the proof stage accepted a
  * curated sign-off for exactly this kit row and the checks it verified still pass.
+ *
+ * `intake` is the run's stored runs.intake. A run from an uploaded kit (TDM-218) is accepted only
+ * on all six checks: a curated sign-off (stage_outputs.proof_basis) never applies to it, even if
+ * one is somehow stored for its kit row. The uploaded kit is never trusted as is.
  */
-export function proofAccepted(kit: { id: string; proof: unknown }, stageOutputs: unknown): boolean {
+export function proofAccepted(
+  kit: { id: string; proof: unknown },
+  stageOutputs: unknown,
+  intake: unknown,
+): boolean {
   if (isProven(kit.proof)) return true;
+  if (isUploadedKitRun(intake)) return false;
   const outputs = RunStageOutputsShape.safeParse(stageOutputs ?? {});
   const basis = outputs.success ? outputs.data.proof_basis : undefined;
   if (!basis || basis.kit_id !== kit.id) return false;

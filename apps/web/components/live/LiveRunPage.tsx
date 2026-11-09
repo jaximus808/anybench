@@ -269,6 +269,17 @@ export function LiveRunView({
             </span>
             <span className={styles.sep}>·</span>
             <span className="num">seq {live.lastSeq.toLocaleString("en-US")}</span>
+            {live.kitOrigin === "uploaded" ? (
+              <>
+                <span className={styles.sep}>·</span>
+                <span
+                  data-testid="kit-origin"
+                  title="Your agent built this kit; we still ran the six proof checks on our computers"
+                >
+                  kit: uploaded by you
+                </span>
+              </>
+            ) : null}
             {RUN_STATE_WORD[live.state] && !ended ? (
               <span className={styles.holdPill}>{RUN_STATE_WORD[live.state]}</span>
             ) : null}

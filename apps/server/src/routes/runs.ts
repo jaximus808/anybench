@@ -85,6 +85,7 @@ import type { BillingGate } from "../lib/billing-gate.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
+import { isUploadedKitRun } from "../orchestrator/ports.js";
 import { proofAccepted } from "../orchestrator/proof-score.js";
 import { settleRun } from "../orchestrator/settle.js";
 import type { AppDeps } from "../types.js";
@@ -115,6 +116,7 @@ export function toRun(row: RunRow): Run {
     spent_micro_usd: row.spentMicroUsd,
     estimate_micro_usd: row.estimateMicroUsd ?? null,
     kit_id: (row.kitId ?? null) as Run["kit_id"],
+    kit_origin: isUploadedKitRun(row.intake) ? "uploaded" : "generated",
     paused_reason: row.pausedReason ?? null,
     cancel_requested_at: isoOrNull(row.cancelRequestedAt),
     comped: row.compedBy !== null,
@@ -324,7 +326,8 @@ async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
     return { ok: false, status: 409, message: t.ok ? "run is not awaiting go" : t.error.message };
   }
   // No speed or quality number without a correctness gate: Go needs all six proof checks passed,
-  // or a curated kit's signed-off offline proof accepted for this kit (stage_outputs.proof_basis).
+  // or a curated kit's signed-off offline proof accepted for this kit (stage_outputs.proof_basis);
+  // never the latter for a run from an uploaded kit (TDM-218).
   const [kit] = run.kitId
     ? await tx
         .select({ id: kits.id, proof: kits.proof })
@@ -332,7 +335,7 @@ async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
         .where(eq(kits.id, run.kitId))
         .limit(1)
     : [];
-  if (!kit || !proofAccepted(kit, run.stageOutputs)) {
+  if (!kit || !proofAccepted(kit, run.stageOutputs, run.intake)) {
     return { ok: false, status: 409, message: "the run's kit has not passed all six proof checks" };
   }
   if (run.estimateMicroUsd === null) {
@@ -431,18 +434,36 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
 
         const runId = newId(RunIdSchema);
         let projectId: string | null;
-        let rerun: { kitId: string; spec: unknown; filesUrl: string | null } | undefined;
+        let rerun:
+          | {
+              kitId: string;
+              spec: unknown;
+              filesUrl: string | null;
+              origin: "generated" | "curated" | "uploaded";
+            }
+          | undefined;
         if (body.source.kind === "kit") {
-          // Rerun a saved kit: same project, the kit copied as version 1 of the new run.
+          // Rerun a saved kit: same project, the kit copied as version 1 of the new run. An
+          // uploaded kit (TDM-217) has no run, so no project: left join (TDM-218).
           const [k] = await tx
-            .select({ spec: kits.spec, filesUrl: kits.filesUrl, projectId: runs.projectId })
+            .select({
+              spec: kits.spec,
+              filesUrl: kits.filesUrl,
+              origin: kits.origin,
+              projectId: runs.projectId,
+            })
             .from(kits)
-            .innerJoin(runs, eq(runs.id, kits.runId))
+            .leftJoin(runs, eq(runs.id, kits.runId))
             .where(eq(kits.id, body.source.kit_id))
             .limit(1);
           if (!k) return { notFound: "kit not found" };
-          projectId = k.projectId;
-          rerun = { kitId: body.source.kit_id, spec: k.spec, filesUrl: k.filesUrl };
+          projectId = k.projectId ?? null;
+          rerun = {
+            kitId: body.source.kit_id,
+            spec: k.spec,
+            filesUrl: k.filesUrl,
+            origin: k.origin,
+          };
         } else {
           projectId = newId(ProjectIdSchema);
           await tx
@@ -466,6 +487,9 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
           contenders: body.contenders,
           auto_go: autoGo,
           ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+          // TDM-218: from the source kit row, never the request. An uploaded kit skips kit
+          // generation (and its fee) but never the six proof checks (orchestrator/advance.ts).
+          ...(rerun?.origin === "uploaded" ? { kit_origin: "uploaded" as const } : {}),
         };
         const [run] = await tx
           .insert(runs)
@@ -493,8 +517,10 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
               version: 1,
               spec: toJsonValue(spec.spec),
               filesUrl: rerun.filesUrl,
+              // Never proven: every run proves its kit again (an uploaded one on our computers).
               proof: null,
               hash: kitSpecHash(spec.spec),
+              origin: rerun.origin,
             })
             .returning({ id: kits.id });
           const [withKit] = await tx
