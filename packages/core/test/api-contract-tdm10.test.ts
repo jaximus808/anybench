@@ -217,7 +217,12 @@ describe("api contract: required routes", () => {
     expect(apiRoutes.billing.summary.path).toBe("/billing/summary");
     expect(apiRoutes.billing.stripeWebhook.path).toBe("/webhooks/stripe");
     expect(apiRoutes.runs.go.errors[402]).toBe(PaymentRequiredSchema);
-    expect(Object.keys(PaymentRequiredSchema.shape).sort()).toEqual(["link_card_url", "reason"]);
+    // TDM-224: `free_run` (optional) says why the run was not free.
+    expect(Object.keys(PaymentRequiredSchema.shape).sort()).toEqual([
+      "free_run",
+      "link_card_url",
+      "reason",
+    ]);
   });
 
   it("requires a reason on admin grant and comp", () => {

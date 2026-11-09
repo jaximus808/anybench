@@ -101,18 +101,16 @@ afterEach(() => {
 });
 
 describe("/billing (stripe-onboarding)", () => {
-  it("after sign-up: one step left, Add a card opens Stripe Checkout returning to this run", async () => {
-    window.history.pushState({}, "", `/billing?welcome=1&run=${RUN}`);
+  it("a run waiting on a card: Add a card opens Stripe Checkout returning to this run", async () => {
+    window.history.pushState({}, "", `/billing?run=${RUN}`);
     mockApi({
       "GET /billing/summary": () => json(200, summary(false)),
       "POST /billing/link-card": () =>
         json(200, { url: "https://checkout.stripe.com/c/pay/cs_test_1" }),
     });
     render(<BillingView navigate={navigate} />);
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "One step left: add a card" }),
-    ).toBeTruthy();
-    expect(screen.getByText(/Test mode: no real money moves/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Billing" })).toBeTruthy();
+    expect(await screen.findByText(/Test mode: no real money moves/)).toBeTruthy();
     expect(screen.getByText(/If our pipeline or infrastructure fails the run, you pay nothing/));
     expect(screen.getByText("Add a card above, then start it from here.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Add a card" }));

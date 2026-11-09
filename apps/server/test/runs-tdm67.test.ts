@@ -400,6 +400,8 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
     expect(body).toEqual({
       reason: "no_payment_method",
       link_card_url: `https://anybench.jaxonp.com/settings/billing?run=${run.id}`,
+      // TDM-224: why the run was not free (these seeded accounts have no GitHub account age).
+      free_run: expect.objectContaining({ reason: "no_github_account_age" }),
     });
     const e = await expectApiError(a.runs.go({ params: { id: run.id } }), 402, "payment_required");
     expect(e.paymentRequired).toEqual(body);
@@ -445,6 +447,7 @@ describe.skipIf(!available)("runs, kits and scan routes (TDM-67)", () => {
       expect(e.paymentRequired).toEqual({
         reason: "no_payment_method",
         link_card_url: `https://anybench.jaxonp.com/settings/billing?run=${other.id}`,
+        free_run: expect.objectContaining({ reason: "no_github_account_age" }),
       });
       const [otherRow] = await db.db.select().from(runs).where(eq(runs.id, other.id));
       expect(otherRow).toMatchObject({ state: "awaiting_go", compedBy: null });

@@ -29,6 +29,17 @@
 // allows under BILLING_MODE=off, and in test/live comps an admin owner's run (founder demo
 // bypass, an interventions row) and answers everyone else the contract's 402
 // `{reason, link_card_url}` until the real gate ([10.6]) is passed in AppDeps.
+//
+// The free starter run (E20, TDM-224) comes first: lib/free-run.ts freeRunAtGo tries to reserve
+// the account's free run (entitlement + pool, one transaction in packages/billing). Reserved: Go
+// needs no card and the card gate is not asked. Refused: the card gate decides exactly as before,
+// and when it refuses, its 402 also carries `free_run: {reason, reasons, message}` saying why the
+// run was not free (a starter limit, the free run already used or in use, free runs paused). A
+// refusal because the run moved under us is a 409. The reservation and the state transition are
+// two transactions (billing's on the pool role, the transition on the tenant role), so a Go that
+// reserved and then fails to leave awaiting_go releases the reservation (releaseFreeRun) before it
+// answers; a crash in between leaves the run awaiting_go holding its reservation, and the next Go
+// finds it (`duplicate`) and goes on free.
 import {
   AlertIdSchema,
   apiRoutes,
@@ -53,6 +64,7 @@ import {
   type RunSource,
   type RunState,
 } from "@anybench/core";
+import { releaseFreeRun } from "@anybench/billing";
 import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
 import type { DbTx } from "../db/client.js";
@@ -82,6 +94,7 @@ import {
 } from "../lib/api-route.js";
 import { requireScope, runIdsOf } from "../lib/auth-key.js";
 import type { BillingGate } from "../lib/billing-gate.js";
+import { freeRunAtGo } from "../lib/free-run.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { RUN_ADVANCE_JOB, type RunAdvancePayload } from "../jobs/run-advance.js";
@@ -312,7 +325,8 @@ function toRunContender(row: typeof contenders.$inferSelect): RunContender {
 // ---------------------------------------------------------------------------------------------
 // Go
 
-type GoCheck = { ok: true; estimate: bigint } | { ok: false; status: 404 | 409; message: string };
+type GoCheck =
+  { ok: true; estimate: bigint; run: RunRow } | { ok: false; status: 404 | 409; message: string };
 
 /** Everything Go needs except billing: state, a proven kit, an estimate within the budget. */
 async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
@@ -354,7 +368,27 @@ async function goCheck(tx: DbTx, run: RunRow | undefined): Promise<GoCheck> {
       message: t.ok ? "estimate exceeds the run budget" : t.error.message,
     };
   }
-  return { ok: true, estimate: run.estimateMicroUsd };
+  return { ok: true, estimate: run.estimateMicroUsd, run };
+}
+
+/**
+ * Go reserved the free run but the run did not leave awaiting_go: give the reservation and the
+ * entitlement back (releaseFreeRun only releases a run still in awaiting_go, so a concurrent Go
+ * that did start the run keeps it). A failure here is logged, never hides the Go's own answer.
+ */
+async function releaseFreeRunAfterFailedGo(
+  c: { get(key: "log"): { warn(obj: object, msg?: string): void } },
+  deps: RunsRouteDeps,
+  runId: string,
+): Promise<void> {
+  try {
+    await releaseFreeRun(deps.db, { runId, reason: "go_failed" });
+  } catch (err) {
+    c.get("log").warn(
+      { err, runId },
+      "go: releasing the free run after a failed transition failed",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -606,41 +640,70 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
     const actor = c.get("actor");
     const scoped = scopedDb(actor, deps.db);
 
-    // 1. Read-only checks, then the billing gate outside any transaction (it may call Stripe).
+    // 1. Read-only checks, then the free run, then the billing gate, outside any transaction
+    //    (the gate may call Stripe).
     const first = await scoped.transaction(async (tx) => {
       const [row] = await tx.select().from(runs).where(eq(runs.id, id)).limit(1);
       return goCheck(tx, row);
     });
     if (!first.ok) return fail(c, first.status === 404 ? "not_found" : "conflict", first.message);
-    const gate = await deps.billingGate({ userId: actor.userId, runId: id }, first.estimate);
-    if (!gate.allowed) {
-      const body: PaymentRequired = { reason: gate.reason, link_card_url: gate.link_card_url };
-      return c.json(route.errors[402].parse(body), 402);
+    const free = await freeRunAtGo(deps, { userId: actor.userId, run: first.run });
+    if (free.kind === "conflict") return fail(c, "conflict", free.message);
+    if (free.kind !== "reserved") {
+      const gate = await deps.billingGate({ userId: actor.userId, runId: id }, first.estimate);
+      if (!gate.allowed) {
+        const body: PaymentRequired = {
+          reason: gate.reason,
+          link_card_url: gate.link_card_url,
+          ...(free.kind === "refused" ? { free_run: free.refusal } : {}),
+        };
+        return c.json(route.errors[402].parse(body), 402);
+      }
     }
 
-    // 2. Lock, re-check (the run may have moved meanwhile), transition, event.
-    const moved = await scoped.transaction(async (tx) => {
-      const row = await lockRun(tx, id);
-      const again = await goCheck(tx, row);
-      if (!again.ok) return again;
-      const t = transitionRun(row!.state, {
-        type: "go",
-        estimate_fits_budget: true,
-        billing_gate_passed: true,
+    // 2. Lock, re-check (the run may have moved meanwhile), transition, event. If this request
+    //    reserved the free run and the run does not leave awaiting_go, give the reservation back.
+    type Moved =
+      | { ok: true; run: RunRow & { nextSeq: number } }
+      | { ok: false; status: 404 | 409; message: string };
+    let moved: Moved;
+    try {
+      moved = await scoped.transaction(async (tx): Promise<Moved> => {
+        const row = await lockRun(tx, id);
+        const again = await goCheck(tx, row);
+        if (!again.ok) return again;
+        const t = transitionRun(row!.state, {
+          type: "go",
+          estimate_fits_budget: true,
+          billing_gate_passed: true,
+        });
+        if (!t.ok) return { ok: false, status: 409, message: t.error.message };
+        const [updated] = await tx
+          .update(runs)
+          .set({ state: t.to, updatedAt: sql`now()` })
+          .where(eq(runs.id, id))
+          .returning();
+        const { lastSeq } = await appendEvents(tx, id, [
+          stateChanged(id, actor, t.from, t.to, {
+            command: "go",
+            ...(free.kind === "reserved" ? { reason: "free starter run" } : {}),
+          }),
+        ]);
+        await enqueueAdvance(deps, tx, { run_id: id, reason: "go" }, "go");
+        return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 } };
       });
-      if (!t.ok) return { ok: false as const, status: 409 as const, message: t.error.message };
-      const [updated] = await tx
-        .update(runs)
-        .set({ state: t.to, updatedAt: sql`now()` })
-        .where(eq(runs.id, id))
-        .returning();
-      const { lastSeq } = await appendEvents(tx, id, [
-        stateChanged(id, actor, t.from, t.to, { command: "go" }),
-      ]);
-      await enqueueAdvance(deps, tx, { run_id: id, reason: "go" }, "go");
-      return { ok: true as const, run: { ...updated!, nextSeq: lastSeq + 1 } };
-    });
-    if (!moved.ok) return fail(c, moved.status === 404 ? "not_found" : "conflict", moved.message);
+    } catch (err) {
+      if (free.kind === "reserved" && free.created) {
+        await releaseFreeRunAfterFailedGo(c, deps, id);
+      }
+      throw err;
+    }
+    if (!moved.ok) {
+      if (free.kind === "reserved" && free.created) {
+        await releaseFreeRunAfterFailedGo(c, deps, id);
+      }
+      return fail(c, moved.status === 404 ? "not_found" : "conflict", moved.message);
+    }
     return send(c, route, { run: toRun(moved.run) });
   });
 

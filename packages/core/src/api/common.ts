@@ -92,9 +92,55 @@ export const PAYMENT_REQUIRED_REASONS = [
   "daily_cap",
 ] as const;
 export const PaymentRequiredReasonSchema = z.enum(PAYMENT_REQUIRED_REASONS);
+
+/**
+ * Why a Go did not get the free starter run (E20, TDM-224), so it fell back to the card gate:
+ * the starter limits (packages/billing isStarterRun), the account (freeRunEligibility), or the
+ * pool (`pool_exhausted`: free runs are paused right now).
+ */
+export const FREE_RUN_REFUSAL_REASONS = [
+  // isStarterRun
+  "too_many_setups",
+  "too_many_trials",
+  "managed_tokens",
+  "undeclared_tokens",
+  "no_byok_key",
+  "missing_provider_key",
+  "over_compute_cap",
+  "pool_off",
+  // freeRunEligibility
+  "unknown_user",
+  "no_github_account_age",
+  "github_account_too_new",
+  "already_used",
+  "in_use",
+  // the pool
+  "pool_exhausted",
+] as const;
+export const FreeRunRefusalReasonSchema = z.enum(FREE_RUN_REFUSAL_REASONS);
+export type FreeRunRefusalReason = z.infer<typeof FreeRunRefusalReasonSchema>;
+
+export const FreeRunRefusalSchema = z.object({
+  /** The first (main) reason. */
+  reason: FreeRunRefusalReasonSchema,
+  /** Every reason, each in plain words (a run can break several starter limits at once). */
+  reasons: z
+    .array(z.object({ code: FreeRunRefusalReasonSchema, message: z.string().min(1) }))
+    .min(1),
+  /** One plain sentence for the Go screen. */
+  message: z.string().min(1),
+});
+export type FreeRunRefusal = z.infer<typeof FreeRunRefusalSchema>;
+
 export const PaymentRequiredSchema = z.object({
   reason: PaymentRequiredReasonSchema,
   link_card_url: z.url(),
+  /**
+   * TDM-224: present when the free starter run was considered and did not apply; says why
+   * (starter limit, free run already used, free runs paused). Absent when it was never in play
+   * (a comped run, BILLING_MODE=off).
+   */
+  free_run: FreeRunRefusalSchema.optional(),
 });
 export type PaymentRequired = z.infer<typeof PaymentRequiredSchema>;
 

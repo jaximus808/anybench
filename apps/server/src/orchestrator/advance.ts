@@ -60,10 +60,12 @@ import {
   type RunState,
 } from "@anybench/core";
 import { expandTrials, expandTrialsInputFromKit, TRIAL_MAX_ATTEMPTS } from "@anybench/bench";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
+import { computers } from "../db/schema/computers.js";
 import { contenders } from "../db/schema/contenders.js";
+import { freeStarterRuns } from "../db/schema/free_starter_runs.js";
 import { kits } from "../db/schema/kits.js";
 import { PreregSchema, preregMismatch, preregistrationOf } from "./prereg.js";
 import { projects } from "../db/schema/projects.js";
@@ -200,6 +202,12 @@ export interface OrchestratorDeps {
   beforeStage?: (state: RunState, signal: AbortSignal) => Promise<void>;
   /** In each state change's transaction (run-email: enqueue run.notify). */
   onStateChange?: OrchestratorStoreOptions["onStateChange"];
+  /**
+   * TDM-224: FREE_RUN_CAP_MICRO_USD. A running free starter run whose computers have cost us this
+   * much (computers.cost_micro_usd, our cost) is held in paused_budget: no more trials launch.
+   * Unset = no free-run cap check (tests, tools).
+   */
+  freeRunCapMicroUsd?: bigint;
 }
 
 export interface AdvanceOptions {
@@ -219,6 +227,24 @@ export type AdvanceOutcome =
   /** Trials in flight: run.advance is scheduled again at `at`. */
   | { kind: "polling"; state: RunState; at: Date }
   | { kind: "finalized"; state: RunState };
+
+/**
+ * TDM-224: what a run holding a free starter run (free_starter_runs `reserved`) has cost us in
+ * computers so far, at registry cost; null when the run holds no free run.
+ */
+export async function freeRunComputeSpent(db: Database, runId: string): Promise<bigint | null> {
+  const [held] = await db
+    .select({ id: freeStarterRuns.id })
+    .from(freeStarterRuns)
+    .where(and(eq(freeStarterRuns.runId, runId), eq(freeStarterRuns.state, "reserved")))
+    .limit(1);
+  if (!held) return null;
+  const [row] = await db
+    .select({ sum: sql<string>`coalesce(sum(${computers.costMicroUsd}), 0)::text` })
+    .from(computers)
+    .where(eq(computers.runId, runId));
+  return BigInt(row?.sum ?? "0");
+}
 
 const MAX_STEPS = 64;
 const ORCHESTRATOR_MAX_ATTEMPTS = 5;
@@ -475,6 +501,16 @@ class RunAdvance {
       run.spentMicroUsd >= run.budgetMicroUsd
     ) {
       return this.hold(run, "pause_budget", "the run spent its budget");
+    }
+    if (run.state === "running" && this.deps.freeRunCapMicroUsd !== undefined) {
+      const spent = await freeRunComputeSpent(this.deps.db, run.id);
+      if (spent !== null && spent >= this.deps.freeRunCapMicroUsd) {
+        return this.hold(
+          run,
+          "pause_budget",
+          `the free run reached its compute cap (${spent} of ${this.deps.freeRunCapMicroUsd} micro-USD at our cost): settle it to score the trials it has, or cancel it`,
+        );
+      }
     }
 
     if (this.deps.beforeStage) {

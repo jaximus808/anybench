@@ -236,6 +236,8 @@ describe.skipIf(!available)("link a card, then Go (stripe-onboarding)", () => {
     expect(PaymentRequiredSchema.parse(await refused.json())).toEqual({
       reason: "no_payment_method",
       link_card_url: `${WEB}/settings/billing?run=${runId}`,
+      // TDM-224: the free run was considered; this seeded account has no GitHub age, so no.
+      free_run: expect.objectContaining({ reason: "no_github_account_age" }),
     });
 
     // 2. The billing page: no card yet, test mode.

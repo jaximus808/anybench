@@ -1,8 +1,8 @@
 "use client";
-// Billing (stripe-onboarding, plan.md section 8): the onboarding step after sign-up and where the
-// run gate's 402 "Add a card" link lands (/settings/billing redirects here).
+// Billing (stripe-onboarding, plan.md section 8): where the run gate's 402 "Add a card" link lands
+// (/settings/billing redirects here). Since TDM-224 sign-up lands on /welcome instead (the first
+// benchmark is free, the card optional); this page also shows whether the free run is left.
 //
-//   ?welcome=1   first visit after sign-up: "one step left, add a card".
 //   ?run=<id>    a run is waiting on the card: once it is saved, "Start your run" presses Go.
 //   ?linked=1    back from Stripe Checkout: poll the summary until the card shows (the server
 //                re-reads Stripe, so this works even while the webhook is on its way).
@@ -23,23 +23,22 @@ import { usd } from "../../components/live/format";
 import { api, apiErrorMessage } from "../../lib/api";
 import { useSession } from "../../lib/session";
 import styles from "../settings/settings.module.css";
+import { FreeRunNote } from "../welcome/FreeRunNote";
 
 /** How long to wait for Stripe to confirm a card after Checkout returns. */
 const LINK_POLL_MS = 2_000;
 const LINK_POLL_TRIES = 20;
 
 interface Params {
-  welcome: boolean;
   linked: boolean;
   runId: RunId | null;
 }
 
 function readParams(): Params {
-  if (typeof window === "undefined") return { welcome: false, linked: false, runId: null };
+  if (typeof window === "undefined") return { linked: false, runId: null };
   const q = new URLSearchParams(window.location.search);
   const run = RunIdSchema.safeParse(q.get("run"));
   return {
-    welcome: q.get("welcome") === "1",
     linked: q.get("linked") === "1",
     runId: run.success ? run.data : null,
   };
@@ -69,7 +68,7 @@ export function BillingView({
   const session = useSession();
   const router = useRouter();
   const client = injected ?? api();
-  const [params, setParams] = useState<Params>({ welcome: false, linked: false, runId: null });
+  const [params, setParams] = useState<Params>({ linked: false, runId: null });
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"link" | "portal" | "go" | null>(null);
@@ -194,13 +193,7 @@ export function BillingView({
 
   return (
     <div className={`wrap ${styles.page}`}>
-      <h1>{params.welcome && !ready ? "One step left: add a card" : "Billing"}</h1>
-      {params.welcome && !ready ? (
-        <p className="lede">
-          Your account is ready. Add a card so you can press Go on a run. You aren&rsquo;t charged
-          now; you pay for the runs you start, billed monthly.
-        </p>
-      ) : null}
+      <h1>Billing</h1>
 
       {error ? (
         <p className={styles.error} role="alert">
@@ -250,6 +243,13 @@ export function BillingView({
           </p>
         ) : null}
       </section>
+
+      {summary?.free_run && summary.mode !== "off" ? (
+        <section className={styles.card} aria-labelledby="free-run-title">
+          <h2 id="free-run-title">Your free run</h2>
+          <FreeRunNote free={summary.free_run} />
+        </section>
+      ) : null}
 
       {params.runId ? (
         <section className={styles.card} aria-labelledby="run-title">

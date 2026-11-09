@@ -164,6 +164,8 @@ export function orchestratorDeps(
     charges: options.charges ? options.charges(ctx) : ledgerCharges(ctx.db, ctx.config),
     owner: leaseOwnerBase(ctx.workerId, ctx.workerStartedAt),
     paused: ctx.config.ANYBENCH_PAUSE,
+    // TDM-224: a free starter run stops launching trials once its compute reaches the cap.
+    freeRunCapMicroUsd: ctx.config.FREE_RUN_CAP_MICRO_USD,
     logger: ctx.logger.child({ job: RUN_ADVANCE_JOB }),
     ...(options.timing ? { timing: options.timing } : {}),
     ...(options.workerMaxTickAgeMs !== undefined

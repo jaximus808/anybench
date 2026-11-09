@@ -4,7 +4,13 @@
 import { z } from "zod";
 import { CreditGrantIdSchema, RunIdSchema, TrialIdSchema, UsageEntryIdSchema } from "../ids.js";
 import { MicroUsdSchema, NonNegativeMicroUsdSchema } from "../money.js";
-import { IsoDateTimeSchema, PageQuerySchema, csvListSchema, pageOf } from "./common.js";
+import {
+  FreeRunRefusalReasonSchema,
+  IsoDateTimeSchema,
+  PageQuerySchema,
+  csvListSchema,
+  pageOf,
+} from "./common.js";
 import { defineRoute, defineRoutes } from "./route.js";
 
 export const PAYMENT_STATUSES = ["none", "ok", "past_due", "blocked"] as const;
@@ -73,6 +79,33 @@ export const InvoiceSummarySchema = z.object({
   hosted_invoice_url: z.url().nullable(),
 });
 
+/**
+ * The account's free starter run (E20, TDM-224), for onboarding and the billing page:
+ *   available     the account still has it and the pool is open: Go needs no card for a starter run
+ *   in_use        it is held by a run that has not finished (`run_id`)
+ *   used          the account used it (`run_id`)
+ *   not_eligible  the account never gets one (`reason`: no GitHub account age, account too new)
+ *   paused        the account has it, but the pool cannot fund a run right now (`reason`
+ *                 pool_exhausted, or pool_off when free runs are switched off)
+ */
+export const FREE_RUN_STATUSES = ["available", "in_use", "used", "not_eligible", "paused"] as const;
+export const FreeRunStatusSchema = z.object({
+  status: z.enum(FREE_RUN_STATUSES),
+  reason: FreeRunRefusalReasonSchema.nullable(),
+  /** One plain sentence about it. */
+  message: z.string().min(1),
+  run_id: RunIdSchema.nullable(),
+  /** A BYOK model key (Anthropic or OpenAI) is stored: a free run needs one. */
+  has_model_key: z.boolean(),
+  limits: z.object({
+    max_setups: z.int().positive(),
+    max_trials: z.int().nonnegative(),
+    /** Compute at our cost (FREE_RUN_CAP_MICRO_USD). */
+    compute_cap_micro_usd: NonNegativeMicroUsdSchema,
+  }),
+});
+export type FreeRunStatus = z.infer<typeof FreeRunStatusSchema>;
+
 export const BillingSummarySchema = z.object({
   account: BillingAccountSchema,
   period: z.object({
@@ -83,6 +116,8 @@ export const BillingSummarySchema = z.object({
   grants: z.array(CreditGrantSchema),
   invoices: z.array(InvoiceSummarySchema),
   mode: z.enum(["off", "test", "live"]),
+  /** TDM-224: the free starter run. Optional so an older server still parses. */
+  free_run: FreeRunStatusSchema.optional(),
 });
 export type BillingSummary = z.infer<typeof BillingSummarySchema>;
 

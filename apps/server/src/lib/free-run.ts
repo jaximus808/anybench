@@ -10,23 +10,271 @@
 //   settleFreeRun(db, {runId})                    run terminal; the ledger already calls it after
 //                                                 recordRunCharges and recordComputerUsage
 //
+// TDM-224 adds the Go side here:
+//
+//   freeRunAtGo(deps, {userId, run})      POST /runs/:id/go, BEFORE the card gate: try to take the
+//                                         free run. `skip` (not in play: BILLING_MODE=off, a comped
+//                                         run, an admin's run, a kit that does not parse),
+//                                         `reserved` (Go needs no card), `refused` (say why; the
+//                                         card gate then decides as before) or `conflict` (the run
+//                                         moved under us: 409).
+//   freeRunRefusalMessage(code, config)   every refusal reason in plain words.
+//   freeRunStatusFor(db, config, userId)  the billing summary's `free_run` (onboarding shows it).
+//
 // All of them run on the privileged pool role (the tenant role cannot write these tables).
-import type { FreeRunConfigInput } from "@anybench/billing";
+import {
+  BYOK_PROVIDERS,
+  estimateRunCost,
+  FREE_RUN_MAX_SETUPS,
+  FREE_RUN_MIN_GITHUB_AGE_DAYS,
+  freePoolStatus,
+  freeRunEligibility,
+  reserveFreeRun,
+  type FreeRunConfigInput,
+} from "@anybench/billing";
+import {
+  safeParseKitSpec,
+  type FreeRunRefusal,
+  type FreeRunRefusalReason,
+  type FreeRunStatus,
+  type MicroUsd,
+} from "@anybench/core";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.js";
+import type { Database } from "../db/client.js";
+import { kits, runs, userSecrets, users } from "../db/schema/index.js";
+import { isUploadedKitRun } from "../orchestrator/ports.js";
+import { isAdminLogin } from "./admin.js";
 
-export function freeRunConfigFrom(
-  config: Pick<
-    Config,
-    | "FREE_RUN_POOL_MICRO_USD"
-    | "FREE_RUN_CAP_MICRO_USD"
-    | "FREE_RUN_MAX_TRIALS"
-    | "RUN_FEE_MICRO_USD"
-  >,
-): FreeRunConfigInput {
+type FreeRunConfigKeys =
+  | "FREE_RUN_POOL_MICRO_USD"
+  | "FREE_RUN_CAP_MICRO_USD"
+  | "FREE_RUN_MAX_TRIALS"
+  | "RUN_FEE_MICRO_USD";
+
+export function freeRunConfigFrom(config: Pick<Config, FreeRunConfigKeys>): FreeRunConfigInput {
   return {
     poolMicroUsd: config.FREE_RUN_POOL_MICRO_USD,
     capMicroUsd: config.FREE_RUN_CAP_MICRO_USD,
     maxTrials: config.FREE_RUN_MAX_TRIALS,
     runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+  };
+}
+
+/** Dollars from integer micro-USD for messages ("$10", "$2.50"); cents truncated. Bigint only. */
+export function dollars(micro: MicroUsd): string {
+  const cents = micro / 10_000n;
+  const whole = cents / 100n;
+  const rest = cents % 100n;
+  return rest === 0n ? `$${whole}` : `$${whole}.${rest.toString().padStart(2, "0")}`;
+}
+
+type MessageConfig = Pick<Config, "FREE_RUN_CAP_MICRO_USD" | "FREE_RUN_MAX_TRIALS">;
+
+/** Every reason the free run did not apply, in plain words (the Go screen shows it as is). */
+export function freeRunRefusalMessage(code: FreeRunRefusalReason, config: MessageConfig): string {
+  switch (code) {
+    case "too_many_setups":
+      return `A free run compares at most ${FREE_RUN_MAX_SETUPS} setups, and this test plan has more. Drop a contender, or add a card to run it as is.`;
+    case "too_many_trials":
+      return `A free run has at most ${config.FREE_RUN_MAX_TRIALS} trials, and this test plan has more. Lower the repeats, or add a card to run it as is.`;
+    case "managed_tokens":
+      return "A free run uses your own model key, but a contender in this test plan runs on Anybench's tokens. Switch it to your Anthropic or OpenAI key, or add a card.";
+    case "undeclared_tokens":
+      return "A free run uses your own model key, but an agent in this test plan doesn't say which key it uses. Set it to your Anthropic or OpenAI key, or add a card.";
+    case "no_byok_key":
+      return "A free run uses your own model key. Add your Anthropic or OpenAI key in Settings, or add a card.";
+    case "missing_provider_key":
+      return "This test plan needs a model key you haven't added yet. Add it in Settings, or add a card.";
+    case "over_compute_cap":
+      return `This run needs more compute than a free run covers (${dollars(config.FREE_RUN_CAP_MICRO_USD)}). Make it smaller, or add a card to run it as is.`;
+    case "pool_off":
+      return "Free runs are off right now. Add a card to run at the normal price.";
+    case "pool_exhausted":
+      return "Free runs are paused right now. Add a card to run at the normal price.";
+    case "unknown_user":
+      return "This account has no free run. Add a card to continue.";
+    case "no_github_account_age":
+      return `Free runs are for GitHub accounts older than ${FREE_RUN_MIN_GITHUB_AGE_DAYS} days, and we couldn't read your account's age. Add a card to continue.`;
+    case "github_account_too_new":
+      return `Free runs are for GitHub accounts older than ${FREE_RUN_MIN_GITHUB_AGE_DAYS} days. Add a card to continue.`;
+    case "already_used":
+      return "You've used your free run. Add a card to continue.";
+    case "in_use":
+      return "Your free run is in use on another run. Add a card to start this one too, or wait for that run to finish.";
+  }
+}
+
+function refusalOf(codes: FreeRunRefusalReason[], config: MessageConfig): FreeRunRefusal {
+  const reasons = codes.map((code) => ({ code, message: freeRunRefusalMessage(code, config) }));
+  return { reason: reasons[0]!.code, reasons, message: reasons[0]!.message };
+}
+
+export type FreeRunAtGo =
+  /** The free run is not in play (BILLING_MODE=off, a comped or admin run, an unreadable kit). */
+  | { kind: "skip" }
+  /** This run holds the free run; `created` = this call reserved it (false: a repeated Go). */
+  | { kind: "reserved"; created: boolean; reserveMicroUsd: MicroUsd }
+  /** Not free; the card gate decides, and its 402 carries this. */
+  | { kind: "refused"; refusal: FreeRunRefusal }
+  /** The run moved under us (not awaiting_go, not this owner's, kit origin changed): 409. */
+  | { kind: "conflict"; message: string };
+
+export interface FreeRunGoDeps {
+  db: Database;
+  config: Pick<
+    Config,
+    | FreeRunConfigKeys
+    | "BILLING_MODE"
+    | "adminGithubLogins"
+    | "UPLOADED_KIT_RUN_FEE_MICRO_USD"
+    | "COMPUTE_MARKUP_BPS"
+    | "COMPUTER_BLOCK_PRICE_MICRO_USD"
+  >;
+}
+
+export type FreeRunGoRun = Pick<typeof runs.$inferSelect, "id" | "kitId" | "intake" | "compedBy">;
+
+/**
+ * Go's free path (TDM-224). Runs BEFORE the card gate, so an eligible account's first starter run
+ * is free even with a card on file. The reservation (entitlement + pool) is one transaction in
+ * packages/billing reserveFreeRun; the caller moves the run out of awaiting_go afterwards and must
+ * releaseFreeRun when it reserved (`created`) and that move fails.
+ */
+export async function freeRunAtGo(
+  deps: FreeRunGoDeps,
+  input: { userId: string; run: FreeRunGoRun },
+): Promise<FreeRunAtGo> {
+  const { db, config } = deps;
+  if (config.BILLING_MODE === "off") return { kind: "skip" };
+  // A comped run bills nothing, and an admin's run is comped by the gate (founder demo): neither
+  // spends the account's free run or the pool.
+  if (input.run.compedBy !== null) return { kind: "skip" };
+  const [owner] = await db
+    .select({ githubLogin: users.githubLogin })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1);
+  if (owner && isAdminLogin(config, owner.githubLogin)) return { kind: "skip" };
+  if (!input.run.kitId) return { kind: "skip" };
+  const [kit] = await db
+    .select({ spec: kits.spec })
+    .from(kits)
+    .where(eq(kits.id, input.run.kitId))
+    .limit(1);
+  const spec = kit ? safeParseKitSpec(kit.spec) : null;
+  if (!spec?.success) return { kind: "skip" };
+  const estimate = estimateRunCost(
+    spec.data,
+    {
+      runFeeMicroUsd: config.RUN_FEE_MICRO_USD,
+      uploadedKitRunFeeMicroUsd: config.UPLOADED_KIT_RUN_FEE_MICRO_USD,
+      computeMarkupBps: config.COMPUTE_MARKUP_BPS,
+      defaultBlockPriceMicroUsd: config.COMPUTER_BLOCK_PRICE_MICRO_USD,
+    },
+    { kitOrigin: isUploadedKitRun(input.run.intake) ? "uploaded" : "generated" },
+  );
+  const result = await reserveFreeRun(
+    db,
+    { userId: input.userId, runId: input.run.id, kit: spec.data, estimate },
+    freeRunConfigFrom(config),
+  );
+  if (result.status === "reserved" || result.status === "duplicate") {
+    return {
+      kind: "reserved",
+      created: result.status === "reserved",
+      reserveMicroUsd: result.freeRun.reservedMicroUsd,
+    };
+  }
+  switch (result.reason) {
+    case "not_eligible":
+      return { kind: "refused", refusal: refusalOf([result.eligibility], config) };
+    case "not_starter":
+      return {
+        kind: "refused",
+        refusal: refusalOf(
+          result.rejections.map((r) => r.code),
+          config,
+        ),
+      };
+    case "pool_exhausted":
+      return { kind: "refused", refusal: refusalOf(["pool_exhausted"], config) };
+    default:
+      return { kind: "conflict", message: result.message };
+  }
+}
+
+/** The billing summary's `free_run`: does this account still have its free run, and can it Go? */
+export async function freeRunStatusFor(
+  db: Database,
+  config: Pick<Config, FreeRunConfigKeys>,
+  userId: string,
+): Promise<FreeRunStatus> {
+  const freeConfig = freeRunConfigFrom(config);
+  const [eligibility, pool, keys] = await Promise.all([
+    freeRunEligibility(db, userId, { config: freeConfig }),
+    freePoolStatus(db, freeConfig),
+    db
+      .select({ provider: userSecrets.provider })
+      .from(userSecrets)
+      .where(
+        and(eq(userSecrets.ownerId, userId), inArray(userSecrets.provider, [...BYOK_PROVIDERS])),
+      ),
+  ]);
+  const base = {
+    has_model_key: keys.length > 0,
+    limits: {
+      max_setups: FREE_RUN_MAX_SETUPS,
+      max_trials: config.FREE_RUN_MAX_TRIALS,
+      compute_cap_micro_usd: config.FREE_RUN_CAP_MICRO_USD,
+    },
+  };
+  if (!eligibility.eligible) {
+    const reason = eligibility.reason;
+    const runId = (eligibility.runId ?? null) as FreeRunStatus["run_id"];
+    if (reason === "in_use") {
+      return {
+        status: "in_use",
+        reason,
+        message: "Your free run is in progress.",
+        run_id: runId,
+        ...base,
+      };
+    }
+    if (reason === "already_used") {
+      return {
+        status: "used",
+        reason,
+        message: "You've used your free run. Add a card to keep benchmarking.",
+        run_id: runId,
+        ...base,
+      };
+    }
+    return {
+      status: "not_eligible",
+      reason,
+      message: freeRunRefusalMessage(reason, config),
+      run_id: null,
+      ...base,
+    };
+  }
+  if (config.FREE_RUN_POOL_MICRO_USD === 0n || pool.state === "paused") {
+    const reason = config.FREE_RUN_POOL_MICRO_USD === 0n ? "pool_off" : "pool_exhausted";
+    return {
+      status: "paused",
+      reason,
+      message: freeRunRefusalMessage(reason, config),
+      run_id: null,
+      ...base,
+    };
+  }
+  return {
+    status: "available",
+    reason: null,
+    message: base.has_model_key
+      ? "Your first benchmark is free: no card needed."
+      : "Your first benchmark is free: no card needed. Add your Anthropic or OpenAI key to use it.",
+    run_id: null,
+    ...base,
   };
 }

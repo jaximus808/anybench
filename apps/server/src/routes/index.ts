@@ -33,6 +33,7 @@ import { reportsRoutes } from "./reports.js";
 import { runnerRoutes } from "./runner.js";
 import { runsRoutes } from "./runs.js";
 import { scanRoutes } from "./scan.js";
+import { secretsRoutes } from "./secrets.js";
 import { suggestRoutes } from "./suggest.js";
 import { trialLogsRoutes } from "./trial-logs.js";
 import { runTrialsRoutes, trialsRoutes } from "./trials.js";
@@ -100,6 +101,8 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
   // Publish: POST/GET /runs/:id/publication(/unpublish), public /public/r/:slug and the keyset.
   app.route("/", publicationsRoutes(deps));
   app.route("/scans", scanRoutes(deps));
+  // TDM-224: BYOK model keys (write-only; session users only). Onboarding and Settings store them.
+  app.route("/secrets", secretsRoutes(deps));
   // TDM-74: trial logs need `logs:read`; the handler checks a run-scoped key against the trial's run.
   app.use("/trials/:id/log", requireScope(deps, "logs:read"));
   app.use("/trials/:id/logs", requireScope(deps, "logs:read"));

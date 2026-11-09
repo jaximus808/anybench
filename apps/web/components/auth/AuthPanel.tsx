@@ -42,7 +42,7 @@ export function authErrorMessage(code: string | null): string | null {
 export function AuthPanel({ mode }: { mode: AuthMode }) {
   const session = useSession();
   const [authError, setAuthError] = useState<string | null>(null);
-  // Sign-up lands on the add-a-card step (/billing?welcome=1) unless a redirect_to says otherwise.
+  // Sign-up lands on onboarding (/welcome: model key, card optional) unless a redirect_to says otherwise.
   const fallback = mode === "signup" ? POST_SIGN_UP_PATH : POST_SIGN_IN_PATH;
   const [redirectTo, setRedirectTo] = useState<string>(fallback);
   const copy = COPY[mode];

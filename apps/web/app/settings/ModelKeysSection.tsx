@@ -10,7 +10,8 @@ export const MODEL_PROVIDERS = [
   { id: "openai", label: "OpenAI", placeholder: "sk-…" },
 ] as const;
 
-export function ModelKeysSection() {
+/** `onChange`: a key was saved or removed (onboarding re-reads whether the free run can be used). */
+export function ModelKeysSection({ onChange }: { onChange?: () => void } = {}) {
   const [secrets, setSecrets] = useState<SecretSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,10 +29,14 @@ export function ModelKeysSection() {
     void refresh();
   }, [refresh]);
 
-  const upsert = (s: SecretSummary) =>
+  const upsert = (s: SecretSummary) => {
     setSecrets((prev) => [...(prev ?? []).filter((x) => x.provider !== s.provider), s]);
-  const remove = (provider: string) =>
+    onChange?.();
+  };
+  const remove = (provider: string) => {
     setSecrets((prev) => (prev ?? []).filter((x) => x.provider !== provider));
+    onChange?.();
+  };
 
   return (
     <section className={styles.card} aria-labelledby="model-keys-title">

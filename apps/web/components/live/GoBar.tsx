@@ -2,7 +2,10 @@
 // The Go bar (stripe-onboarding): while a run waits in `awaiting_go`, press Go here. The server's
 // billing gate answers 402 {reason, link_card_url} when no card is on file; the bar then links to
 // the billing page for this run (which can press Go itself once the card is saved). Admin runs are
-// comped by the gate (founder demo) and simply start.
+// comped by the gate (founder demo) and simply start. TDM-224: an account's first starter run is
+// free and starts with no card; when the free run did not apply, the 402's `free_run.message` says
+// why in plain words (a starter limit, free run already used, free runs paused) and is shown
+// instead of the generic card line.
 import { ApiClientError, type RunId } from "@anybench/core";
 import { useState } from "react";
 import { apiErrorMessage } from "../../lib/api";
@@ -12,7 +15,14 @@ import { usd } from "./format";
 import styles from "./live.module.css";
 
 export type GoFailure =
-  { kind: "payment"; href: string; reason: string } | { kind: "message"; text: string };
+  | {
+      kind: "payment";
+      href: string;
+      reason: string;
+      /** Why the free run did not apply (the 402's free_run.message), when it was in play. */
+      freeRun?: string;
+    }
+  | { kind: "message"; text: string };
 
 const PAYMENT_WORDS: Record<string, string> = {
   no_payment_method: "Add a card to start this run. You aren't charged until it runs.",
@@ -59,6 +69,9 @@ export function useGoAction(runId: string): GoAction {
           kind: "payment",
           href: goCardHref(err.paymentRequired.link_card_url, runId),
           reason: err.paymentRequired.reason,
+          ...(err.paymentRequired.free_run
+            ? { freeRun: err.paymentRequired.free_run.message }
+            : {}),
         });
       } else {
         setFailure({ kind: "message", text: apiErrorMessage(err) });
@@ -76,7 +89,9 @@ export function GoFailureText({ failure }: { failure: GoFailure | null }) {
   if (failure.kind === "payment")
     return (
       <>
-        {PAYMENT_WORDS[failure.reason] ?? "Billing needs attention before this run can start."}{" "}
+        {(failure.reason === "no_payment_method" ? failure.freeRun : undefined) ??
+          PAYMENT_WORDS[failure.reason] ??
+          "Billing needs attention before this run can start."}{" "}
         <a href={failure.href}>Add a card</a>
       </>
     );

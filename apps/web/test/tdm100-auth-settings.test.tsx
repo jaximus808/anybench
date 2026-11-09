@@ -145,12 +145,12 @@ describe("/signin and /signup", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("/signup uses the same GitHub flow, lands on the add-a-card step, and links back to sign in", () => {
+  it("/signup uses the same GitHub flow, lands on onboarding (/welcome), and links back to sign in", () => {
     mockApi({ "GET /auth/me": unauthorized });
     render(<SignUpPage />);
     expect(screen.getByRole("heading", { level: 1, name: "Create your Anybench account" }));
     expect(screen.getByRole("link", { name: "Continue with GitHub" }).getAttribute("href")).toBe(
-      `${API}/auth/github?redirect_to=${encodeURIComponent("/billing?welcome=1")}`,
+      `${API}/auth/github?redirect_to=${encodeURIComponent("/welcome")}`,
     );
     expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe("/signin");
   });

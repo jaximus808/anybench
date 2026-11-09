@@ -1,7 +1,8 @@
 // Billing routes (stripe-onboarding; contract apiRoutes.billing in @anybench/core, plan.md section 8).
 // Mounted at /billing (session users only):
 //   GET  /billing/summary    the account the run gate reads (card on file, payment status, unbilled
-//                            usage, spend limit) and this month's usage. While a Customer exists but
+//                            usage, spend limit), this month's usage, and (TDM-224) `free_run`:
+//                            whether the account still has its free starter run and a model key. While a Customer exists but
 //                            no card is recorded yet, it re-reads Stripe first, so the page shows
 //                            the card as soon as Checkout returns even if the webhook is late.
 //   POST /billing/link-card  Stripe Checkout (mode subscription, the metered usage price): saves a
@@ -27,6 +28,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Config } from "../config.js";
 import { usageEntries } from "../db/schema/index.js";
 import { requireSessionActor, type ActorEnv } from "../lib/auth-key.js";
+import { freeRunStatusFor } from "../lib/free-run.js";
 import {
   ensureStripeCustomer,
   loadBillingAccount,
@@ -127,6 +129,7 @@ export function billingRoutes(deps: BillingRouteDeps): Hono<ActorEnv> {
       grants: [],
       invoices: [],
       mode: port ? port.mode : deps.config.BILLING_MODE,
+      free_run: await freeRunStatusFor(deps.db, deps.config, actor.userId),
     };
     return c.json(encodeRouteResponse(contract.summary, result) as object, 200);
   });
