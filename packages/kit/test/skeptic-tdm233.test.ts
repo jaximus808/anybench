@@ -8,6 +8,11 @@
 //   - proof.do_less partial-oracle — the oracle with the webhooks area cut out (real: before it,
 //     nothing showed the gate refuses a near miss).
 // Every exemption needs the declaration, and the undeclared fixtures (skeptic-tdm187) still block.
+//
+// TDM-240: the xl gate (gates/hidden-tests/project-tracker-xl/) keeps growing (TDM-236, 237, and an
+// xl oracle in TDM-238), so these tests assert what the checks guarantee (no block, each
+// declaration disclosed with counts, the blocks back without it, evidence by pattern), never
+// exact counts or the one file a copied line was first found in.
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -53,25 +58,104 @@ const INSTR = "workloads/project-tracker/instruction.md";
 const appendToInstr = (d: string, text: string) =>
   writeFileSync(path.join(d, INSTR), `${readFileSync(path.join(d, INSTR), "utf8")}\n${text}\n`);
 
+/** A workload's contract disclosure (warn) and the counts it states. */
+function contractWarnTdm240(fs: readonly SkepticFinding[], workload: string) {
+  const f = fs.find(
+    (x) =>
+      x.check === "solution_leakage" &&
+      x.why.startsWith(`workload '${workload}' declares its instruction a contract`),
+  );
+  if (!f) return null;
+  const n = (re: RegExp) => Number(re.exec(f.why)?.[1] ?? Number.NaN);
+  return {
+    finding: f,
+    names: n(/(\d+) hidden test name\(s\)/),
+    messages: n(/(\d+) assertion message\(s\)/),
+    values: n(/(\d+) asserted value\(s\)/),
+    oracleLines: n(/oracle's code \((\d+) lines compared/),
+    testLines: n(/hidden tests' code \((\d+) lines compared/),
+    copiesNone: /it copies no line of the oracle's code/.test(f.why),
+  };
+}
+
+/** The fixture-copy disclosures (warn) among a run's findings. */
+const fixtureWarnsTdm240 = (fs: readonly SkepticFinding[]) =>
+  fs.filter((f) => f.check === "answer_in_workloads" && /declares as its own copy/.test(f.why));
+
+const XL_GATE = "gates/hidden-tests/project-tracker-xl";
+const XL_INSTR = "workloads/project-tracker-xl/instruction.md";
+/** Lists project-tracker-xl in the manifest, as a contract (what TDM-238 will do). */
+const listXlTdm240 = (d: string) =>
+  replaceInTdm233(
+    path.join(d, "anybench.yaml"),
+    "\n# Collectors are omitted on purpose",
+    [
+      "  - id: project-tracker-xl",
+      "    title: Build the xl project tracker API",
+      "    input: workloads/project-tracker-xl/input/",
+      "    instruction: workloads/project-tracker-xl/instruction.md",
+      "    instruction_kind: contract",
+      "    setup: workloads/project-tracker-xl/setup.sh",
+      "    timeout_s: 10800",
+      "",
+      "# Collectors are omitted on purpose",
+    ].join("\n"),
+  );
+/** Gives the xl gate its own copy of tracker-v1.json (TDM-236 ships one; idempotent). */
+const addXlFixtureTdm240 = (d: string) => {
+  mkdirSync(path.join(d, XL_GATE, "fixtures"), { recursive: true });
+  cpSync(
+    path.join(d, "workloads/project-tracker-xl/input/fixtures/tracker-v1.json"),
+    path.join(d, XL_GATE, "fixtures/tracker-v1.json"),
+  );
+};
+/** Code lines unique to the synthetic xl test (24+ chars, code punctuation, in no other file). */
+const SYNTHETIC_CODE_TDM240 = [
+  '  const synthetic = await api.call("GET", "/synthetic/tdm240", undefined, w.owner.token);',
+  '  assert.equal(synthetic.body.items.length, 240, "synthetic: one item per ticket");',
+  '  assert.deepEqual(synthetic.body.order, ["tdm", "two", "forty"]);',
+];
+/** A synthetic extra xl hidden test file: a contract sentence as its name, plus its own code. */
+const addSyntheticXlTestTdm240 = (d: string) =>
+  writeFileSync(
+    path.join(d, XL_GATE, "zz-synthetic-tdm240.test.ts"),
+    [
+      'import assert from "node:assert/strict";',
+      'import { test } from "node:test";',
+      "",
+      'test("two apps created in the same process share no state", async (t) => {',
+      ...SYNTHETIC_CODE_TDM240,
+      "});",
+      "",
+    ].join("\n"),
+  );
+
 describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
   it("passes with zero blocking issues; the contract and the fixture copy are disclosed as warnings", async () => {
     const r = await runSkepticChecks(LH_KIT);
     expect(blocksTdm233(r.findings)).toEqual([]);
     expect(decideSkepticVerdict(r.findings)).toBe("pass");
-    const contract = r.findings.find(
-      (f) => f.check === "solution_leakage" && /declares its instruction a contract/.test(f.why),
-    );
-    expect(contract).toMatchObject({
+    const c = contractWarnTdm240(r.findings, "project-tracker");
+    expect(c).not.toBeNull();
+    expect(c!.finding).toMatchObject({
       severity: "warn",
       evidence: expect.stringMatching(/^anybench\.yaml:\d+$/),
     });
-    expect(contract!.why).toMatch(/copies no line of the oracle's code \(\d+ lines compared\)/);
-    const fixture = r.findings.find((f) => f.check === "answer_in_workloads");
-    expect(fixture).toMatchObject({
-      severity: "warn",
-      evidence: "workloads/project-tracker/input/fixtures/tracker-v1.json:1",
-    });
-    expect(fixture!.why).toMatch(/gate 'hidden-tests' declares as its own copy/);
+    // What the declaration covered, and that it was checked: no copied code, real comparisons.
+    expect(c!.names + c!.messages + c!.values).toBeGreaterThan(0);
+    expect(c!.values).toBeGreaterThan(0);
+    expect(c!.copiesNone).toBe(true);
+    expect(c!.oracleLines).toBeGreaterThan(0);
+    expect(c!.testLines).toBeGreaterThan(0);
+    const fixtures = fixtureWarnsTdm240(r.findings);
+    expect(fixtures.length).toBeGreaterThan(0);
+    expect(fixtures.every((f) => f.severity === "warn")).toBe(true);
+    expect(fixtures.map((f) => f.evidence)).toContain(
+      "workloads/project-tracker/input/fixtures/tracker-v1.json:1",
+    );
+    expect(fixtures[0]!.why).toMatch(
+      /byte-identical to gates\/hidden-tests\/[^/]+\/fixtures\/tracker-v1\.json, which gate 'hidden-tests' declares as its own copy/,
+    );
   });
 
   it("without instruction_kind: contract the instruction blocks exactly as before", async () => {
@@ -80,18 +164,26 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
     );
     const r = await runSkepticChecks(dir);
     const leak = blocksTdm233(r.findings, "solution_leakage");
-    expect(leak.map((f) => f.why).join("\n")).toMatch(
-      /copies the hidden assertion message "an attempt in flight/,
+    const message = leak.find((f) =>
+      /copies the hidden assertion message "an attempt in flight is not counted"/.test(f.why),
     );
-    expect(leak.map((f) => f.why).join("\n")).toMatch(
-      /quotes 11 value\(s\) the hidden assertions use/,
+    expect(message).toBeDefined();
+    // The wrapped message is found on the line that holds it, not line 1's fallback.
+    const lines = readFileSync(path.join(dir, INSTR), "utf8").split("\n");
+    const at = lines.findIndex((l) => l.includes("an attempt in flight")) + 1;
+    expect(at).toBeGreaterThan(1);
+    expect(message!.evidence).toBe(`${INSTR}:${at}`);
+    const values = leak.find((f) =>
+      /quotes (\d+) value\(s\) the hidden assertions use/.test(f.why),
     );
-    // The wrapped message is found on its own line, not line 1's fallback.
-    expect(leak.map((f) => f.evidence)).toContain(`${INSTR}:454`);
-    expect(blocksTdm233(r.findings, "answer_in_workloads").map((f) => f.evidence)).toEqual([
-      `${INSTR}:317`,
-    ]);
-    expect(r.findings.some((f) => /declares its instruction a contract/.test(f.why))).toBe(false);
+    expect(Number(/quotes (\d+) value/.exec(values?.why ?? "")?.[1])).toBeGreaterThanOrEqual(2);
+    const named = blocksTdm233(r.findings, "answer_in_workloads");
+    expect(named.length).toBeGreaterThan(0);
+    for (const f of named) {
+      expect(f.evidence).toMatch(new RegExp(`^${INSTR}:\\d+$`));
+      expect(f.why).toMatch(/names the hidden test ".+" and ships to the subject computer/);
+    }
+    expect(contractWarnTdm240(r.findings, "project-tracker")).toBeNull();
   });
 
   it("without gates[].fixtures the byte-identical tracker-v1.json blocks as before", async () => {
@@ -99,11 +191,16 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
       replaceInTdm233(path.join(d, "anybench.yaml"), /\n {4}fixtures: \[[^\]]*\]\n/, "\n"),
     );
     const r = await runSkepticChecks(dir);
-    expect(blocksTdm233(r.findings, "answer_in_workloads").map((f) => f.why)).toEqual([
-      expect.stringMatching(
-        /tracker-v1\.json: identical to the scoring file gates\/hidden-tests\/project-tracker\/fixtures\/tracker-v1\.json/,
-      ),
-    ]);
+    const copies = blocksTdm233(r.findings, "answer_in_workloads");
+    expect(copies.map((f) => f.evidence)).toContain(
+      "workloads/project-tracker/input/fixtures/tracker-v1.json:1",
+    );
+    for (const f of copies) {
+      expect(f.why).toMatch(
+        /^workloads\/[^/]+\/input\/fixtures\/tracker-v1\.json: identical to the scoring file gates\/hidden-tests\/[^/]+\/fixtures\/tracker-v1\.json \(no-leak lint\)$/,
+      );
+    }
+    expect(fixtureWarnsTdm240(r.findings)).toEqual([]);
   });
 
   it("a contract that carries the oracle's code → block", async () => {
@@ -134,7 +231,9 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
     const r = await runSkepticChecks(dir);
     const leak = blocksTdm233(r.findings, "solution_leakage");
     expect(leak).toHaveLength(1);
-    expect(leak[0]!.why).toContain("gates/hidden-tests/project-tracker/webhooks.test.ts:");
+    // The same lines may also be in an xl test: any hidden test file can be the one cited.
+    expect(leak[0]!.why).toMatch(/\(gates\/hidden-tests\/[^/]+\/[\w.-]+\.test\.ts:\d+\)/);
+    expect(leak[0]!.evidence).toMatch(new RegExp(`^${INSTR}:\\d+$`));
   });
 
   it("a contract still may not point at scoring files or name a hidden test file", async () => {
@@ -203,46 +302,73 @@ describe("skeptic on kits/tandem-long-horizon (TDM-233)", () => {
     ).toMatch(/bug ticket whose bullet list restates/);
   });
 
-  it("holds once project-tracker-xl lands: listed or not yet listed, with the gate's xl fixture copy", async () => {
-    // TDM-236 writes gates/hidden-tests/project-tracker-xl/ (with its own copy of tracker-v1.json);
-    // TDM-238 the xl oracle. Before the manifest lists xl, and after.
-    const addXlFixture = (d: string) => {
-      mkdirSync(path.join(d, "gates/hidden-tests/project-tracker-xl/fixtures"), {
-        recursive: true,
-      });
-      cpSync(
-        path.join(d, "workloads/project-tracker-xl/input/fixtures/tracker-v1.json"),
-        path.join(d, "gates/hidden-tests/project-tracker-xl/fixtures/tracker-v1.json"),
-      );
-    };
-    const unlisted = copyKitTdm233(LH_KIT, addXlFixture);
+  it("holds as project-tracker-xl lands: listed or not yet listed, with the gate's xl fixture copy", async () => {
+    // TDM-236/237 write gates/hidden-tests/project-tracker-xl/ (with its own tracker-v1.json copy);
+    // TDM-238 the xl oracle and the manifest entry. Before the manifest lists xl, and after.
+    const unlisted = copyKitTdm233(LH_KIT, addXlFixtureTdm240);
     expect(blocksTdm233((await runSkepticChecks(unlisted)).findings)).toEqual([]);
 
     const listed = copyKitTdm233(LH_KIT, (d) => {
-      addXlFixture(d);
-      replaceInTdm233(
-        path.join(d, "anybench.yaml"),
-        "\n# Collectors are omitted on purpose",
-        [
-          "  - id: project-tracker-xl",
-          "    title: Build the xl project tracker API",
-          "    input: workloads/project-tracker-xl/input/",
-          "    instruction: workloads/project-tracker-xl/instruction.md",
-          "    instruction_kind: contract",
-          "    setup: workloads/project-tracker-xl/setup.sh",
-          "    timeout_s: 10800",
-          "",
-          "# Collectors are omitted on purpose",
-        ].join("\n"),
-      );
+      addXlFixtureTdm240(d);
+      listXlTdm240(d);
     });
     const r = await runSkepticChecks(listed);
     expect(blocksTdm233(r.findings)).toEqual([]);
-    const xl = r.findings.find((f) => /workload 'project-tracker-xl' declares/.test(f.why));
-    expect(xl?.severity).toBe("warn");
+    for (const w of ["project-tracker", "project-tracker-xl"]) {
+      const c = contractWarnTdm240(r.findings, w);
+      expect(c?.finding.severity, w).toBe("warn");
+      expect(c!.copiesNone, w).toBe(true);
+    }
+    const fixtures = fixtureWarnsTdm240(r.findings);
+    expect(fixtures.map((f) => f.evidence)).toEqual(
+      expect.arrayContaining([
+        "workloads/project-tracker/input/fixtures/tracker-v1.json:1",
+        "workloads/project-tracker-xl/input/fixtures/tracker-v1.json:1",
+      ]),
+    );
     expect(
-      r.findings.filter((f) => f.check === "answer_in_workloads").map((f) => f.severity),
-    ).toEqual(["warn", "warn"]);
+      r.findings
+        .filter((f) => f.check === "answer_in_workloads")
+        .every((f) => f.severity === "warn"),
+    ).toBe(true);
+  });
+
+  it("still passes with a synthetic extra xl hidden test file; that file's code is checked", async () => {
+    // A new xl test whose name is a contract sentence (both instructions state it): no block,
+    // listed or not, and the xl contract disclosure counts it.
+    const unlisted = copyKitTdm233(LH_KIT, (d) => {
+      addXlFixtureTdm240(d);
+      addSyntheticXlTestTdm240(d);
+    });
+    expect(blocksTdm233((await runSkepticChecks(unlisted)).findings)).toEqual([]);
+
+    const listed = copyKitTdm233(LH_KIT, (d) => {
+      addXlFixtureTdm240(d);
+      addSyntheticXlTestTdm240(d);
+      listXlTdm240(d);
+    });
+    const r = await runSkepticChecks(listed);
+    expect(blocksTdm233(r.findings)).toEqual([]);
+    const xl = contractWarnTdm240(r.findings, "project-tracker-xl");
+    expect(xl?.names).toBeGreaterThan(0);
+    expect(xl!.testLines).toBeGreaterThan(0);
+    expect(xl!.copiesNone).toBe(true);
+
+    // Control: the same synthetic file's code pasted into the xl contract blocks, citing it.
+    const pasted = copyKitTdm233(LH_KIT, (d) => {
+      addXlFixtureTdm240(d);
+      addSyntheticXlTestTdm240(d);
+      listXlTdm240(d);
+      const p = path.join(d, XL_INSTR);
+      writeFileSync(
+        p,
+        `${readFileSync(p, "utf8")}\n\`\`\`ts\n${SYNTHETIC_CODE_TDM240.join("\n")}\n\`\`\`\n`,
+      );
+    });
+    const leak = blocksTdm233((await runSkepticChecks(pasted)).findings, "solution_leakage");
+    expect(leak).toHaveLength(1);
+    expect(leak[0]!.evidence).toMatch(new RegExp(`^${XL_INSTR}:\\d+$`));
+    expect(leak[0]!.why).toContain(`${XL_GATE}/zz-synthetic-tdm240.test.ts:`);
   });
 });
 
