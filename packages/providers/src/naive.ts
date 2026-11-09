@@ -608,7 +608,18 @@ export class NaiveProvider implements ComputeProvider {
           cause: err,
         });
       }
-      throw err;
+      if (r.exitCode !== 0) throw err;
+      // It is there now, but it may not have been when fs/read ran: the trial's runner creates
+      // ~/eval/out and writes status.json right after the launch, often between the executor's
+      // first poll and this check (live run 01a1c1f2, the "race" section of the finding). Read
+      // again: only a path that exists AND is still refused is forbidden.
+      try {
+        return await this.call(() => this.api.readFile(id, abs), abs);
+      } catch (again) {
+        if (isProviderError(again, "not_found")) throw again;
+        if (isProviderError(again, "forbidden")) throw err;
+        throw again;
+      }
     }
   }
 

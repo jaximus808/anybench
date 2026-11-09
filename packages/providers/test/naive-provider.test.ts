@@ -180,8 +180,43 @@ describe("fork-403: getFile of a path whose directory does not exist yet", () =>
     const { p, naive } = setup();
     const c = await p.waitReady((await p.create({})).id);
     await p.putFile(c.id, "secret.txt", "s");
+    // Refused on the read and again on the re-read after the shell check: a real 403.
     naive.failNext("computers.fs.read", fakeNaiveError("forbidden", 403));
-    await expectCode(p.getFile(c.id, "secret.txt"), "forbidden");
+    naive.failNext("computers.fs.read", fakeNaiveError("forbidden", 403));
+    const e = await expectCode(p.getFile(c.id, "secret.txt"), "forbidden");
+    expect(e.message).toContain("forbidden (403)");
+  });
+
+  it("race: the file appears between the 403 and the shell check, so it is read again (live run 01a1c1f2)", async () => {
+    // The executor's first poll after the launch reads ~/eval/out/status.json while ~/eval/out is
+    // still missing (403); the runner creates it and writes status.json before `test -e` runs.
+    // That used to keep the 403 and fail the trial as provider_forbidden ~4 s into installing.
+    const { p, naive, fake } = setup();
+    const c = await p.waitReady((await p.create({})).id);
+    await p.exec(c.id, "true"); // the home link, as the launch did
+    const status = "/home/naive/eval/out/status.json";
+    await expect(fake.readFile(c.id, status)).rejects.toMatchObject({ status: 403 });
+    const read = naive.computers.readFile.bind(naive.computers);
+    let calls = 0;
+    naive.computers.readFile = async (id: string, path: string) => {
+      calls++;
+      try {
+        return await read(id, path);
+      } catch (err) {
+        if (calls === 1) {
+          // the runner, starting now
+          await naive.computers.mkdir(id, "/home/naive/eval/out");
+          await naive.computers.writeFile(
+            id,
+            status,
+            new TextEncoder().encode('{"phase":"prepare"}'),
+          );
+        }
+        throw err;
+      }
+    };
+    expect(decodeText(await p.getFile(c.id, status))).toBe('{"phase":"prepare"}');
+    expect(calls).toBe(2);
   });
 });
 
