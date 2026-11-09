@@ -7,7 +7,12 @@
 // every release (asset URL + sha256, resolved by code: pins.ts), renders every script with the
 // TDM-36 renderers and writes the kit (materialize-cli.ts). Everything here is validated before
 // any file is written, so a rendered script only ever embeds strings that passed these schemas.
-import { KitPathSchema, KitSlugSchema } from "@anybench/core";
+import {
+  KitHorizonPlanSchema,
+  KitPathSchema,
+  KitSlugSchema,
+  SHORT_HORIZON_DEFAULT,
+} from "@anybench/core";
 import { z } from "zod";
 
 /** GNU tools the base image (Ubuntu 24.04) ships, pinned by the version apt installs there. */
@@ -224,6 +229,12 @@ export const CliKitDraftSchema = z
     /** hyperfine timed runs per trial (17.2 rule 3: at least 10). */
     hyperfine_runs: z.int().min(10).max(100).default(10),
     notes: z.string().max(2_000).default(""),
+    /**
+     * TDM-215: the task horizon the designer reasoned about (from the understanding's judgement)
+     * and, for mixed / long, the long-horizon workloads it plans next to the short ones. A CLI is
+     * normally `short`. Defaulted so a draft from before TDM-215 still parses.
+     */
+    horizon: KitHorizonPlanSchema.default(SHORT_HORIZON_DEFAULT),
   })
   .superRefine((d, ctx) => {
     const issue = (path: PropertyKey[], message: string) =>

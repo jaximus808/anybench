@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { CollectorNameSchema, ContenderSchema, type DriverType } from "./contender.js";
 import { EnvSpecSchema } from "./env.js";
+import { HorizonJudgementSchema } from "./horizon.js";
 import {
   KitEnvMapSchema,
   KitEnvVarNameSchema,
@@ -42,6 +43,12 @@ export const KitSubjectSchema = z.strictObject({
   summary: z.string().min(1),
   /** What "better" means for this project, in plain words. */
   better_means: z.array(z.string().min(1)).min(1),
+  /**
+   * TDM-215: the task-horizon judgement the kit was designed on (short | mixed | long, with why).
+   * The skeptic's `horizon_mismatch` blocks a coordination-harness kit that records mixed / long
+   * here and still ships only short workloads.
+   */
+  horizon: HorizonJudgementSchema.optional(),
 });
 export type KitSubject = z.infer<typeof KitSubjectSchema>;
 

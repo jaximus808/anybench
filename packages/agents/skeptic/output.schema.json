@@ -21,6 +21,7 @@
               "comparability",
               "ungated_measure",
               "too_few_tasks",
+              "horizon_mismatch",
               "kit_invalid",
               "other"
             ]

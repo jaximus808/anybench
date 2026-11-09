@@ -10,14 +10,20 @@
 //                                            conversation set in the tree) are not supported yet;
 //                                            needs_hardware holds; skip, or a repo with nothing
 //                                            runnable, fails; claims whose quote is not on the
-//                                            cited README line are dropped.
+//                                            cited README line are dropped; a subject that
+//                                            coordinates agents is never judged short-horizon
+//                                            (TDM-215: short → mixed, the model's rationale kept).
 //
 // The result's `understanding` is what the orchestrator stores (apps/server ports.ts
 // UnderstandingSchema, which spreads UnderstandingExtrasShape so old rows still parse).
 import {
   DriverTypeSchema,
+  HorizonJudgementSchema,
+  isCoordinationSubject,
   SubjectKindSchema,
+  TaskHorizonSchema,
   type DriverType,
+  type HorizonJudgement,
   type ProjectDigest,
   type SubjectKind,
 } from "@anybench/core";
@@ -95,6 +101,11 @@ export const UnderstandingExtrasShape = {
   history: HistorySignalSchema.optional(),
   /** http-agent: the labelled conversation set it ships (a path verified in the tree). */
   labelled_conversations: z.string().min(1).optional(),
+  /**
+   * TDM-215: what horizon of work the subject must be tested on (short | mixed | long) and why.
+   * The kit designer reads it to decide whether the kit needs long-horizon workloads.
+   */
+  horizon: HorizonJudgementSchema.optional(),
 };
 
 /** The model's answer. Mirrors understander/output.schema.json (a test keeps them in step). */
@@ -114,6 +125,11 @@ export const UnderstanderOutputSchema = z.object({
     .nullable()
     .default(null),
   labelled_conversations: z.string().nullable().default(null),
+  /** TDM-215. Nullable so an answer from before TDM-215 still parses (code then fills it). */
+  horizon: z
+    .object({ horizon: TaskHorizonSchema, rationale: z.string().default("") })
+    .nullable()
+    .default(null),
 });
 export type UnderstanderOutput = z.infer<typeof UnderstanderOutputSchema>;
 
@@ -131,6 +147,7 @@ export interface UnderstandingResult {
   subject_command?: SubjectCommand;
   history?: HistorySignal;
   labelled_conversations?: string;
+  horizon: HorizonJudgement;
 }
 
 export interface UnderstandVerdict {
@@ -349,6 +366,48 @@ function pathInTree(p: string, context: RepoContext | null): boolean {
   );
 }
 
+/**
+ * The horizon judgement after code's floor (TDM-215). The model argues it; code only refuses
+ * `short` for a subject that coordinates agents (a harness, or an agent whose summary describes
+ * parallel workers / an orchestrator), and fills a missing answer.
+ */
+export function decideHorizon(
+  output: Pick<UnderstanderOutput, "horizon" | "summary">,
+  subject: { kind: SubjectKind; driver_type: DriverType },
+  corrections: string[] = [],
+): HorizonJudgement {
+  const coordinates = isCoordinationSubject({ ...subject, summary: output.summary });
+  const said = output.horizon;
+  const rationale = oneLine(said?.rationale ?? "", 1_200);
+  if (!said) {
+    // An absent judgement on ordinary software means short; only raising it is a correction.
+    const horizon = coordinates ? "mixed" : "short";
+    if (coordinates) corrections.push("horizon (missing) → mixed: the subject coordinates agents");
+    return {
+      horizon,
+      rationale: coordinates
+        ? "not judged by the model; set by code: a subject that coordinates agents is tested on long work as well as short tasks"
+        : "not judged by the model; set by code: nothing suggests its value shows only on long work",
+    };
+  }
+  if (coordinates && said.horizon === "short") {
+    corrections.push(
+      "horizon short → mixed: a subject that coordinates agents earns its keep on long work",
+    );
+    return {
+      horizon: "mixed",
+      rationale: oneLine(
+        `${rationale ? `${rationale} ` : ""}(Code raised short to mixed: a subject that coordinates several agents must also be tested on long-horizon work.)`,
+        1_200,
+      ),
+    };
+  }
+  return {
+    horizon: said.horizon,
+    rationale: rationale || `judged ${said.horizon} (no rationale given)`,
+  };
+}
+
 /** Why each unsupported driver is not built yet (the hold reason when the model gave none). */
 const UNSUPPORTED_WHY: Partial<Record<DriverType, string>> = {
   service: "a long-running server needs a load generator and a golden request set",
@@ -453,6 +512,8 @@ export function decideUnderstanding(
     reason = modelReason;
   }
 
+  const horizon = decideHorizon(output, { kind, driver_type: driver }, corrections);
+
   const understanding: UnderstandingResult = {
     kind,
     summary: output.summary.trim(),
@@ -466,6 +527,7 @@ export function decideUnderstanding(
     ...(subject ? { subject_command: subject } : {}),
     ...(history ? { history } : {}),
     ...(labelled ? { labelled_conversations: labelled } : {}),
+    horizon,
   };
   if (understanding.better_means.length === 0)
     understanding.better_means = ["to be decided by the kit designer"];

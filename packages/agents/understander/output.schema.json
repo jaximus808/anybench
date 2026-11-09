@@ -58,7 +58,16 @@
       "required": ["minable", "why"],
       "additionalProperties": false
     },
-    "labelled_conversations": { "type": ["string", "null"] }
+    "labelled_conversations": { "type": ["string", "null"] },
+    "horizon": {
+      "type": ["object", "null"],
+      "properties": {
+        "horizon": { "type": "string", "enum": ["short", "mixed", "long"] },
+        "rationale": { "type": "string" }
+      },
+      "required": ["horizon", "rationale"],
+      "additionalProperties": false
+    }
   },
   "required": [
     "kind",
@@ -72,7 +81,8 @@
     "claims",
     "subject_command",
     "history",
-    "labelled_conversations"
+    "labelled_conversations",
+    "horizon"
   ],
   "additionalProperties": false
 }

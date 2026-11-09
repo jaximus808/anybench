@@ -29,6 +29,11 @@ export const SKEPTIC_CHECKS = [
   "ungated_measure",
   /** Too few tasks or repeats for the claim the kit makes (17.2 rule 3). */
   "too_few_tasks",
+  /**
+   * TDM-215: a harness that coordinates agents, tested only on short workloads (none with a wall
+   * cap of 2 h or more): its overhead is measured, its point never is.
+   */
+  "horizon_mismatch",
   /** The kit does not load (anything else the validator refuses). */
   "kit_invalid",
   /** Anything else the model reports. */

@@ -217,7 +217,7 @@ describe("kits/tandem-long-horizon anybench.yaml (TDM-212)", () => {
     const r = await runSkepticChecks(KIT_TDM212);
     const checks = r.findings.map((f) => `${f.check}: ${f.why}`);
     expect(checks.filter((c) => /token_source|comparability/.test(c))).toEqual([]);
-    expect(r.findings.filter((f) => f.check === ("horizon_mismatch" as never))).toEqual([]);
+    expect(r.findings.filter((f) => f.check === "horizon_mismatch")).toEqual([]);
   });
 });
 

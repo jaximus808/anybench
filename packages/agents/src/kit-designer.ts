@@ -14,8 +14,22 @@
 //                                     of anything that looks like a measurement, and the builder
 //                                     refuses extra keys at run time.
 //   KitDesignerOutputSchema           the draft (@anybench/kit CliKitDraftSchema).
+//   horizonRequirement(understanding) TDM-215: does the kit need a long-horizon workload? (the
+//                                     understander's judgement, or a subject that coordinates
+//                                     agents), passed to the designer with the judgement's why.
+//   draftHorizonIssues(draft, u)      TDM-215: the draft's horizon plan checked in code after
+//                                     the model answers; issues go back through mode "fix".
 import type { ProjectDigest, ProofCheckResult } from "@anybench/core";
-import { ProofCheckNameSchema } from "@anybench/core";
+import {
+  isCoordinationSubject,
+  LONG_HORIZON_MIN_FEATURE_AREAS,
+  LONG_HORIZON_MIN_WALL_S,
+  needsLongHorizon,
+  ProofCheckNameSchema,
+  type HorizonJudgement,
+  type KitHorizonPlan,
+  type TaskHorizon,
+} from "@anybench/core";
 import { CliKitDraftSchema, type CliKitDraft, type RepoContext } from "@anybench/kit";
 import { z } from "zod";
 import { numberedReadme } from "./understander.js";
@@ -51,6 +65,72 @@ export interface KitDesignerUnderstanding {
     package: string | null;
     version_command: string | null;
   };
+  /** TDM-215: the understander's horizon judgement (absent on understandings before TDM-215). */
+  horizon?: HorizonJudgement;
+}
+
+// ---------- task horizon (TDM-215) ----------
+
+/** What the designer is told about horizon: the judgement, and what code requires of the draft. */
+export interface HorizonRequirement {
+  /** The understander's judgement, or null when the understanding predates TDM-215. */
+  judgement: HorizonJudgement | null;
+  /** True: the subject coordinates agents (a harness, or an agent describing parallel workers). */
+  coordinates_agents: boolean;
+  /** True: the draft must plan at least one long-horizon workload next to the short ones. */
+  long_workload_required: boolean;
+  /** The lowest horizon the draft's plan may record. */
+  min_horizon: TaskHorizon;
+  /** The shape every long-horizon workload must have (LongHorizonWorkloadPlanSchema). */
+  long_workload: {
+    min_feature_areas: number;
+    min_wall_cap_s: number;
+    grading: "partial-credit";
+  };
+}
+
+const HORIZON_RANK: Record<TaskHorizon, number> = { short: 0, mixed: 1, long: 2 };
+
+/** TDM-215: what the kit's horizon plan must satisfy, from the understanding. Pure. */
+export function horizonRequirement(u: KitDesignerUnderstanding): HorizonRequirement {
+  const judgement = u.horizon ?? null;
+  const subject = { kind: u.kind, driver_type: u.driver_type ?? null, summary: u.summary };
+  const coordinates = isCoordinationSubject(subject);
+  const required = needsLongHorizon({ ...subject, horizon: judgement?.horizon ?? null });
+  const floor: TaskHorizon = coordinates ? "mixed" : "short";
+  const said = judgement?.horizon ?? "short";
+  return {
+    judgement,
+    coordinates_agents: coordinates,
+    long_workload_required: required,
+    min_horizon: HORIZON_RANK[said] >= HORIZON_RANK[floor] ? said : floor,
+    long_workload: {
+      min_feature_areas: LONG_HORIZON_MIN_FEATURE_AREAS,
+      min_wall_cap_s: LONG_HORIZON_MIN_WALL_S,
+      grading: "partial-credit",
+    },
+  };
+}
+
+/**
+ * TDM-215: the draft's horizon plan against the requirement, after the schema parsed it (the
+ * schema already refuses a mixed / long plan with no long workload, or one under 2 h, 3 feature
+ * areas, or without partial credit). Returns fix-mode issues; empty when the plan holds.
+ */
+export function draftHorizonIssues(plan: KitHorizonPlan, u: KitDesignerUnderstanding): string[] {
+  const req = horizonRequirement(u);
+  const issues: string[] = [];
+  if (HORIZON_RANK[plan.horizon] < HORIZON_RANK[req.min_horizon]) {
+    issues.push(
+      `horizon: the draft says ${plan.horizon} but the understanding is ${req.min_horizon}${req.coordinates_agents ? " (the subject coordinates agents)" : ""}: ${req.judgement?.rationale ?? "a subject that coordinates agents is tested on long work"}`,
+    );
+  }
+  if (req.long_workload_required && plan.long_workloads.length === 0) {
+    issues.push(
+      `horizon.long_workloads: this subject needs at least one long-horizon workload next to the short sanity tasks (>= ${LONG_HORIZON_MIN_FEATURE_AREAS} feature areas, wall cap >= ${LONG_HORIZON_MIN_WALL_S} s, partial-credit grading)`,
+    );
+  }
+  return issues;
 }
 
 export interface KitDesignerDesignArgs {
@@ -87,7 +167,9 @@ export function buildKitDesignerInput(a: KitDesignerDesignArgs): Record<string, 
       driver_type: a.understanding.driver_type ?? null,
       claims: (a.understanding.claims ?? []).slice(0, 10),
       subject_command_hint: a.understanding.subject_command ?? null,
+      horizon: a.understanding.horizon ?? null,
     },
+    horizon_requirement: horizonRequirement(a.understanding),
     research_baselines: a.research?.baselines ?? [],
     intake_contenders: a.intakeContenders.map((c) => ({
       id: c.id,

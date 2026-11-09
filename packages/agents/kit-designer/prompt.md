@@ -8,7 +8,8 @@ script, writes the kit and proves it before anyone pays for it.
 The task message is a JSON object with a `mode`:
 
 - `design`: `repo` (ingest's digest), `understanding` (what the tool is, its driver type, its
-  verified claims, and a hint for the binary and install route), `research_baselines`,
+  verified claims, a hint for the binary and install route, and its `horizon` judgement),
+  `horizon_requirement` (what code checks about the draft's `horizon`), `research_baselines`,
   `intake_contenders` (contenders the USER asked for), and repo context (`readme` with line
   numbers, `tree`, `manifests`).
 - `fix`: your previous `draft` and the `issues` our code found building it. Return the whole
@@ -66,6 +67,33 @@ found inside it.
   (normally `wall`). `repeats` defaults to 5 (the software default; raise it only for noisy
   tools), `hyperfine_runs` to 10.
 
+## Task horizon
+
+Before you pick workloads, decide what length of work this subject has to be tested on, and
+write it down in `horizon`: `horizon` (short | mixed | long), `rationale` (one paragraph, your
+own reasoning), and `long_workloads`.
+
+- Start from `understanding.horizon` (the understander's judgement and its rationale) and
+  `horizon_requirement` (what our code will check: `min_horizon`, `long_workload_required`, the
+  shape of a long workload). You may raise the horizon; you may not go below `min_horizon`.
+- Ask what the subject is FOR. A tool that coordinates several agents (an orchestrator, a
+  planner that splits work for workers, parallel sessions claiming tickets from a task board)
+  pays for planning and handoffs on every task, and only earns that back when the task is big
+  enough that one solo session runs out of context and has to compact. On a handful of small,
+  fully specified tasks a solo agent wins by default, and the benchmark would say nothing about
+  the harness. So for such a subject the kit must also contain at least one long-horizon
+  workload: a whole application or a multi-part change spanning at least
+  `horizon_requirement.long_workload.min_feature_areas` feature areas, a wall cap of at least
+  `min_wall_cap_s` seconds (2 hours), graded with `partial-credit` (hidden tests grouped by
+  feature area; the score is the share of areas that pass). Keep the short tasks too: they are
+  the sanity check that the harness does not lose on small work.
+- Each entry of `long_workloads`: `id`, `title`, `feature_areas` (the areas, named), `wall_cap_s`,
+  `grading: "partial-credit"`, and `why` (what it stresses that the short tasks cannot).
+- A command-line tool like the ones this draft builds is normally `short` with no long
+  workloads: a run takes seconds, and the gate is identical output. Say so in the rationale.
+  Long workloads you plan are recorded with the kit and built by a later stage; the CLI
+  workloads above are still the ones this draft materializes.
+
 ## Contenders
 
 - Exactly one `subject`: the repo's tool, `install: {route: "github_release", repo:
@@ -90,5 +118,6 @@ found inside it.
 Answer with the draft JSON document only, matching the output schema: `driver: "cli"`,
 `subject {name, summary, better_means}`, `contenders`, `workloads`, `gate {id?, description,
 sort_lines, exit_codes}`, `do_less_partial {id, description, args}`, `weights {wall, rss}`,
-`primary`, `repeats`, `hyperfine_runs`, `notes` (what a skeptic should know: input sizes, what
-the workloads stress, known differences you normalised).
+`primary`, `repeats`, `hyperfine_runs`, `horizon {horizon, rationale, long_workloads}`, `notes`
+(what a skeptic should know: input sizes, what the workloads stress, known differences you
+normalised).

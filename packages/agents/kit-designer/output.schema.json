@@ -339,6 +339,71 @@
       "default": "",
       "type": "string",
       "maxLength": 2000
+    },
+    "horizon": {
+      "default": {
+        "horizon": "short",
+        "rationale": "no horizon recorded (a draft from before TDM-215): small tasks only",
+        "long_workloads": []
+      },
+      "type": "object",
+      "properties": {
+        "horizon": {
+          "type": "string",
+          "enum": ["short", "mixed", "long"]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200
+        },
+        "long_workloads": {
+          "default": [],
+          "maxItems": 4,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "feature_areas": {
+                "minItems": 3,
+                "maxItems": 12,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              },
+              "wall_cap_s": {
+                "type": "integer",
+                "minimum": 7200,
+                "maximum": 86400
+              },
+              "grading": {
+                "type": "string",
+                "const": "partial-credit"
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              }
+            },
+            "required": ["id", "title", "feature_areas", "wall_cap_s", "grading", "why"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["horizon", "rationale"],
+      "additionalProperties": false
     }
   },
   "required": [

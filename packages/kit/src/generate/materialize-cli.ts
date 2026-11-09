@@ -290,7 +290,11 @@ export function cliKitSpec(
   });
   return {
     schema_version: 2,
-    subject: { kind: "software", ...draft.subject },
+    subject: {
+      kind: "software",
+      ...draft.subject,
+      horizon: { horizon: draft.horizon.horizon, rationale: draft.horizon.rationale },
+    },
     contenders,
     workloads: draft.workloads.map((w) => ({
       id: w.id,

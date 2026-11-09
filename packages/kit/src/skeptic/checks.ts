@@ -33,6 +33,11 @@
 //   ungated_measure      a measured requirement without a gate (the schema refuses it; checked again).
 //   too_few_tasks        an agent kit under 20 tasks (the report must say "on these N tasks"),
 //                        a "beats" claim in the kit text without that wording, too few repeats.
+//   horizon_mismatch     TDM-215: a kit whose subject coordinates agents (a harness, or an agent
+//                        whose summary describes parallel workers / an orchestrator) where no
+//                        workload has a wall cap >= 2 h (warn: the claim is "on short tasks");
+//                        any kit whose own subject.horizon says mixed / long with no such
+//                        workload (block: it contradicts its own judgement; the designer adds one).
 //
 // The final verdict is decideSkepticVerdict (finding.ts). Nothing here sees contender scores.
 import { readFile } from "node:fs/promises";
@@ -40,6 +45,10 @@ import path from "node:path";
 import {
   DRIVER_DEFAULT_COLLECTORS,
   isAgentDriver,
+  isCoordinationSubject,
+  isLongHorizonWorkload,
+  LONG_HORIZON_MIN_WALL_S,
+  workloadWallCapS,
   type CollectorName,
   type KitSpec,
   type ProofCheckResult,
@@ -975,6 +984,47 @@ function checkTaskCount(c: Ctx): void {
   }
 }
 
+// ---------- horizon_mismatch (TDM-215) ----------
+
+/** Does the kit's subject coordinate agents? (core isCoordinationSubject on the kit's own text.) */
+export function isCoordinationKit(spec: KitSpec): boolean {
+  const subject = spec.contenders.find((x) => x.role === "subject");
+  return isCoordinationSubject({
+    kind: spec.subject.kind,
+    driver_type: subject?.driver.type ?? null,
+    summary: spec.subject.summary,
+  });
+}
+
+function checkHorizon(c: Ctx): void {
+  const { spec } = c.m;
+  if (spec.workloads.some((w) => isLongHorizonWorkload(spec, w))) return;
+  const judged = spec.subject.horizon?.horizon;
+  const contradicts = judged === "mixed" || judged === "long";
+  const coordinates = isCoordinationKit(spec);
+  if (!contradicts && !coordinates) return;
+  const caps = spec.workloads.map((w) => workloadWallCapS(spec, w));
+  const longest = caps.every((x) => x === null)
+    ? "no wall cap"
+    : `the longest cap is ${Math.max(...caps.map((x) => x ?? 0))} s`;
+  const none = `none of its ${spec.workloads.length} workload(s) has a wall cap of at least ${LONG_HORIZON_MIN_WALL_S} s (${longest})`;
+  if (contradicts) {
+    add(c, {
+      severity: "block",
+      check: "horizon_mismatch",
+      evidence: yamlAt(c, ["subject", "horizon"]),
+      why: `the kit judges its subject's horizon ${judged} but ${none}: add a long-horizon workload (several feature areas, wall cap >= 2 h, partial-credit grading) next to the short ones`,
+    });
+    return;
+  }
+  add(c, {
+    severity: "warn",
+    check: "horizon_mismatch",
+    evidence: yamlAt(c, ["workloads"]),
+    why: `the subject coordinates agents, and ${none}: short tasks measure the coordination overhead, never its benefit on long work, so every claim must read "on short tasks" until a long-horizon workload (several feature areas, wall cap >= 2 h, partial-credit grading) is added`,
+  });
+}
+
 // ---------- validator issues ----------
 
 function issueEvidence(i: KitIssue): string {
@@ -1051,5 +1101,6 @@ export async function runSkepticChecks(
   checkGates(c);
   await checkContamination(c, opts.modelCutoffs ?? {});
   checkTaskCount(c);
+  checkHorizon(c);
   return { findings: out, material: m };
 }

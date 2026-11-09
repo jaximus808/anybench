@@ -25,6 +25,7 @@ import {
   buildKitDesignerFixInput,
   buildKitDesignerInput,
   buildKitDesignerRepairInput,
+  draftHorizonIssues,
   KIT_DESIGNER_ROLE,
   KitDesignerOutputSchema,
   repairChecksOf,
@@ -263,6 +264,16 @@ export function naiveKitDesigner(opts: KitDesignerOptions): AgentStagePort["desi
       cost += r.value.costMicroUsd;
       const current: KitDesignerOutput = r.value.output;
       draft = current;
+      // TDM-215: the draft's horizon plan must honour the understanding's judgement.
+      const horizonIssues = draftHorizonIssues(current.horizon, u);
+      if (horizonIssues.length > 0) {
+        issues = horizonIssues;
+        await say(
+          ctx,
+          `kit v${version} draft ${attempt + 1}: horizon plan refused: ${issues.join("; ")}`,
+        );
+        continue;
+      }
       const built = await build(current, dir, opts, {
         run_id: ctx.run.id,
         version,

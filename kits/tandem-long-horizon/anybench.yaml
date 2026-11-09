@@ -13,6 +13,17 @@ subject:
     Claude Code working alone on one whole-application build (a multi-user project tracker API,
     12 feature areas) graded by 120 hidden tests. Every setup runs claude-opus-5-5 on Claude Code
     2.1.319 with our own Anthropic key, at Claude Code's default effort with thinking on.
+  # TDM-215: the task-horizon judgement this kit is built on. The skeptic's horizon_mismatch blocks
+  # a kit that records mixed / long here and ships no workload with a wall cap of at least 2 h.
+  horizon:
+    horizon: long
+    rationale: >-
+      Tandem exists to coordinate several Claude Code workers: a planner splits the work into
+      tickets that workers claim from one board. That planning and handoff cost is paid on every
+      task, and it can only pay off when the task is big enough that one solo session has to
+      compact its context. Three small tasks (kits/tandem-vs-claude-code) measured the overhead;
+      a whole-application build across 12 feature areas, under a 3 h cap and graded with partial
+      credit, is where the benefit would show, if there is one.
   better_means:
     - passes more of the hidden tests (partial credit across 12 feature areas)
     - more trials pass every hidden test

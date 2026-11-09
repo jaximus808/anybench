@@ -82,4 +82,21 @@ and why. `null` for other driver types.
 question/answer set it ships (an eval set with expected answers), else `null`. Never invent a
 path; it must be in the tree.
 
+**horizon**: what length of work the subject must be tested on to show whether it is better,
+and a `rationale`: one paragraph, in your own words, of why. Reason from what the subject is FOR,
+not from its name:
+
+- `short`: small, self-contained tasks are representative. A CLI, a library, a service, or a
+  single coding agent: a 20-minute task exercises what it does.
+- `mixed`: short tasks matter, AND the project claims (or its design implies) an edge on long,
+  multi-part work. Test both.
+- `long`: the subject exists for long work: it coordinates several agents (an orchestrator, a
+  planner that splits work for workers, parallel sessions claiming tickets from a board, a
+  multi-agent runner). Its overhead (planning, handoffs, reviews) is paid on every task, and its
+  benefit (parallel work, each worker keeping a small context while one solo session has to
+  compact its own) only appears when the task is big enough: a whole application across several
+  feature areas, hours not minutes. On three small tasks a solo agent wins by default, which says
+  nothing about the harness. So a coordination harness is never `short`; say what long task would
+  show its value.
+
 Answer with the JSON document only.
