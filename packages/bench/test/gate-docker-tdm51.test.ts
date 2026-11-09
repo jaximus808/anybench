@@ -146,12 +146,16 @@ const CONTENDERS: Record<string, (dir: string) => Promise<void>> = {
     );
   },
   // Under the entry cap, but sanitizing (realpath per symlink) outlasts the step time limit.
+  // The links form ONE chain (l_i -> ../links/l_{i-1} -> ... -> l0 -> sum.sh), so resolving them
+  // all costs ~n^2/2 hops: ~39 s for n=4900 on a 2-vCPU ubuntu:24.04 container, 13x the 3 s limit,
+  // and slower under load. A flat swarm (every link straight to sum.sh) is linear, ~1.2 s idle,
+  // so it only timed out on a loaded host and was scored (honestly, 3/3) on an idle one (TDM-241).
   "symlink-swarm": async (d) => {
     await put(d, "workspace/sum.sh", HONEST);
     await mkdir(join(d, "links"), { recursive: true });
     await Promise.all(
       Array.from({ length: ENTRY_CAP - 100 }, (_, i) =>
-        symlink("../workspace/sum.sh", join(d, "links", `l${i}`)),
+        symlink(i === 0 ? "../workspace/sum.sh" : `../links/l${i - 1}`, join(d, "links", `l${i}`)),
       ),
     );
   },

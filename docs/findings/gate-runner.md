@@ -186,11 +186,72 @@ exec timeout, a GateInfraError, unbilled. Now:
   well inside the exec cap. Running out gives `frozen=timeout`.
 - Both are contender FAILs ("more than N entries", "could not be unpacked within Ns").
 - e2e cheaters, with caps lowered to 5000 entries and 3 s: `entry-bomb` (5500 empty files) and
-  `symlink-swarm` (4900 symlinks) both FAIL that way.
+  `symlink-swarm` (4900 symlinks in one chain) both FAIL that way. The swarm used to be flat,
+  which made it flaky (see "symlink-swarm was a race with the host" below).
 
 The harness example check now also tells kit-side failures apart: while it copies the kit's own
 tests (`phase=kit`), a failure exits 3 with no verdict, which is a counted `kit_suspect` FAIL. A
 failure anywhere else becomes a plain FAIL verdict.
+
+## symlink-swarm was a race with the host (TDM-241)
+
+`gate-docker-tdm51 > cheater symlink-swarm fails sum-tests with a reason` failed on unmodified
+main (TDM-212, TDM-232) and sometimes passed under load. The gate log of a failing run on main:
+
+```
+$ ANYBENCH_GATE_LOG=$SP/gate-run1.jsonl npx vitest run test/gate-docker-tdm51.test.ts
+ × cheater symlink-swarm fails sum-tests with a reason   (expected true to be false)
+symlink-swarm sum-tests {"status": "verdict", "pass": true, "reason": "3/3 hidden cases pass"}
+symlink-swarm clean-room {"status": "verdict", "pass": true, "reason": "clean room"}
+```
+
+**This is not a cheat getting through, and the gate did not regress.** The sanitize step in
+`setupScript` has not changed since TDM-51 round 4 (`git log -p -- packages/bench/src/gate.ts`:
+the two later commits, a7d7234 and dddd394, touch only metrics). The old fixture's `sum.sh` was
+the honest one, and its 4900 symlinks all pointed at `../workspace/sum.sh`, inside the outputs.
+When sanitizing finished inside the 3 s step limit, the gate correctly kept the links, unpacked the
+bundle and scored a correct answer as correct. The test only got the outcome it expected when the
+host was slow enough to push the sanitize past 3 s.
+
+The sanitize loop timed in a 2-vCPU ubuntu:24.04 container, the scoring image (the loop copied
+from `setupScript`, load average about 4):
+
+```
+$ docker run --rm --cpus 2 -v sanitize-bench.sh:/b.sh:ro ubuntu:24.04 bash /b.sh flat 4900
+mode=flat n=4900 rc=0 secs=1.25613 left=4900       # old fixture: every link -> ../workspace/sum.sh
+mode=flat n=4900 rc=0 secs=1.20231 left=4900
+mode=chain n=4900 rc=0 secs=22.1328 left=4900      # l_i -> l_{i-1}
+$ ... bash /b.sh up 4870 1
+mode=up depth=1 n=4870 rc=0 secs=38.8279 left=4870  # l_i -> ../links/l_{i-1} (new fixture)
+```
+
+A flat swarm costs one `realpath` fork per link: linear, about 1.2 s idle, so a 3 s limit sat
+2.5x above it and only load decided the result. **Fix (test only):** the swarm is now one chain,
+`l_i -> ../links/l_{i-1} -> ... -> l0 -> ../workspace/sum.sh`. `realpath -m` on `l_i` follows i
+links, so the step costs about n^2/2 hops: 39 s for 4900 links, 13x the limit, and load only
+slows it further. The entry count is unchanged (under the 5000 cap), the limit is still 3 s, and
+nothing is skipped. In production, a 200 000-entry chain hits the 150 s budget and fails closed
+the same way (`frozen=timeout`, a contender FAIL).
+
+5 runs in a row after the fix, on a quiet machine (load average 3.7 to 6):
+
+```
+$ for i in 1 2 3 4 5; do ANYBENCH_GATE_LOG=$SP/idle.jsonl npx vitest run test/gate-docker-tdm51.test.ts; done
+run1..run5:       Tests  18 passed (18)
+symlink-swarm, every run: no_outputs false "gate sum-tests: the frozen outputs could not be unpacked within 3s (fail closed)" destroyed=true
+```
+
+The same 5 runs again, this time with the rest of the bench suite (`npx vitest run --exclude
+test/gate-docker-tdm51.test.ts`, looping) running alongside, load average 12 to 44:
+
+```
+loaded-run1..loaded-run5:       Tests  18 passed (18)
+symlink-swarm, every run: no_outputs false "gate sum-tests: the frozen outputs could not be unpacked within 3s (fail closed)" destroyed=true
+```
+
+The background loop's own failures were unrelated to this change: `tdm36-cli-driver-docker`
+(`hyperfine@1.21.0: install exited 22`, a download), `tdm41-harness-docker` (`install-tandem.sh: curl: (22) ... error: 504`), and once each
+`breaker-worker-hardening` and `null-pilot-e18` at load above 30.
 
 ## Rules for check authors
 
