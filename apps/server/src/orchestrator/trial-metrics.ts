@@ -22,27 +22,36 @@
 //                      policy fired, which the policy's own events record.
 //
 //   byok_token_cost_micro_usd / cost_includes_model_tokens
-//                      TDM-246: the scored attempt's metered spend on the user's own key
-//                      (trials.token_spend_by_attempt[attempt], the runner's meter over Claude
-//                      Code's session totals), and whether the kit's cost basis adds it to the cost
+//                      TDM-246: the scored attempt's spend on the user's own key
+//                      (trials.token_spend_by_attempt[attempt]), and whether the kit's cost basis
+//                      adds it to the cost
 //                      (bench kitCostBasis: every contender on the Anthropic key with one pinned
 //                      Claude Code version; plan.md 17.2 rule 5). The scorer adds it to
 //                      cost_micro_usd only under that basis (proof-score.ts trialResultOf). Earlier
 //                      attempts (infra failures, our retries) never count against the contender.
+//                      TDM-250: once the bundle is read, the attempt's spend is Claude Code's own
+//                      session totals (settledTokenSpend: each session's latest `total_cost_usd`,
+//                      summed over sessions), and it replaces the runner's live meter in
+//                      token_spend_by_attempt too, so the run's BYOK limit counts the same figure.
+//                      The meter stays the figure while the trial is in flight, and for a bundle
+//                      with no transcript.
 //
 // trial.gate writes these with the verdict (one update, so the run never scores a trial without
 // them). trial.execute records them for a failed_subject trial right after it settles (its cost
 // counts in "all spend ÷ solved"; its wall is censored at the cap anyway).
 // scripts/ops/backfill-trial-metrics.ts recomputes them for trials settled before this existed.
 import {
+  claudeCodeSpend,
   collectStreamJson,
   trialGateMetrics,
   TrialGateRecordSchema,
+  type ClaudeCodeSpend,
   type KitCostBasis,
 } from "@anybench/bench";
 import type { ProxySpendSource, TrialProxySpend } from "@anybench/naive";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Database, DbTx } from "../db/client.js";
+import type { BundleSource } from "../lib/trial-trace/store.js";
 import { readTarGz } from "../lib/trial-trace/tar.js";
 import { events } from "../db/schema/events.js";
 import { trials } from "../db/schema/trials.js";
@@ -88,6 +97,46 @@ export const AUTO_ANSWER_METRIC_KEYS = [
 const STREAM_FILE = "stream.jsonl";
 
 /**
+ * TDM-250: the bundle files that are one Claude Code session transcript each: `stream.jsonl`
+ * (solo, subagents, skill packs) and `tandem/streams/<actor>.jsonl` (Tandem's planner and workers;
+ * lib/trial-trace/parse.ts).
+ */
+export function isSessionTranscript(name: string): boolean {
+  return name === STREAM_FILE || /^tandem\/streams\/[^/]+\.jsonl$/.test(name);
+}
+
+/** What trial.gate reads from a bundle, from one pass over the archive. */
+export interface BundleReadings {
+  /** autoAnswerMetricsFromBundle's counts. */
+  autoAnswer: Record<string, number>;
+  /** Claude Code's own totals over the bundle's transcripts; null when it has none. */
+  sessions: ClaudeCodeSpend | null;
+}
+
+/** Read a trial bundle (out.tar.gz) once for its auto-answer counts and session totals. */
+export function bundleReadings(bundle: Uint8Array): BundleReadings {
+  const entries = readTarGz(bundle, { want: isSessionTranscript });
+  const transcripts = entries
+    .flatMap((e) => (e.data && isSessionTranscript(e.name) ? [{ name: e.name, data: e.data }] : []))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((e) => ({ name: e.name, text: Buffer.from(e.data).toString("utf8") }));
+  const solo = transcripts.find((t) => t.name === STREAM_FILE);
+  return {
+    autoAnswer: solo ? autoAnswerOf(solo.text) : {},
+    sessions: transcripts.length > 0 ? claudeCodeSpend(transcripts) : null,
+  };
+}
+
+function autoAnswerOf(stream: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  const keys: readonly string[] = AUTO_ANSWER_METRIC_KEYS;
+  for (const row of collectStreamJson(stream)) {
+    if (keys.includes(row.name) && row.labels === undefined) out[row.name] = Number(row.value);
+  }
+  return out;
+}
+
+/**
  * The headless policy's counts from a trial bundle (out.tar.gz): bench's stream-json collector
  * over its `stream.jsonl`. Empty when there is no transcript (Tandem's sessions live under
  * tandem/) or the policy never started (any setup outside the league); the collector writes the
@@ -96,13 +145,76 @@ const STREAM_FILE = "stream.jsonl";
 export function autoAnswerMetricsFromBundle(bundle: Uint8Array): Record<string, number> {
   const entries = readTarGz(bundle, { want: (name) => name === STREAM_FILE });
   const stream = entries.find((e) => e.name === STREAM_FILE)?.data;
-  if (!stream) return {};
-  const out: Record<string, number> = {};
-  const keys: readonly string[] = AUTO_ANSWER_METRIC_KEYS;
-  for (const row of collectStreamJson(Buffer.from(stream).toString("utf8"))) {
-    if (keys.includes(row.name) && row.labels === undefined) out[row.name] = Number(row.value);
+  return stream ? autoAnswerOf(Buffer.from(stream).toString("utf8")) : {};
+}
+
+/**
+ * TDM-250: a trial's session totals from its stored bundle. undefined when the bundle could not be
+ * read (no source, a download or archive error): the caller keeps what is stored. null when the
+ * trial has no bundle or the bundle has no transcript. Never throws.
+ */
+export async function readSessionSpend(
+  bundles: BundleSource | null | undefined,
+  runId: string,
+  trialId: string,
+): Promise<ClaudeCodeSpend | null | undefined> {
+  if (!bundles) return undefined;
+  try {
+    const bundle = await bundles.bundle(runId, trialId);
+    return bundle ? bundleReadings(bundle).sessions : null;
+  } catch {
+    return undefined;
   }
-  return out;
+}
+
+/** Where a trial attempt's recorded model-token spend came from (TDM-250). */
+export type TokenSpendSource =
+  /** Every session in the bundle reported a total: their sum, the meter ignored. */
+  | "session_totals"
+  /** Some session never reported (stopped mid-turn): the larger of the sum and the meter. */
+  | "session_totals_and_meter"
+  /** No transcript (or bundle) to read: the runner's live meter. */
+  | "meter";
+
+/**
+ * TDM-250: the attempt's recorded spend. Claude Code's own session totals are the bill once the
+ * bundle is read: the runner's live meter is an estimate for the in-flight hard stop, and a stale
+ * meter summed the running totals (run 01a1c202: $184.80 recorded, $87.71 real). Where a session
+ * stopped before it reported, its spend is not in the transcript, so the meter (which estimates
+ * the open sessions on top of the reported ones) stands when it is larger. Idempotent: applying
+ * it to its own output gives the same figure.
+ */
+export function settledTokenSpend(
+  meter: bigint | null,
+  sessions: ClaudeCodeSpend | null,
+): { spend: bigint | null; source: TokenSpendSource } {
+  if (!sessions || sessions.sessions === 0) return { spend: meter, source: "meter" };
+  if (sessions.open_sessions === 0) {
+    return { spend: sessions.total_micro_usd, source: "session_totals" };
+  }
+  const total = sessions.total_micro_usd;
+  return {
+    spend: meter !== null && meter > total ? meter : total,
+    source: "session_totals_and_meter",
+  };
+}
+
+/**
+ * TDM-246: record THIS attempt's model-token spend (the row's attempt as it stands when the update
+ * runs) under its own key, and keep token_spend_micro_usd the sum over every attempt, so a retried
+ * attempt never overwrites (lowers) what an earlier one spent. Writing the same attempt again
+ * replaces its entry (idempotent; TDM-250: the session totals replace the meter's figure). Null
+ * clears nothing.
+ */
+export function tokenSpendColumns(
+  spend: bigint | null,
+): Partial<Record<"tokenSpendByAttempt" | "tokenSpendMicroUsd", SQL>> {
+  if (spend === null) return {};
+  const merged = sql`(coalesce(${trials.tokenSpendByAttempt}, '{}'::jsonb) || jsonb_build_object(${trials.attempt}::text, ${spend.toString()}::text))`;
+  return {
+    tokenSpendByAttempt: merged,
+    tokenSpendMicroUsd: sql`(select coalesce(sum(e.value::bigint), 0) from jsonb_each_text(${merged}) as e)`,
+  };
 }
 
 /** One trial.phase event, as stored. */
@@ -358,6 +470,40 @@ export function byokInputsOf(
     : {};
 }
 
+/** TDM-250: a BYOK attempt's settled spend, for trialMetrics and the trial row. */
+export interface SettledByok {
+  /** trialMetrics' input (byok_token_cost_micro_usd). Omitted: not a BYOK trial. */
+  byokTokens?: bigint | null;
+  /** The attempt's entry to write into token_spend_by_attempt, when it changes. */
+  store?: bigint;
+  source?: TokenSpendSource;
+}
+
+/** trialMetrics' `byokTokens` from a SettledByok (absent for a proxy-key trial). */
+export function byokTokensOf(b: SettledByok): { byokTokens?: bigint | null } {
+  return b.byokTokens !== undefined ? { byokTokens: b.byokTokens } : {};
+}
+
+/**
+ * TDM-250: byokInputsOf once the bundle is read: the attempt's spend is settledTokenSpend over the
+ * stored (meter) figure and the bundle's session totals. `sessions` undefined (bundle not read):
+ * the stored figure, as byokInputsOf.
+ */
+export function settledByokOf(
+  t: Pick<MetricsTrialRow, "attempt" | "proxyKeyId" | "tokenSpendByAttempt">,
+  sessions: ClaudeCodeSpend | null | undefined,
+): SettledByok {
+  if (t.proxyKeyId !== null) return {};
+  const stored = attemptTokenSpend(t.tokenSpendByAttempt, t.attempt);
+  if (sessions === undefined) return { byokTokens: stored };
+  const s = settledTokenSpend(stored, sessions);
+  return {
+    byokTokens: s.spend,
+    source: s.source,
+    ...(s.spend !== null && s.spend !== stored ? { store: s.spend } : {}),
+  };
+}
+
 /**
  * Recompute and store one settled trial's metrics and cost, only while it is still in the state
  * and attempt it was read in. Returns what was written, or null when the row moved on.
@@ -370,9 +516,15 @@ export async function recordTrialMetrics(
     gateMetrics?: Record<string, number>;
     edges?: readonly PhaseEdge[];
     costBasis?: KitCostBasis;
+    /**
+     * TDM-250: the bundle's session totals (readSessionSpend). Given: the attempt's BYOK spend is
+     * settled from them and written back to token_spend_by_attempt. Omitted: the stored figure.
+     */
+    sessions?: ClaudeCodeSpend | null;
   } = {},
 ): Promise<{ metrics: Record<string, number>; costMicroUsd: bigint } | null> {
   const edges = opts.edges ?? (await trialPhaseEdges(db, t.runId, [t.id])).get(t.id) ?? [];
+  const byok = settledByokOf(t, opts.sessions);
   const m = trialMetrics({
     attempt: t.attempt,
     existing: t.metrics,
@@ -381,12 +533,17 @@ export async function recordTrialMetrics(
     gate: t.gate,
     proxy,
     ...(opts.gateMetrics ? { gateMetrics: opts.gateMetrics } : {}),
-    ...byokInputsOf(t),
+    ...byokTokensOf(byok),
     ...(opts.costBasis ? { costBasis: opts.costBasis } : {}),
   });
   const moved = await db
     .update(trials)
-    .set({ metrics: m.metrics, costMicroUsd: m.costMicroUsd, updatedAt: sql`now()` })
+    .set({
+      metrics: m.metrics,
+      costMicroUsd: m.costMicroUsd,
+      ...(byok.store !== undefined ? tokenSpendColumns(byok.store) : {}),
+      updatedAt: sql`now()`,
+    })
     .where(
       and(
         eq(trials.id, t.id),

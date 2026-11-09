@@ -97,11 +97,16 @@ import {
 import type { KitFileStore } from "../lib/kit-upload/store.js";
 import {
   attemptProxySpend,
-  autoAnswerMetricsFromBundle,
-  byokInputsOf,
+  attemptTokenSpend,
+  bundleReadings,
+  byokTokensOf,
+  readSessionSpend,
+  settledByokOf,
+  tokenSpendColumns,
   trialMetrics,
   trialPhaseEdges,
 } from "../orchestrator/trial-metrics.js";
+import type { ClaudeCodeSpend } from "@anybench/bench";
 import { defineJob, type JobContext } from "./types.js";
 import {
   artifactBundleSource,
@@ -354,6 +359,13 @@ export async function gateTrial(
   async function ungraded(reason: string): Promise<GateTrialReport> {
     const proxy = await attemptProxySpend(deps.proxySpend, trial!);
     const edges = (await trialPhaseEdges(deps.db, trial!.runId, [trial!.id])).get(trial!.id) ?? [];
+    // TDM-250: the BYOK spend from the bundle's session totals, when the bundle can be read.
+    const byok = settledByokOf(
+      trial!,
+      trial!.proxyKeyId === null
+        ? await readSessionSpend(deps.traces?.bundles, trial!.runId, trial!.id)
+        : undefined,
+    );
     const measured = trialMetrics({
       attempt: trial!.attempt,
       existing: trial!.metrics,
@@ -361,7 +373,7 @@ export async function gateTrial(
       edges,
       gate: null,
       proxy,
-      ...byokInputsOf(trial!),
+      ...byokTokensOf(byok),
       ...(costBasis ? { costBasis } : {}),
     });
     const updated = await deps.db
@@ -369,6 +381,7 @@ export async function gateTrial(
       .set({
         metrics: measured.metrics,
         costMicroUsd: measured.costMicroUsd,
+        ...(byok.store !== undefined ? tokenSpendColumns(byok.store) : {}),
         frozenWorkspace: { ...frozenFact!, grading: "unavailable", reason },
         updatedAt: now(),
       })
@@ -533,18 +546,35 @@ export async function gateTrial(
   // TDM-245: the headless policy's counts from the bundle's stream.jsonl, in the same update as
   // the verdict (the report's auto-answer line). The trace below reuses the bytes. Best effort:
   // an unreadable bundle leaves the counts out and never changes the score.
+  // TDM-250: the same pass reads Claude Code's session totals, which settle the attempt's BYOK
+  // spend (trial-metrics.ts settledTokenSpend); an unreadable bundle keeps the runner's meter.
   let bundle: Uint8Array | null | undefined;
   let autoAnswer: Record<string, number> | undefined;
+  let sessions: ClaudeCodeSpend | null | undefined;
   if (deps.traces) {
     try {
       bundle = await deps.traces.bundles.bundle(trial.runId, trial.id);
-      autoAnswer = bundle ? autoAnswerMetricsFromBundle(bundle) : {};
+      const read = bundle ? bundleReadings(bundle) : { autoAnswer: {}, sessions: null };
+      autoAnswer = read.autoAnswer;
+      sessions = read.sessions;
     } catch (err) {
       deps.logger?.warn(
         { trialId: trial.id, err: err instanceof Error ? err.message : String(err) },
-        "trial.gate: bundle not read for the auto-answer counts (the score stands)",
+        "trial.gate: bundle not read for the auto-answer counts and session totals (the score stands)",
       );
     }
+  }
+  const byok = settledByokOf(trial, sessions);
+  if (byok.store !== undefined) {
+    deps.logger?.info(
+      {
+        trialId: trial.id,
+        metered: String(attemptTokenSpend(trial.tokenSpendByAttempt, trial.attempt)),
+        settled: String(byok.store),
+        source: byok.source,
+      },
+      "trial.gate: BYOK spend settled from Claude Code's session totals",
+    );
   }
   const measured = trialMetrics({
     attempt: trial.attempt,
@@ -554,7 +584,7 @@ export async function gateTrial(
     gate: scored,
     proxy,
     ...(autoAnswer ? { autoAnswer } : {}),
-    ...byokInputsOf(trial),
+    ...byokTokensOf(byok),
     ...(costBasis ? { costBasis } : {}),
   });
   const at = now();
@@ -566,6 +596,7 @@ export async function gateTrial(
         gate: scored,
         metrics: measured.metrics,
         costMicroUsd: measured.costMicroUsd,
+        ...(byok.store !== undefined ? tokenSpendColumns(byok.store) : {}),
         state: t.to,
         updatedAt: at,
         ...(failedApplicable && !subject ? { failureClass: "gate" } : {}),

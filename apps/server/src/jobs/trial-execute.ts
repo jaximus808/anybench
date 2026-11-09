@@ -58,7 +58,7 @@ import {
 import { createComputerRegistry, type ComputerStore } from "@anybench/envs";
 import type { ProxySpendSource } from "@anybench/naive";
 import type { ComputeProvider } from "@anybench/providers";
-import { and, asc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { JobHelpers } from "graphile-worker";
 import { z } from "zod";
 import type { Config } from "../config.js";
@@ -88,7 +88,13 @@ import {
   type RunBudget,
 } from "../orchestrator/budget.js";
 import { kitTrialSource } from "../orchestrator/defaults.js";
-import { attemptProxySpend, recordTrialMetrics } from "../orchestrator/trial-metrics.js";
+import {
+  attemptProxySpend,
+  readSessionSpend,
+  recordTrialMetrics,
+  tokenSpendColumns,
+} from "../orchestrator/trial-metrics.js";
+import { artifactBundleSource, type BundleSource } from "../lib/trial-trace/store.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { defineJob, type JobContext } from "./types.js";
 
@@ -176,22 +182,8 @@ function toColumns(p: TrialPatch): Partial<typeof trials.$inferInsert> {
   return c;
 }
 
-/**
- * TDM-246: record THIS attempt's metered token spend (the row's attempt as it stands when the
- * update runs) under its own key, and keep token_spend_micro_usd the sum over every attempt, so a
- * retried attempt never overwrites (lowers) what an earlier one spent. Writing the same attempt
- * again replaces its entry (idempotent). Null clears nothing.
- */
-export function tokenSpendColumns(
-  spend: bigint | null,
-): Partial<Record<"tokenSpendByAttempt" | "tokenSpendMicroUsd", SQL>> {
-  if (spend === null) return {};
-  const merged = sql`(coalesce(${trials.tokenSpendByAttempt}, '{}'::jsonb) || jsonb_build_object(${trials.attempt}::text, ${spend.toString()}::text))`;
-  return {
-    tokenSpendByAttempt: merged,
-    tokenSpendMicroUsd: sql`(select coalesce(sum(e.value::bigint), 0) from jsonb_each_text(${merged}) as e)`,
-  };
-}
+/** TDM-246: defined with the trial metrics (TDM-250 writes it from trial.gate too). */
+export { tokenSpendColumns };
 
 /** SQL: the lease holder's worker ticked within WORKER_MAX_TICK_AGE_MS, as the same process. */
 function holderAlive(maxTickAgeMs: number) {
@@ -468,6 +460,11 @@ export interface TrialExecuteJobOptions {
   breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
   /** TDM-242: admit every launch against the run's budget (production: from config). */
   budget?: (ctx: JobContext) => BudgetPricing | null;
+  /**
+   * TDM-250: stored trial bundles, to settle a failed_subject trial's BYOK spend from Claude
+   * Code's session totals (production: the artifact store). Unset: the runner's meter stands.
+   */
+  bundles?: (ctx: JobContext) => BundleSource | null;
 }
 
 /** The shared breaker for `provider` (production default). */
@@ -562,12 +559,15 @@ export async function enqueueFollowUp(
  * A failed_subject trial with nothing to grade never reaches trial.gate: record its cost (compute +
  * proxy spend) and wall here, so "all spend ÷ solved" counts it (orchestrator/trial-metrics.ts).
  * One that froze a workspace is graded, and trial.gate records them with the verdict (TDM-232):
- * writing them here too would race the gate's own write.
+ * writing them here too would race the gate's own write. TDM-250: with `bundles`, its BYOK spend
+ * is settled from the bundle's Claude Code session totals (the runner's meter stands where a
+ * session never reported).
  */
 export async function recordFailedSubjectMetrics(
   db: Database,
   trialId: string,
   spend: ProxySpendSource | null,
+  bundles?: BundleSource | null,
 ): Promise<void> {
   const [row] = await db.select().from(trials).where(eq(trials.id, trialId));
   if (!row || row.state !== "failed_subject") return;
@@ -580,8 +580,11 @@ export async function recordFailedSubjectMetrics(
     .where(eq(runs.id, row.runId))
     .limit(1);
   const spec = kit ? safeParseKitSpec(kit.spec) : null;
+  const sessions =
+    row.proxyKeyId === null ? await readSessionSpend(bundles, row.runId, row.id) : undefined;
   await recordTrialMetrics(db, row, await attemptProxySpend(spend, row), {
     ...(spec?.success ? { costBasis: kitCostBasis(spec.data) } : {}),
+    ...(sessions !== undefined ? { sessions } : {}),
   });
 }
 
@@ -654,8 +657,13 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
         beforeRelease: (o) => enqueueFollowUp(helpers.addJob, o, payload),
       });
       if (outcome.kind === "final" && outcome.state === "failed_subject") {
-        await recordFailedSubjectMetrics(ctx.db, payload.trial_id, naiveProxy?.spend ?? null).catch(
-          (err: unknown) => log.warn({ err }, "trial.execute: could not record trial metrics"),
+        await recordFailedSubjectMetrics(
+          ctx.db,
+          payload.trial_id,
+          naiveProxy?.spend ?? null,
+          options.bundles?.(ctx) ?? null,
+        ).catch((err: unknown) =>
+          log.warn({ err }, "trial.execute: could not record trial metrics"),
         );
       }
       const summary =
@@ -700,6 +708,10 @@ export function defaultTrialExecuteOptions(): TrialExecuteJobOptions {
     fallbackUpload: () => {
       const store = artifactStoreFromEnv();
       return store ? fallbackBundleUpload(store) : undefined;
+    },
+    bundles: () => {
+      const store = artifactStoreFromEnv();
+      return store ? artifactBundleSource(store) : null;
     },
   };
 }

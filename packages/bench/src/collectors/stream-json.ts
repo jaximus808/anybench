@@ -402,3 +402,114 @@ export function collectStreamJson(text: string): Metric[] {
   }
   return rows;
 }
+
+// ---------------------------------------------------------------------------------------------
+// TDM-250: a trial's model-token bill from Claude Code's own session totals.
+//
+// Every `result` line carries `total_cost_usd`, the session's RUNNING total (a session with
+// background subagents writes one result per lead turn, Tandem workers 2 to 4, a resumed process
+// the whole session's). So a session's bill is its latest (largest) total, and a trial's is the sum
+// over its sessions (Tandem: the planner and each worker, one transcript each). Summing the result
+// lines instead is what made run 01a1c202 record $184.80 against a real $87.71
+// (docs/findings/harness-league-run-1.md). A session with no total yet is "open": its spend is not
+// in the transcript (the runner's live meter estimates it).
+
+/** One Claude Code session in a transcript. */
+export interface SessionBill {
+  /** `session_id`, or `<transcript>#<n>` for a process that never said its id. */
+  session: string;
+  /** The session's latest (largest) `total_cost_usd`, micro-USD; null while it has none. */
+  cost_micro_usd: MicroUsd | null;
+  /** `result` lines of the session. */
+  results: number;
+}
+
+const TotalCostSchema = z.looseObject({ total_cost_usd: UsdText.optional() });
+
+/** The sessions of one stream-json transcript and each one's latest total. */
+export function sessionBills(text: string, transcript = "transcript"): SessionBill[] {
+  const bills = new Map<string, SessionBill>();
+  let current: string | null = null;
+  let processes = 0;
+  const open = (key: string): SessionBill => {
+    let b = bills.get(key);
+    if (!b) {
+      b = { session: key, cost_micro_usd: null, results: 0 };
+      bills.set(key, b);
+    }
+    return b;
+  };
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    let raw: unknown;
+    try {
+      raw = parseJsonKeepingNumberText(line, MONEY_KEYS);
+    } catch {
+      continue;
+    }
+    if (!raw || typeof raw !== "object") continue;
+    const e = raw as { type?: unknown; subtype?: unknown; session_id?: unknown };
+    const sid = typeof e.session_id === "string" && e.session_id !== "" ? e.session_id : null;
+    if (e.type === "system" && e.subtype === "init") {
+      processes++;
+      current = sid ?? `${transcript}#${processes}`;
+      open(current);
+    } else if (e.type === "assistant") {
+      open(sid ?? current ?? `${transcript}#${processes}`);
+    } else if (e.type === "result") {
+      const b = open(sid ?? current ?? `${transcript}#${processes}`);
+      b.results++;
+      const r = TotalCostSchema.safeParse(raw);
+      const total = r.success ? r.data.total_cost_usd : undefined;
+      if (total !== undefined && (b.cost_micro_usd === null || total > b.cost_micro_usd)) {
+        b.cost_micro_usd = total as MicroUsd;
+      }
+    }
+  }
+  return [...bills.values()];
+}
+
+/** A trial's spend by Claude Code's own totals, over all its transcripts. */
+export interface ClaudeCodeSpend {
+  /** Σ over sessions of each one's latest total (the open sessions add nothing). */
+  total_micro_usd: MicroUsd;
+  sessions: number;
+  /** Sessions with no total yet (stopped mid-turn): their spend is not in the transcript. */
+  open_sessions: number;
+  results: number;
+  per_session: (SessionBill & { transcript: string })[];
+}
+
+/**
+ * Claude Code's bill for a set of transcripts (solo: `stream.jsonl`; Tandem: one per session).
+ * A session seen in two transcripts counts once, at its larger total.
+ */
+export function claudeCodeSpend(
+  transcripts: readonly { name: string; text: string }[],
+): ClaudeCodeSpend {
+  const seen = new Map<string, SessionBill & { transcript: string }>();
+  for (const t of transcripts) {
+    for (const b of sessionBills(t.text, t.name)) {
+      const prev = seen.get(b.session);
+      if (!prev) {
+        seen.set(b.session, { ...b, transcript: t.name });
+        continue;
+      }
+      prev.results += b.results;
+      if (
+        b.cost_micro_usd !== null &&
+        (prev.cost_micro_usd === null || b.cost_micro_usd > prev.cost_micro_usd)
+      ) {
+        prev.cost_micro_usd = b.cost_micro_usd;
+      }
+    }
+  }
+  const per = [...seen.values()];
+  return {
+    total_micro_usd: per.reduce((acc, b) => acc + (b.cost_micro_usd ?? 0n), 0n) as MicroUsd,
+    sessions: per.length,
+    open_sessions: per.filter((b) => b.cost_micro_usd === null).length,
+    results: per.reduce((acc, b) => acc + b.results, 0),
+    per_session: per,
+  };
+}

@@ -433,6 +433,90 @@ describe.skipIf(!available)("trial.gate (TDM-51, local Postgres)", () => {
     expect(row3!.metrics).toMatchObject({ questions_auto_answered: 3 });
   });
 
+  it("TDM-250: a BYOK trial's spend is settled from Claude Code's session totals with the verdict, replacing the meter's figure", async () => {
+    // Tandem-shaped bundle: a planner and a worker, each its own transcript. The worker wrote three
+    // results with running totals (as on run 01a1c202), so its bill is the last one, not the sum.
+    const line = (o: object) => JSON.stringify(o);
+    const planner = [
+      line({ type: "system", subtype: "init", session_id: "p" }),
+      line({ type: "result", subtype: "success", session_id: "p", total_cost_usd: 1.25 }),
+    ].join("\n");
+    const worker = [
+      line({ type: "system", subtype: "init", session_id: "w1" }),
+      line({ type: "result", subtype: "success", session_id: "w1", total_cost_usd: 2 }),
+      line({ type: "result", subtype: "success", session_id: "w1", total_cost_usd: 3.5 }),
+      line({ type: "result", subtype: "success", session_id: "w1", total_cost_usd: 4.000001 }),
+    ].join("\n");
+    const bundle = tarGzTdm245({
+      "tandem/streams/planner.jsonl": planner,
+      "tandem/streams/worker-1.jsonl": worker,
+    });
+    const s = await seedTdm51(h.db, false);
+    // Attempt 2: attempt 1 (an infra failure) keeps its own entry; attempt 2's meter said $10.75
+    // (1.25 + 2 + 3.5 + 4.000001, the stale meter's sum).
+    const t = await trialTdm51(h.db, s, "gating", {
+      attempt: 2,
+      tokenSpendByAttempt: { "1": "100", "2": "10750001" },
+      tokenSpendMicroUsd: 10_750_101n,
+    });
+    const report = await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: { bundle: async () => bundle },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t.id, attempt: 2 },
+    );
+    expect(report).toMatchObject({ outcome: "scored", to: "done" });
+    const [row] = await h.db.select().from(trials).where(eq(trials.id, t.id));
+    expect(row!.tokenSpendByAttempt).toEqual({ "1": "100", "2": "5250001" });
+    expect(row!.tokenSpendMicroUsd).toBe(5_250_101n);
+    expect(row!.metrics).toMatchObject({ byok_token_cost_micro_usd: 5_250_001 });
+
+    // A proxy-key trial (Naïve's managed tokens) is never touched: its spend is the ledger's.
+    const t2 = await trialTdm51(h.db, s, "gating", {
+      proxyKeyId: "key-tdm250",
+      proxyKeyAttempt: 1,
+      tokenSpendByAttempt: { "1": "999" },
+      tokenSpendMicroUsd: 999n,
+    });
+    await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: { bundle: async () => bundle },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t2.id, attempt: 1 },
+    );
+    const [row2] = await h.db.select().from(trials).where(eq(trials.id, t2.id));
+    expect(row2!.tokenSpendByAttempt).toEqual({ "1": "999" });
+    expect(row2!.tokenSpendMicroUsd).toBe(999n);
+
+    // The bundle could not be read: the meter's figure stands (and is what the metric says).
+    const t3 = await trialTdm51(h.db, s, "gating", {
+      tokenSpendByAttempt: { "1": "7000000" },
+      tokenSpendMicroUsd: 7_000_000n,
+    });
+    await gateTrial(
+      depsTdm51(fakeScoringTdm51({}), {
+        traces: {
+          bundles: {
+            bundle: async () => {
+              throw new Error("store down");
+            },
+          },
+          traces: { get: async () => null, put: async () => undefined },
+        },
+      }),
+      { trial_id: t3.id, attempt: 1 },
+    );
+    const [row3] = await h.db.select().from(trials).where(eq(trials.id, t3.id));
+    expect(row3!.tokenSpendMicroUsd).toBe(7_000_000n);
+    expect(row3!.metrics).toMatchObject({ byok_token_cost_micro_usd: 7_000_000 });
+  });
+
   it("a check that broke on the outputs is the contender's counted FAIL plus trial.kit_suspect, never a re-roll", async () => {
     const s = await seedTdm51(h.db, true);
     const t = await trialTdm51(h.db, s, "gating");

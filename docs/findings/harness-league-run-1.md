@@ -283,6 +283,78 @@ The run held at "BYOK tokens spent $178.27 + ... $25.00 for the next trial at it
 the $190.00 BYOK token limit". At real spend ($87.71 for all 19) the 6 unstarted trials
 (about $41 at the measured means) would have fit easily.
 
+### Backfill of the recorded spend (TDM-250, dry run, 2026-11-09)
+
+The recorded figure now comes from Claude Code's own totals once the bundle is read
+(`trial-metrics.ts settledTokenSpend`: each session's latest `total_cost_usd`, summed over the
+bundle's `stream.jsonl` and `tandem/streams/*.jsonl`; the runner's meter stays the figure only in
+flight, and where a session stopped before it reported, the larger of the two). trial.gate and the
+failed_subject metrics write it into `token_spend_by_attempt[attempt]`, so `runs.byok_token_micro_usd`
+and the $190 limit count the same figure. `scripts/ops/backfill-token-spend.ts` recomputes a
+settled run from its stored bundles. Dry run against the live database (the Neon branch in
+`DATABASE_URL_DIRECT`; the connection is opened with `default_transaction_read_only=on` and the
+script checks it) and the bundles from R2 (`S3_*` from `.env`, never printed):
+
+```sh
+pnpm exec tsx --env-file=.env scripts/ops/backfill-token-spend.ts --run 01a1c202-260f-7b8a-b8a6-49ac06cb995d
+```
+
+```
+dry run: read-only connection (default_transaction_read_only=on)
+run 01a1c202-260f-7b8a-b8a6-49ac06cb995d (delivered): 25 trials
+contender            rep  state           att  source                    sessions  old (trial)  new (trial)  note
+claude-code-subagents   0 failed_subject    1 session_totals            1/0 open       $34.07        $6.81  194334f9
+claude-code-subagents   1 failed_subject    2 session_totals            1/0 open       $32.42        $6.48  997548a8
+claude-code-subagents   2 failed_subject    1 session_totals            1/0 open       $31.54        $7.88  9148c3e1
+claude-code-subagents   3 cancelled         1 meter                     -/- open            -            -  40b05369 no bundle
+claude-code-subagents   4 cancelled         1 meter                     -/- open            -            -  234764cd no bundle
+tandem                 0 done              1 session_totals            4/0 open       $17.05       $12.25  b5f8c2e6
+tandem                 1 done              1 session_totals            4/0 open       $13.63        $8.52  f217357d
+tandem                 2 cancelled         1 meter                     -/- open            -            -  e8bf43b3 no bundle
+tandem                 3 done              1 session_totals            4/0 open       $21.31       $10.97  1bdc3ee6
+tandem                 4 cancelled         1 meter                     -/- open            -            -  403412c3 no bundle
+claude-code-solo       0 done              1 session_totals            1/0 open        $2.88        $2.88  fd55d998
+claude-code-solo       1 done              1 session_totals            1/0 open        $2.46        $2.46  bcbb550b
+claude-code-solo       2 done              1 session_totals            1/0 open        $2.60        $2.60  3e207412
+claude-code-solo       3 done              1 session_totals            1/0 open        $2.57        $2.57  3998656f
+claude-code-solo       4 cancelled         1 meter                     -/- open            -            -  9ed46fa3 no bundle
+superpowers            0 done              1 session_totals            1/0 open        $2.64        $2.64  19978297
+superpowers            1 done              1 session_totals            1/0 open        $2.53        $2.53  399e012f
+superpowers            2 cancelled         1 meter                     -/- open            -            -  3d87df64 no bundle
+superpowers            3 done              1 session_totals            1/0 open        $2.89        $2.89  efecc811
+superpowers            4 done              1 session_totals            1/0 open        $2.80        $2.80  f27250d4
+gstack                 0 done              1 session_totals            1/0 open        $2.37        $2.37  8985a799
+gstack                 1 done              1 session_totals            1/0 open        $2.64        $2.64  8cb9cf11
+gstack                 2 done              1 session_totals            1/0 open        $2.74        $2.74  16c314a1
+gstack                 3 done              1 session_totals            1/0 open        $2.93        $2.93  2fef2ced
+gstack                 4 done              2 session_totals            1/0 open        $2.73        $2.73  21b8fbf9
+by contender (BYOK trials):
+  claude-code-subagents  5 trials     $98.03 ->    $21.18
+  tandem                5 trials     $51.99 ->    $31.74
+  claude-code-solo      5 trials     $10.52 ->    $10.52
+  superpowers           5 trials     $10.86 ->    $10.86
+  gstack                5 trials     $13.42 ->    $13.42
+  total                            $184.80 ->    $87.71
+runs.byok_token_micro_usd: stored 184802762 ($184.80) -> 87706959 ($87.71)
+```
+
+Every measured trial's sessions reported a total (no open session), so the new figures are Claude
+Code's own and equal the table above: $87.71 in all, D $12.25 / $8.52 / $10.97, B $6.81 / $6.48 /
+$7.88. A, G and S do not change (one result per session, so the stale meter's sum was already the
+total). The two retried trials (B r1, G r4) keep attempt 1's entry; only the latest attempt has a
+bundle. Nothing was written. To apply (the orchestrator's call), then re-score so the report's
+cost per solved task uses the corrected tokens:
+
+```sh
+pnpm exec tsx --env-file=.env scripts/ops/backfill-token-spend.ts --run 01a1c202-260f-7b8a-b8a6-49ac06cb995d --apply
+pnpm exec tsx --env-file=.env scripts/ops/rescore-run.ts --run 01a1c202-260f-7b8a-b8a6-49ac06cb995d --apply
+```
+
+`--apply` rewrites each changed trial's attempt entry, `token_spend_micro_usd` and
+`metrics.byok_token_cost_micro_usd` (guarded by its state and attempt), then
+`runs.byok_token_micro_usd` through the budget module (`terminalRunBudget` + `storeRunBudget`, with
+its `run.budget` event). A second `--apply` writes nothing.
+
 ## What we can and cannot claim (for the blog and the X thread, TDM-230)
 
 We **can** say, about this one task (a fully specified multi-user project-tracker API, 12 areas,
