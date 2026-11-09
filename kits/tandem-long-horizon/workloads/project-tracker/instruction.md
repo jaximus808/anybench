@@ -38,6 +38,10 @@ document says "exactly", "in this order" or gives a formula, the tests depend on
   answers `400 invalid_json`. Where a route takes a body, the body must be a JSON object;
   anything else (missing, an array, a string) answers `400 invalid_body`. Routes that take no
   body ignore any body sent to them, and every route ignores query parameters it does not list.
+  A listed query parameter sent with an empty value (`?limit=`) is present, not absent: it is
+  checked by that parameter's own rule, so `?limit=`, `?cursor=`, `?archived=` and
+  `?includeArchived=` answer `400 invalid_query` and an empty filter such as `?projectId=` or
+  `?action=` matches nothing; only `q` treats a blank value as no condition (section 7).
 - Unknown fields in a body are ignored. A known field with the wrong type or an out-of-range
   value answers `400 invalid_body`. "Trimmed" means leading and trailing whitespace is removed
   before the length check, and the trimmed value is what is stored.
@@ -106,7 +110,9 @@ member. A team has exactly one `owner` at all times.
   adds `total`). `nextCursor` is opaque; passing it back returns the next page. While the data
   does not change, following `nextCursor` from the first page visits every matching item exactly
   once, in order. It is `null` on the last page. A `limit` that is not an integer in range, or a
-  `cursor` the server did not issue, answers `400 invalid_query`.
+  `cursor` the server did not issue, answers `400 invalid_query`. A cursor belongs to the app that
+  issued it: after a restart (a new `createApp` on the same `dataFile`), a cursor from before it
+  answers `400 invalid_query`.
 - Other lists answer `{ "items": [...] }` with every item.
 
 ### 0.6 Options
@@ -215,7 +221,7 @@ A **project** is `{ id, teamId, name, key, description, archived, createdAt, upd
   `archived`: a boolean.
 - `key`: matches `^[A-Z][A-Z0-9]{1,5}$` exactly. Keys are unique within a team, archived projects
   included (`409 key_taken`). A key never changes: a `PATCH` body containing `key` answers
-  `400 invalid_body`.
+  `400 invalid_body`. Deleting a project frees its key, so a new project in the team may reuse it.
 - `?archived=false` lists active projects, `true` only archived ones, `all` both.
 - **Archived projects are read-only.** Every write to a board, column, card or comment inside an
   archived project answers `409 project_archived`. `PATCH` and `DELETE` of the project itself
@@ -349,7 +355,8 @@ A **comment** is
   nobody. Mentions are computed when the comment is created and recomputed on every `PATCH`.
 - A **mention** item of `GET /me/mentions` is `{ commentId, cardId, teamId, authorId, createdAt }`
   (the comment's `createdAt`). It lists every comment that currently has the caller in
-  `mentions`, is not deleted, and belongs to a team the caller is still a member of.
+  `mentions`, is not deleted, and belongs to a team the caller is still a member of. Leaving a team
+  does not change any comment's `mentions`, so if the user rejoins, those comments are listed again.
 - `updatedAt` changes on `PATCH` and on delete.
 
 ## 7. Search (`search`)
@@ -438,9 +445,11 @@ the triggering request never waits for them. Each attempt is an HTTP `POST` to `
   exact body bytes keyed with the webhook's secret.
 
 An attempt **succeeds** when the receiver answers any `2xx` status within `webhooks.timeoutMs`.
-Anything else (another status, a connection error, a timeout) is a failure. After failed attempt
-number `i` (1-based), the next attempt starts `retryDelaysMs[i-1]` ms later (real timers, not the
-`now` clock); after `1 + retryDelaysMs.length` failed attempts the delivery is `failed`.
+Anything else (another status, a connection error, a timeout) is a failure. The outcome is known
+as soon as the response's status line and headers arrive: the attempt does not wait for, and is
+not changed by, the response body. After failed attempt number `i` (1-based), the next attempt
+starts `retryDelaysMs[i-1]` ms later (real timers, not the `now` clock); after
+`1 + retryDelaysMs.length` failed attempts the delivery is `failed`.
 
 The delivery record tracks this: `attempts` counts **finished** attempts (an attempt in flight
 is not counted until its outcome is known); `status` is `pending`, then
@@ -493,7 +502,8 @@ answers `429` with `retry-after: 20` and `x-ratelimit-reset: 1020`. With the clo
 - A new `createApp({ dataFile })` on the same path sees exactly the same state: users log in with
   the same passwords, unexpired tokens still work, ids, numbers, positions and timestamps are
   unchanged, and the next card number continues where it stopped.
-- A missing file means an empty state; the file is created on the first write.
+- A missing file means an empty state; the file is created on the first write. `createApp` itself
+  does not create it: the first successful state-changing request does.
 - `createApp` throws (synchronously) if the file is not valid JSON, or if its `version` is
   neither `1` nor `2`; the message includes `unsupported data version` in the second case.
 - The file never contains a plain-text password.

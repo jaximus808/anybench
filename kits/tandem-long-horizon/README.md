@@ -115,10 +115,15 @@ scripts/ab-run-local.sh                     local stand-in for the gate runner's
 gates/hidden-tests/check.sh                 the hidden-tests gate (L5), scoring computer only
 gates/hidden-tests/grade.mjs                copies the tests in, runs them, scores them, writes the verdict and metrics
 gates/hidden-tests/project-tracker/         120 hidden tests, one file per area, tests.json, fixtures/tracker-v1.json
+proof/oracle/driver.sh                      applies proof/oracle/<workload>/ (the reference solution)
+proof/oracle/project-tracker/               the reference solution: an overlay on the starting repo
+proof/do_less/do-nothing/driver.sh          the no-op harness
+proof/regression/skip-tests/CLAUDE.md       the planted regression ("skip the tests")
+scripts/verify-proof.sh                     the offline proof (Docker, node:22, --network none); writes PROOF.md
 ```
 
 Still to come in sibling tickets of E18: the kit file `anybench.yaml` with the adapters (copied
-from `kits/tandem-vs-claude-code`), and the reference solution and proof (18.4).
+from `kits/tandem-vs-claude-code`).
 
 ## Hidden tests and partial credit
 
@@ -150,6 +155,8 @@ node kits/tandem-long-horizon/scripts/gen-seed-v1.mjs --check
 # the hidden-tests gate on a workspace in <run>/workspace:
 AB_RUN=kits/tandem-long-horizon/scripts/ab-run-local.sh AB_RUN_DIR=<run> \
   kits/tandem-long-horizon/gates/hidden-tests/check.sh <out> project-tracker <out>/gate.json
+# the proof (oracle 120/120 three times, do-nothing only /health); --write rewrites PROOF.md:
+kits/tandem-long-horizon/scripts/verify-proof.sh --write
 ```
 
 `packages/kit/test/tdm209-long-horizon-hidden-tests.test.ts` checks that `tests.json` matches the
@@ -160,3 +167,28 @@ test files and the area targets, the fixture copy is identical, the metric rows 
 deterministic and yields one commit, the skeleton's own tests pass, `areas.json` and
 `instruction.md` agree route for route, the targets sum to 120, the fixture's documented passwords
 verify, and this README carries the prediction.
+
+`packages/kit/test/tdm211-long-horizon-proof.test.ts` checks the proof layout, that the oracle is
+zero-dependency erasable TypeScript, that PROOF.md records a passing run, and runs the oracle
+through the real gate (120/120); its `validateKitDir` test skips until `anybench.yaml` exists.
+
+## Proof
+
+`PROOF.md` is the output of `scripts/verify-proof.sh --write`: in a `node:22` container with no
+network, the reference solution passes 120/120 hidden tests on three fresh workspaces and its own
+`npm test`, and the untouched starting repo passes only `GET /health` (1/120). No hidden test
+was changed to fit the oracle.
+
+The reference solution (`proof/oracle/project-tracker/`, about 2,400 lines of source in 7 files) is
+written from `instruction.md` alone, uses Node built-ins only and runs by type stripping. Writing
+it found six points `instruction.md` left open. No hidden test depends on any of them; each is now
+settled in `instruction.md` by one sentence, and the oracle's own tests check the reading:
+
+| Open point | Settled as | Section |
+| --- | --- | --- |
+| A listed query parameter with an empty value (`?limit=`) | Present, not absent: checked by its own rule, so `?limit=`, `?cursor=`, `?archived=`, `?includeArchived=` are `400 invalid_query`; an empty filter matches nothing; `q` blank means no condition | 0.1 |
+| Cursors after a restart | A cursor belongs to the app that issued it: after a restart it is `400 invalid_query` | 0.5 |
+| Whether deleting a project frees its key | It does: a new project in the team may reuse it | 3 |
+| Mentions of a user who leaves and rejoins | Leaving changes no comment's `mentions`, so after rejoining they are listed again | 6 |
+| When a webhook attempt counts as answered | When the status line and headers arrive; the body is not waited for and never changes the outcome | 8 |
+| Whether `createApp` creates a missing data file | It does not; the first successful state-changing request does | 10.1 |
