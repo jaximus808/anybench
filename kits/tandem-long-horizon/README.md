@@ -256,6 +256,7 @@ rubric.md                                   the code-quality review rubric (requ
 proof/oracle/driver.sh                      applies proof/oracle/<workload>/ (the reference solution)
 proof/oracle/project-tracker/               the reference solution: an overlay on the starting repo
 proof/do_less/do-nothing/driver.sh          the no-op harness
+proof/do_less/partial-oracle/driver.sh      the oracle with the webhooks area cut out (a near miss; xl: the v1 oracle)
 proof/regression/skip-tests/CLAUDE.md       the planted regression ("skip the tests")
 scripts/verify-proof.sh                     the offline proof (Docker, node:22, --network none); writes PROOF.md
 ```
@@ -298,7 +299,8 @@ node kits/tandem-long-horizon/scripts/gen-seed-v1.mjs --check
 # the hidden-tests gate on a workspace in <run>/workspace:
 AB_RUN=kits/tandem-long-horizon/scripts/ab-run-local.sh AB_RUN_DIR=<run> \
   kits/tandem-long-horizon/gates/hidden-tests/check.sh <out> project-tracker <out>/gate.json
-# the proof (oracle 120/120 three times, do-nothing only /health); --write rewrites PROOF.md:
+# the proof (oracle 120/120 three times, do-nothing only /health, partial-oracle fails the gate
+# with >= 100/120 passing); --write rewrites PROOF.md:
 kits/tandem-long-horizon/scripts/verify-proof.sh --write
 ```
 
@@ -335,3 +337,20 @@ settled in `instruction.md` by one sentence, and the oracle's own tests check th
 | Mentions of a user who leaves and rejoins | Leaving changes no comment's `mentions`, so after rejoining they are listed again | 6 |
 | When a webhook attempt counts as answered | When the status line and headers arrive; the body is not waited for and never changes the outcome | 8 |
 | Whether `createApp` creates a missing data file | It does not; the first successful state-changing request does | 10.1 |
+
+## What the skeptic says about this kit (TDM-233)
+
+`runSkepticChecks` passes this kit with no blocking finding. Two of its rules meet content that is
+correct by design here, and the kit declares both, so they show as warnings instead:
+
+- `workloads[].instruction_kind: contract`: `instruction.md` is the contract the hidden tests
+  check, exact routes, bodies and error codes included (plan.md 17.2 rule 9 wants every assertion
+  to trace to it). The test names and asserted values it shares with the tests are the contract,
+  not a leak. The skeptic checks instead that it copies no line of the oracle's or the tests' code.
+- `gates[].fixtures: [gates/hidden-tests/*/fixtures/]`: the gate's `tracker-v1.json` is a
+  byte-identical copy of the input the task ships, kept so the grade never reads the workspace's
+  copy. It is an input, not an expected output.
+
+The third block was real: the only do-less was a no-op, so nothing showed that the gate refuses
+a near miss. `proof/do_less/partial-oracle/` fixes that (PROOF.md: 106/120 hidden tests pass, and
+the gate fails).

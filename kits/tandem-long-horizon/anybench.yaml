@@ -109,6 +109,12 @@ workloads:
     title: Build a whole multi-user project tracker API (12 feature areas)
     input: workloads/project-tracker/input/
     instruction: workloads/project-tracker/instruction.md
+    # The instruction IS the contract the 120 hidden tests check (every route, field, status code,
+    # error code and exact response; plan.md 17.2 rule 9: every hidden assertion traces to it).
+    # The skeptic then counts the test names and asserted values it shares with the tests as the
+    # contract, not as leakage, checks that it copies none of the oracle's or the tests' code, and
+    # reports the declaration as a warning (TDM-233).
+    instruction_kind: contract
     setup: workloads/project-tracker/setup.sh
     timeout_s: 10800
     params:
@@ -124,6 +130,10 @@ gates:
     kind: hidden-tests
     check: gates/hidden-tests/check.sh
     reference: gates/hidden-tests/
+    # The grader's own copy of the 1.x data file each workload ships in input/fixtures/ (byte-
+    # identical by design): the migration tests load this copy, so a contender that edits the
+    # workspace's copy can't change the grade. One `*` segment per workload dir (TDM-233).
+    fixtures: [gates/hidden-tests/*/fixtures/]
     description: >-
       Runs the 120 hidden tests (gates/hidden-tests/project-tracker/, never in the workspace)
       against a copy of the frozen workspace, offline. Passes only when every hidden test passes;
@@ -197,6 +207,15 @@ proof:
       contender: tandem
       driver_patch: proof/do_less/do-nothing/driver.sh
       description: "No-op harness: leaves the starting repo untouched; must fail every hidden test and show 0 claims."
+    # A near miss (TDM-233): the reference solution with feature area 8 (webhooks) cut out. It still
+    # passes most hidden tests (106 of 120 in PROOF.md), so the gate is shown to refuse a whole app
+    # with one area missing. On project-tracker-xl it applies the v1 oracle (12 of 33 areas).
+    - id: partial-oracle
+      kind: partial-oracle
+      dir: proof/do_less/partial-oracle/
+      contender: tandem
+      driver_patch: proof/do_less/partial-oracle/driver.sh
+      description: "The oracle without the webhooks area (xl: the v1 oracle); must fail the hidden-tests gate."
   regression:
     id: skip-tests
     dir: proof/regression/skip-tests/

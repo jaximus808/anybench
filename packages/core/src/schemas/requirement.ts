@@ -3,7 +3,7 @@
 // The core rule lives here and in KitSpecSchema: every `measured` requirement names a `gate_id`.
 // No speed or quality number without a correctness gate.
 import { z } from "zod";
-import { KitSlugSchema, KitPathSchema } from "./kit-primitives.js";
+import { KitGlobSchema, KitSlugSchema, KitPathSchema } from "./kit-primitives.js";
 
 /** How a gate decides correctness. One per driver class in plan.md P2, plus `custom`. */
 export const GateKindSchema = z.enum([
@@ -58,6 +58,15 @@ export const GateSchema = z.strictObject({
   reference: KitPathSchema.optional(),
   /** Capture the reference from the proof oracle (TDM-44). Needs `reference`. */
   capture: GateCaptureSchema.optional(),
+  /**
+   * TDM-233: the grader's own copies of workload INPUT files (a seed data file the hidden tests
+   * load), kept under `gates/<id>/` so a contender's edit to the workspace copy can't change the
+   * grade. Each entry is a path under `gates/<id>/`; a trailing `/` covers everything under it and
+   * a segment that is just `*` matches any one path segment (one workload's dir, say). A file
+   * here may be byte-identical to a file under a workload's `input/`: the skeptic reports that as
+   * a disclosed warning, not as an answer under workloads/. Never an expected output.
+   */
+  fixtures: z.array(KitGlobSchema).min(1).optional(),
   description: z.string().min(1).optional(),
   timeout_s: z.int().positive().max(86_400).optional(),
 });

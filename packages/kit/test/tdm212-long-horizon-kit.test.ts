@@ -186,7 +186,10 @@ describe("kits/tandem-long-horizon anybench.yaml (TDM-212)", () => {
 
   it("declares the proof: the oracle, the no-op harness and the planted skip-tests regression on A", () => {
     expect(kit.proof.oracle).toMatchObject({ dir: "proof/oracle/", gates: ["hidden-tests"] });
-    expect(kit.proof.do_less.map((d) => d.id)).toEqual(["do-nothing"]);
+    expect(kit.proof.do_less.map((d) => [d.id, d.kind])).toEqual([
+      ["do-nothing", undefined],
+      ["partial-oracle", "partial-oracle"],
+    ]);
     expect(kit.proof.regression).toMatchObject({
       id: "skip-tests",
       contender: "claude-code-solo",

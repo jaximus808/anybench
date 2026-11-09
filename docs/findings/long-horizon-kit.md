@@ -128,11 +128,13 @@ one-sentence clarifications that no hidden test depends on; the full run uses th
    TDM-209; the fixture copy is identical by design), and `weak_do_less` (no partial oracles yet;
    TDM-211 shipped the full oracle and the no-op only).
    The curated path does not run the skeptic, but a kit upload would.
+   **Fixed in TDM-233**, see "The skeptic on this kit" below.
 5. **BYOK key not stored yet.** Before a run on the server, store the founder's key once:
    `pnpm tsx scripts/ops/store-byok-key.ts --owner <github-login>` (needs `ANYBENCH_KEK` on the
    worker too). Both done in TDM-234; see the last section. The curated orchestrator (`apps/server/src/orchestrator/curated.ts`) still maps
    the Tandem repo to `kits/tandem-vs-claude-code` and its Naïve-proxy disclosure; pointing it at
    this kit and `tokens: anthropic-key, effort: default, thinking: on` is TDM-213's.
+   **Done in TDM-233**: the Tandem repo now defaults to this kit (see below).
 
 ## Storing the BYOK key and getting the KEK to the deploys (TDM-234)
 
@@ -172,3 +174,75 @@ at boot. When set, they go into the worker's `~/.anybench/worker.env` and become
 secrets. When unset, they are left out, so a re-deploy deletes a stale API secret. `--dry-run`
 prints names only (`workerEnvPlanSummary`, `secretPlanSummary`). The worker's env fingerprint
 changes when the KEK is added, so the next worker deploy replaces the computer.
+
+## The skeptic on this kit, and the curated default (TDM-233)
+
+Before (`runSkepticChecks(kits/tandem-long-horizon)` from a scratch script on `packages/kit/dist`):
+
+```
+block solution_leakage    instruction.md copies the hidden assertion message "an attempt in flight is not counted"
+block solution_leakage    instruction.md quotes 11 value(s) the hidden assertions use: "In progress", "?moveTo=", "?archived=false", …
+block answer_in_workloads input/fixtures/tracker-v1.json: identical to the scoring file gates/hidden-tests/project-tracker/fixtures/tracker-v1.json
+block answer_in_workloads instruction.md names the hidden test "deleting a card deletes its comments"
+block weak_do_less        the only do-less variant 'do-nothing' is a no-op
+```
+
+Verdicts:
+
+1. **Assertion message: false positive.** The sentence is the contract's definition of
+   `attempts` ("counts finished attempts; an attempt in flight is not counted"). The test author
+   traced the assertion to it, as plan.md 17.2 rule 9 asks. (Its evidence also pointed at line 5:
+   `lineOfText` missed the phrase because it wraps. It now matches across whitespace: line 454.)
+2. **11 quoted values: false positive.** They are routes (`POST /teams`), query parameters
+   (`?moveTo=`, `?limit=`), the documented default column names, and the rate-limit example
+   ("request 3"). That is the observable contract, not the oracle's code.
+3. **Hidden test name: false positive.** "Deleting a card deletes its comments." is a contract
+   bullet; the test is named after the requirement it checks.
+4. **tracker-v1.json copy: false positive.** It is an input (the task is to migrate it, and
+   "do not edit it"); the gate keeps its own byte-identical copy so a contender that edits the
+   workspace copy can't change the grade (`gates/hidden-tests/grade.mjs`).
+5. **weak_do_less: real.** Nothing showed that the gate refuses a near miss, only an empty repo.
+
+Fixes: two explicit declarations in KitSpec, honored only when the kit makes them, and one real
+proof variant.
+
+- `workloads[].instruction_kind: contract`. For such a workload, test names, assertion messages
+  and asserted values in its instruction are tallied, not blocked. In their place, the
+  instruction may copy no line of the oracle's or the hidden tests' code (at least 24 chars with code
+  punctuation, not already in the starting repo): 3 or more copied lines block. The bug-ticket
+  rule-list check, scoring-path pointers and hidden test FILE names still block. Every
+  declaration is reported as a `warn` finding: "1 hidden test name(s), 1 assertion message(s) and
+  11 asserted value(s) appear … Checked instead: it copies no line of the oracle's code (1310 lines
+  compared) or the hidden tests' code (1990 lines compared)".
+- `gates[].fixtures: [gates/hidden-tests/*/fixtures/]`. Paths must be under `gates/<id>/`
+  (KitSpecSchema refuses anything else, and `**`). A workload input file that is byte-identical to
+  a declared fixture becomes a disclosed `warn`. Any other scoring file, or a fixture with an
+  answer-shaped name (expected, golden, ...), still blocks. The `*` segment already covers
+  `gates/hidden-tests/project-tracker-xl/fixtures/` (TDM-236), whether or not the manifest lists
+  xl yet.
+- `proof/do_less/partial-oracle/` (`kind: partial-oracle`): the oracle with feature area 8
+  (webhooks, 9 routes) cut out of `src/app.ts`. It exits 2 if the cut doesn't apply. On
+  project-tracker-xl it applies the v1 oracle. `scripts/verify-proof.sh --write` (Docker,
+  `--network none`):
+
+  ```
+  | partial-oracle | 1 | cce5f9b | 106/120 | 14 | false | 5 s | 13 pass, 2 fail |
+  partial-oracle (the oracle without the webhooks area) fails 14 hidden tests, every webhooks test among them.
+  RESULT: PASS
+  ```
+  The 14 failures are all 11 webhooks tests, plus 2 persistence tests and 1 audit test that use
+  webhooks.
+
+After: 0 blocks. The remaining warnings are the contract declaration, the fixture copy,
+`quality` weight before a judge audit, 1 task, and 5 repeats. Existing leakage fixtures
+(`skeptic-tdm187`) still block.
+
+Curated (`apps/server/src/orchestrator/curated.ts`): the Tandem repo now defaults to
+`kits/tandem-long-horizon` (the whole kit; "smoke" gives 1 repeat per setup on project-tracker, 2
+trials). `kits/tandem-vs-claude-code` is still selectable: name it in the question, say "short
+tasks", or ask for the "null pilot" (that pilot is the short kit's A/A profile). The run page's
+kit-designer message names the kit, its disclosure and how to pick the other one. The analyst's
+disclosure follows the kit the spec came from: `tokens: anthropic-key, effort: default, thinking: on`
+for this kit, the Naïve-proxy line for the short one. Proof uses this kit's own signed-off PROOF.md
+(`LONG_HORIZON_PROOF_SIGNOFF` in proof-score.ts, sha256 `da916780…`): a regenerated PROOF.md
+holds the run until someone signs it off again.

@@ -9,6 +9,16 @@ export const WorkloadSchema = z.strictObject({
   input: KitPathSchema.optional(),
   /** Task text for agents and harnesses, e.g. `workloads/<id>/instruction.md`. */
   instruction: KitPathSchema.optional(),
+  /**
+   * TDM-233: what the instruction is. `task` (the default): a task description, which must not
+   * name the hidden tests or quote the values they assert. `contract`: the instruction IS the
+   * public contract of a build-to-spec task (every route, field, status code, error code and
+   * exact response the tests check, plan.md 17.2 rule 9: every hidden assertion traces to
+   * instruction.md), so the skeptic does not count hidden test names, assertion messages or
+   * asserted values that appear in it as leakage; it checks instead that the instruction holds
+   * none of the oracle's or the hidden tests' code, and reports the declaration as a warning.
+   */
+  instruction_kind: z.enum(["task", "contract"]).optional(),
   /** Prepares `EVAL_WS` before the run, e.g. `workloads/<id>/setup.sh`. */
   setup: KitPathSchema.optional(),
   /** Content hash of the input bytes, when already known. The runner records the real one per trial. */

@@ -278,6 +278,18 @@ export const KitSpecSchema = z
       }
     });
 
+    // TDM-233: a gate's declared fixtures live under its own directory.
+    kit.gates.forEach((g, i) => {
+      g.fixtures?.forEach((f, j) => {
+        if (!f.startsWith(`gates/${g.id}/`) || f.split("/").some((seg) => seg === "**")) {
+          issue(
+            ["gates", i, "fixtures", j],
+            `gate '${g.id}' fixture '${f}' must be a path under gates/${g.id}/ (a '*' segment matches one segment; '**' is not allowed)`,
+          );
+        }
+      });
+    });
+
     // scoring.weights: one integer per requirement, summing to 100.
     let sum = 0;
     for (const [id, w] of Object.entries(kit.scoring.weights)) {

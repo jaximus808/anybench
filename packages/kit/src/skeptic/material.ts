@@ -225,9 +225,20 @@ export function codeSpans(text: string): { value: string; line: number }[] {
 /** The 1-based line of the first occurrence of `needle` (case-insensitive), or 1. */
 export function lineOfText(text: string, needle: string): number {
   const lower = text.toLowerCase();
-  const at = lower.indexOf(needle.toLowerCase());
+  let at = lower.indexOf(needle.toLowerCase());
   if (at < 0) {
-    // Whitespace-insensitive fallback: match the first word.
+    // The needle wrapped across lines (markdown prose): match its words with any whitespace.
+    const words = needle.trim().split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      const re = new RegExp(
+        words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"),
+        "i",
+      );
+      at = re.exec(text)?.index ?? -1;
+    }
+  }
+  if (at < 0) {
+    // Last resort: the first word.
     const first = needle.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
     const j = first ? lower.indexOf(first) : -1;
     return j < 0 ? 1 : lower.slice(0, j).split("\n").length;
@@ -247,4 +258,17 @@ export function isTellingLiteral(v: string, min = 6): boolean {
   // A template with interpolation is code, not a value.
   if (/\$\{/.test(s)) return false;
   return true;
+}
+
+/**
+ * TDM-233: does kit path `p` match a declared pattern? A pattern is a kit-relative path; a
+ * trailing `/` covers everything under it, and a segment that is exactly `*` matches any one
+ * segment (`gates/hidden-tests/<asterisk>/fixtures/`). Nothing else is special.
+ */
+export function matchesKitPattern(pattern: string, p: string): boolean {
+  const dir = pattern.endsWith("/");
+  const want = pattern.replace(/\/+$/, "").split("/");
+  const have = p.split("/");
+  if (dir ? have.length <= want.length : have.length !== want.length) return false;
+  return want.every((seg, i) => seg === "*" || seg === have[i]);
 }

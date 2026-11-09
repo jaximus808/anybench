@@ -9,6 +9,16 @@
 //                        hidden tests assert as bullets: the fix spelled out (SWE-bench+).
 //   answer_in_workloads  a file under workloads/ names hidden tests or holds a reference output (block when it ships: input/,
 //                        instruction.md, setup.sh; warn for kit-side notes).
+//   contract (TDM-233)   a workload with `instruction_kind: contract` (a build-to-spec task whose
+//                        instruction IS the contract the tests check, 17.2 rule 9): hidden test
+//                        names, assertion messages and asserted values in its instruction are the
+//                        contract, not leakage. Instead it must hold no line of the oracle's or
+//                        the hidden tests' code (beyond what the starting repo already has): a
+//                        copy blocks. The declaration is always reported as a warning. The bug-
+//                        ticket rule list, scoring paths and test file names still block.
+//   fixtures (TDM-233)   a file under a workload's input/ byte-identical to a gate's declared
+//                        `fixtures` copy (the grader's own copy of an input) is a disclosed warning,
+//                        not an answer; any other identical scoring file still blocks.
 //   noop_passable        the proof's do-less runs passed the gate (a no-op passing = the hidden
 //                        tests already pass on the untouched input), or a gate script that has no
 //                        way to fail.
@@ -35,7 +45,7 @@ import {
   type ProofCheckResult,
 } from "@anybench/core";
 import type { KitIssue, KitIssueCode } from "../issues.js";
-import { hiddenTestMarkers, noLeakIssues } from "../generate/lint.js";
+import { ANSWER_NAME, hiddenTestMarkers, noLeakIssues } from "../generate/lint.js";
 import { KIT_LAYOUT } from "../layout.js";
 import { parseKitManifest } from "../manifest.js";
 import { doLessKind } from "../proof/suite.js";
@@ -48,6 +58,7 @@ import {
   hiddenTestFiles,
   isTellingLiteral,
   lineOfText,
+  matchesKitPattern,
   normText,
   readKitFiles,
   under,
@@ -105,6 +116,8 @@ export const MIN_TASKS_FOR_BEATS = 20;
 export const AGENT_REPEATS_DEFAULT = 10;
 export const AGENT_REPEATS_FLOOR = 4;
 export const SOFTWARE_REPEATS_DEFAULT = 5;
+/** Distinct oracle / hidden-test code lines a contract instruction may carry before it blocks. */
+export const CONTRACT_COPY_LINES = 3;
 /** Share of a bug ticket's hidden tests its own bullets restate before it counts as the fix spelled out. */
 export const RULE_LISTING_SHARE = 0.6;
 
@@ -138,11 +151,20 @@ const STOP = new Set(
 
 // ---------------------------------------------------------------------------------------------
 
+/** What a contract instruction (TDM-233) shares with the hidden tests, for its disclosure. */
+interface ContractTally {
+  names: Set<string>;
+  messages: Set<string>;
+  values: Set<string>;
+}
+
 interface Ctx {
   m: SkepticKitMaterial;
   source: Pick<KitYamlSource, "doc" | "lineCounter"> | null;
   out: SkepticFinding[];
   ids: Map<string, number>;
+  /** Contract workloads by id (instruction_kind: contract), filled by the leakage checks. */
+  contract: Map<string, ContractTally>;
 }
 
 function add(c: Ctx, f: Omit<SkepticFindingInput, "id"> & { id?: string }): void {
@@ -160,6 +182,23 @@ function yamlAt(c: Ctx, at: readonly PropertyKey[]): string {
 
 const fileText = (m: SkepticKitMaterial, p: string): string | undefined =>
   m.files.find((f) => f.path === p)?.text;
+
+type KitWorkload = KitSpec["workloads"][number];
+const instructionPath = (w: KitWorkload): string =>
+  w.instruction ?? KIT_LAYOUT.workloadInstruction(w.id);
+const inputPath = (w: KitWorkload): string =>
+  (w.input ?? KIT_LAYOUT.workloadInput(w.id)).replace(/\/+$/, "");
+
+/** TDM-233: the tally of a workload whose instruction is declared the contract, else null. */
+function contractTally(c: Ctx, w: KitWorkload): ContractTally | null {
+  if (w.instruction_kind !== "contract") return null;
+  let t = c.contract.get(w.id);
+  if (!t) {
+    t = { names: new Set(), messages: new Set(), values: new Set() };
+    c.contract.set(w.id, t);
+  }
+  return t;
+}
 
 const cut = (s: string, n = 80): string => {
   const flat = s.replace(/\s+/g, " ").trim();
@@ -213,9 +252,12 @@ function testNames(facts: readonly TestFact[]): TestFact[] {
 function checkLeakage(c: Ctx): void {
   const { m } = c;
   for (const w of m.spec.workloads) {
-    const ipath = w.instruction ?? KIT_LAYOUT.workloadInstruction(w.id);
+    const ipath = instructionPath(w);
     const instr = fileText(m, ipath);
     if (!instr) continue;
+    // A declared contract states what the tests check (17.2 rule 9): checks 1 and 2 are its
+    // content, tallied for the disclosure; checkContracts looks for copied code instead.
+    const contract = contractTally(c, w);
     const facts = workloadFacts(m, w.id);
     if (facts.length === 0) continue;
     const instrNorm = normText(instr);
@@ -226,6 +268,10 @@ function checkLeakage(c: Ctx): void {
       if (f.kind !== "message") continue;
       const v = normText(f.value);
       if (v.length < 16 || !instrNorm.includes(v)) continue;
+      if (contract) {
+        contract.messages.add(f.value);
+        continue;
+      }
       add(c, {
         severity: "block",
         check: "solution_leakage",
@@ -254,7 +300,8 @@ function checkLeakage(c: Ctx): void {
       );
       if (f) matches.set(span.value, { instrLine: span.line, test: `${f.path}:${f.line}` });
     }
-    if (matches.size > 0) {
+    if (contract) for (const v of matches.keys()) contract.values.add(v);
+    else if (matches.size > 0) {
       const list = [...matches.entries()];
       const shown = list
         .slice(0, 3)
@@ -319,17 +366,23 @@ function checkAnswers(c: Ctx): void {
 
   for (const w of m.spec.workloads) {
     const root = KIT_LAYOUT.workloadDir(w.id);
-    const input = (w.input ?? KIT_LAYOUT.workloadInput(w.id)).replace(/\/+$/, "");
+    const input = inputPath(w);
     const shipped = (p: string) =>
       under(p, input) ||
-      p === (w.instruction ?? KIT_LAYOUT.workloadInstruction(w.id)) ||
+      p === instructionPath(w) ||
       p === (w.setup ?? KIT_LAYOUT.workloadSetup(w.id));
+    const contract = contractTally(c, w);
     for (const f of m.files.filter((x) => under(x.path, root))) {
       const ships = shipped(f.path);
       const where = ships ? "ships to the subject computer" : "is a kit-side note under workloads/";
       if (f.text === "") continue;
       const lower = normText(f.text);
-      const name = hiddenNames.find((n) => lower.includes(normText(n.value)));
+      // A contract instruction restates the requirements the tests are named after (TDM-233);
+      // a test FILE name or a reference output in it still blocks below.
+      const named = hiddenNames.filter((n) => lower.includes(normText(n.value)));
+      const contractText = contract !== null && f.path === instructionPath(w);
+      if (contractText) for (const n of named) contract.names.add(n.value);
+      const name = contractText ? undefined : named[0];
       const base = [...hiddenBasenames].find((b) => f.text.includes(b));
       const ref = references.find((r) => f.text.includes(r.text.trim()));
       const hit = name
@@ -365,9 +418,28 @@ function lintFindings(c: Ctx, issues: readonly string[]): void {
     const msg = sep > 0 ? line.slice(sep + 2) : line;
     const text = fileText(c.m, file) ?? "";
     const named = /^names the hidden test '(.*)'$/.exec(msg)?.[1];
-    const instruction = c.m.spec.workloads.some(
-      (w) => (w.instruction ?? KIT_LAYOUT.workloadInstruction(w.id)) === file,
+    const instruction = c.m.spec.workloads.some((w) => instructionPath(w) === file);
+    // A declared contract (TDM-233): test names and asserted values are its content.
+    const contractOf = c.m.spec.workloads.find(
+      (w) => w.instruction_kind === "contract" && instructionPath(w) === file,
     );
+    if (contractOf && (named !== undefined || /expected value/.test(msg))) {
+      const t = contractTally(c, contractOf)!;
+      if (named !== undefined) t.names.add(named);
+      continue;
+    }
+    // A gate's declared fixture (TDM-233): the grader's own copy of an input, not an answer.
+    const copyOf = /^identical to the scoring file (.+)$/.exec(msg)?.[1];
+    const fixture = copyOf !== undefined ? declaredFixture(c.m, file, copyOf) : null;
+    if (fixture) {
+      add(c, {
+        severity: "warn",
+        check: "answer_in_workloads",
+        evidence: `${file}:1`,
+        why: `${file} is byte-identical to ${copyOf}, which gate '${fixture}' declares as its own copy of this input (gates[].fixtures): the task ships it and the grader reads its copy, so a contender's edit can't change the grade. Disclosed, not an answer`,
+      });
+      continue;
+    }
     // Our own value check already blocked this instruction with the values it found.
     if (
       /expected value/.test(msg) &&
@@ -403,6 +475,119 @@ function lintFindings(c: Ctx, issues: readonly string[]): void {
       why: `${file}: ${msg} (no-leak lint)`,
     });
   }
+}
+
+/**
+ * TDM-233: the gate that declares `scoringPath` one of its fixtures, when `workloadFile` is an
+ * input file of a workload (not its instruction, setup or kit-side notes) and the fixture's own
+ * name is not answer-shaped (expected / golden / reference / ...). Else null.
+ */
+function declaredFixture(
+  m: SkepticKitMaterial,
+  workloadFile: string,
+  scoringPath: string,
+): string | null {
+  // An input file of a declared workload, or under the default input/ of a workload dir the
+  // manifest does not list yet (a workload being added: it ships nothing until it is listed).
+  const isInput =
+    m.spec.workloads.some((x) => under(workloadFile, inputPath(x))) ||
+    (/^workloads\/[^/]+\/input\//.test(workloadFile) &&
+      !m.spec.workloads.some((x) => under(workloadFile, KIT_LAYOUT.workloadDir(x.id))));
+  if (!isInput) return null;
+  for (const g of m.spec.gates) {
+    const root = KIT_LAYOUT.gateDir(g.id);
+    if (!under(scoringPath, root) || scoringPath === root) continue;
+    if (ANSWER_NAME.test(scoringPath.slice(root.length + 1))) continue;
+    if (
+      (g.fixtures ?? []).some((p) => p.startsWith(`${root}/`) && matchesKitPattern(p, scoringPath))
+    )
+      return g.id;
+  }
+  return null;
+}
+
+// ---------- contract instructions (TDM-233) ----------
+
+const CODE_PUNCT = /[(){};=]/;
+
+/** Normalized code-looking lines of a text (≥ 24 chars, code punctuation, not a comment or import). */
+function codeLines(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  text.split("\n").forEach((raw, i) => {
+    const n = raw.replace(/\s+/g, " ").trim();
+    if (n.length < 24 || !CODE_PUNCT.test(n)) return;
+    if (/^(\/\/|\/\*|\*|#|import\b)/.test(n)) return;
+    if (!out.has(n)) out.set(n, i + 1);
+  });
+  return out;
+}
+
+/**
+ * A contract instruction holds no line of the oracle's or the hidden tests' code that the
+ * starting repo does not already have (≥ CONTRACT_COPY_LINES distinct lines block), and every
+ * declaration is reported as a warning with what it covered.
+ */
+function checkContracts(c: Ctx): void {
+  const { m } = c;
+  m.spec.workloads.forEach((w, i) => {
+    const t = contractTally(c, w);
+    if (!t) return;
+    const ipath = instructionPath(w);
+    const instr = fileText(m, ipath);
+    if (!instr) return;
+    const given = new Set<string>();
+    for (const f of m.files.filter((x) => under(x.path, inputPath(w))))
+      for (const l of codeLines(f.text).keys()) given.add(l);
+    const oracle = m.spec.proof.oracle;
+    const oracleDir = oracle ? oracle.dir.replace(/\/+$/, "") : null;
+    const perWorkload = oracleDir
+      ? m.files.filter((f) => under(f.path, `${oracleDir}/${w.id}`))
+      : [];
+    const oracleFiles =
+      perWorkload.length > 0 || !oracleDir
+        ? perWorkload
+        : m.files.filter((f) => under(f.path, oracleDir) && f.path !== oracle?.driver_patch);
+    const testFiles = m.hidden.filter(
+      (h) => (h.workload === w.id || h.workload === null) && !h.path.endsWith(".json"),
+    );
+    const instrLines = codeLines(instr);
+    const copied = new Map<string, { at: number; from: string }>();
+    let compared = { oracle: 0, tests: 0 };
+    for (const [kind, files] of [
+      ["oracle", oracleFiles],
+      ["tests", testFiles],
+    ] as const) {
+      for (const f of files) {
+        for (const [line, n] of codeLines(f.text)) {
+          if (given.has(line)) continue;
+          compared = { ...compared, [kind]: compared[kind] + 1 };
+          const at = instrLines.get(line);
+          if (at !== undefined && !copied.has(line))
+            copied.set(line, { at, from: `${f.path}:${n}` });
+        }
+      }
+    }
+    const list = [...copied.entries()].sort((a, b) => a[1].at - b[1].at);
+    const shown = list
+      .slice(0, 3)
+      .map(([l, x]) => `"${cut(l, 50)}" (${x.from})`)
+      .join(", ");
+    if (list.length >= CONTRACT_COPY_LINES) {
+      add(c, {
+        severity: "block",
+        check: "solution_leakage",
+        evidence: `${ipath}:${list[0]![1].at}`,
+        why: `${ipath} is declared a contract (instruction_kind: contract) but carries ${list.length} line(s) of the oracle's or the hidden tests' code: ${shown}${list.length > 3 ? ", …" : ""}. A contract states the behaviour; it must not hand over the implementation or the tests`,
+      });
+      return;
+    }
+    add(c, {
+      severity: "warn",
+      check: "solution_leakage",
+      evidence: yamlAt(c, ["workloads", i, "instruction_kind"]),
+      why: `workload '${w.id}' declares its instruction a contract (instruction_kind: contract): ${t.names.size} hidden test name(s), ${t.messages.size} assertion message(s) and ${t.values.size} asserted value(s) appear in ${ipath} as the contract it is graded on (plan.md 17.2 rule 9) and are not counted as leakage. Checked instead: it copies ${list.length === 0 ? "no line" : `only ${list.length} line(s) (${shown})`} of the oracle's code (${compared.oracle} lines compared${oracleFiles.length === 0 ? "; no oracle for this workload yet" : ""}) or the hidden tests' code (${compared.tests} lines compared)`,
+    });
+  });
 }
 
 // ---------- noop_passable, weak_do_less ----------
@@ -850,7 +1035,7 @@ export async function runSkepticChecks(
     // no manifest: the validator's issue says so
   }
   const out: SkepticFinding[] = [];
-  const c0: Ctx = { m: null as never, source, out, ids: new Map() };
+  const c0: Ctx = { m: null as never, source, out, ids: new Map(), contract: new Map() };
   addValidatorIssues(c0, v.errors, v.warnings);
   if (!spec) return { findings: out, material: null };
 
@@ -859,6 +1044,7 @@ export async function runSkepticChecks(
   checkLeakage(c);
   lintFindings(c, await noLeakIssues(v.dir, spec));
   checkAnswers(c);
+  checkContracts(c);
   checkDoLess(c, opts.proof);
   checkAssists(c);
   checkWeights(c);

@@ -31,7 +31,7 @@ async function listFiles(root: string, rel = ""): Promise<string[]> {
   return out.sort();
 }
 
-const ANSWER_NAME =
+export const ANSWER_NAME =
   /(^|[/._-])(expected|answers?|golden|solutions?|oracle|reference|hidden[-_]?tests?)([/._-]|$)/i;
 const ANSWER_FILE = /(^|\/)(stdout\.txt|gate\.json)$/i;
 
