@@ -346,7 +346,7 @@ function parseSession(
       // keep the latest cost.
       const dur = num(line.duration_ms) ?? null;
       const tok = usageOf(line.usage);
-      const prev = result;
+      const prev = result as SessionResult | null;
       result = {
         durationMs:
           prev?.durationMs != null && dur !== null
