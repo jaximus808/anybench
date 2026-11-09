@@ -50,6 +50,7 @@ import {
   ledgerCharges,
   naiveSessionCanceller,
 } from "../orchestrator/defaults.js";
+import { budgetPricingFromConfig, type BudgetPricing } from "../orchestrator/budget.js";
 import { defaultAgentStages } from "../orchestrator/kit-builder.js";
 import { kitScore } from "../orchestrator/proof-score.js";
 import {
@@ -75,7 +76,19 @@ const SWEEP_MAX_ATTEMPTS = 5;
 export const RunAdvancePayloadSchema = z.object({
   run_id: z.uuid(),
   /** Why the orchestrator was woken. */
-  reason: z.enum(["created", "go", "kit_edited", "cancelled", "poll", "busy", "sweep", "settled"]),
+  reason: z.enum([
+    "created",
+    "go",
+    "kit_edited",
+    "cancelled",
+    "poll",
+    "busy",
+    "sweep",
+    "settled",
+    // TDM-242: a trial launch was held for the budget, or the run was resumed.
+    "budget",
+    "resumed",
+  ]),
   kit_id: z.uuid().optional(),
 });
 export type RunAdvancePayload = z.infer<typeof RunAdvancePayloadSchema>;
@@ -91,6 +104,8 @@ export interface RunAdvanceJobOptions {
   timing?: Partial<OrchestratorTiming>;
   workerMaxTickAgeMs?: number;
   beforeStage?: OrchestratorDeps["beforeStage"];
+  /** TDM-242: the run budget's pricing. Default: from config; return null to turn it off. */
+  budget?: (ctx: JobContext) => BudgetPricing | null;
   /** run-email: enqueue run.notify with each state change. Default: on when notifySettings is. */
   onStateChange?: (ctx: JobContext) => OrchestratorDeps["onStateChange"] | null;
 }
@@ -164,8 +179,8 @@ export function orchestratorDeps(
     charges: options.charges ? options.charges(ctx) : ledgerCharges(ctx.db, ctx.config),
     owner: leaseOwnerBase(ctx.workerId, ctx.workerStartedAt),
     paused: ctx.config.ANYBENCH_PAUSE,
-    // TDM-224: a free starter run stops launching trials once its compute reaches the cap.
-    freeRunCapMicroUsd: ctx.config.FREE_RUN_CAP_MICRO_USD,
+    // TDM-242: every run's budget (a free starter run: FREE_RUN_CAP_MICRO_USD at our cost).
+    ...budgetDeps(options, ctx),
     logger: ctx.logger.child({ job: RUN_ADVANCE_JOB }),
     ...(options.timing ? { timing: options.timing } : {}),
     ...(options.workerMaxTickAgeMs !== undefined
@@ -174,6 +189,15 @@ export function orchestratorDeps(
     ...(options.beforeStage ? { beforeStage: options.beforeStage } : {}),
     ...notifyHook(options, ctx),
   };
+}
+
+function budgetDeps(
+  options: RunAdvanceJobOptions,
+  ctx: JobContext,
+): Pick<OrchestratorDeps, "budget"> {
+  const budget =
+    options.budget === undefined ? budgetPricingFromConfig(ctx.config) : options.budget(ctx);
+  return budget ? { budget } : {};
 }
 
 function notifyHook(

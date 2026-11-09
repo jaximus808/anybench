@@ -264,7 +264,10 @@ export function LiveRunView({
             <span className="num">{span(elapsed)}</span>
             <span className={styles.sep}>·</span>
             <span className="num" data-testid="run-spend">
-              {usd(live.spentMicroUsd)} spent of {usd(live.budgetMicroUsd, 0)}
+              {usd(live.spentMicroUsd)} spent of{" "}
+              {live.budgetBasis === "free_run"
+                ? `the ${usd(live.limitMicroUsd, 0)} free run`
+                : usd(live.limitMicroUsd, 0)}
               {live.estimateMicroUsd !== null ? ` · estimate ${usd(live.estimateMicroUsd)}` : ""}
             </span>
             <span className={styles.sep}>·</span>

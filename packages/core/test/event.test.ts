@@ -39,6 +39,19 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     to: "awaiting_go",
     command: "advance",
   }),
+  // TDM-242: the run's budget numbers; the cost delta is the change in spent.
+  "run.budget": tdm8Event(
+    "run.budget",
+    {
+      basis: "billed",
+      limit_micro_usd: "20000000",
+      spent_micro_usd: "2082800",
+      committed_micro_usd: "372600",
+      byok_token_micro_usd: "0",
+      spent_by_kind: { run_fee: "2000000", compute: "82800", managed_tokens: "0" },
+    },
+    { severity: "debug", cost_delta_micro_usd: "41400" },
+  ),
   "trial.phase": tdm8Event("trial.phase", { from: "gating", to: "reviewing", attempt: 1 }),
   "trial.heartbeat": tdm8Event(
     "trial.heartbeat",
@@ -164,7 +177,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(20);
+    expect(EVENT_TYPES).toHaveLength(21);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

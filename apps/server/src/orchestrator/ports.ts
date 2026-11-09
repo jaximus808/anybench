@@ -354,6 +354,11 @@ export const RunStageOutputsShape = z.looseObject({
   /** needs_human / paused_budget: the state to resume into. */
   held_from: RunStateSchema.optional(),
   hold_reason: z.string().optional(),
+  /**
+   * TDM-242: the run spent past its budget while trials ran: their runners are asked to stop the
+   * subject (trial-execute cancelState → ~/.anybench/budget-stop). Cleared on resume.
+   */
+  budget_stop: z.object({ at: z.string(), reason: z.string() }).nullable().optional(),
   /** failed: where our pipeline broke (the report's postmortem). */
   failure: z.object({ stage: RunStateSchema, reason: z.string() }).optional(),
   /** Terminal cleanup done (sessions, trials, billing hook). */

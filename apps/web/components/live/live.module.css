@@ -2178,6 +2178,11 @@ button.feedText:hover {
 .runSpendBar i[data-hot] {
   background: var(--fail);
 }
+.runSpendBar i[data-held] {
+  inset: 0 auto 0 auto;
+  background: var(--accent);
+  opacity: 0.35;
+}
 .runSpendOf {
   color: var(--muted);
   font-size: var(--text-xs);

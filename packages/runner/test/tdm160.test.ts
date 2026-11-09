@@ -435,6 +435,38 @@ describe("runTrial with TDM-160 features", () => {
     expect(status.upload?.state).toBe("uploaded");
   }, 30_000);
 
+  it("TDM-242: stops the run verb on the worker's budget stop and still freezes the work", async () => {
+    ingest = await startMockIngestTdm46();
+    const run = [
+      'echo "half done" > "$EVAL_WS/progress.txt";',
+      "i=1; while [ $i -le 40 ]; do echo tick $i; sleep 0.25; i=$((i+1)); done; echo never",
+    ].join(" ");
+    const { home, paths } = await setupHomeTdm160(
+      { driver: { type: "cli", run }, heartbeat_s: 1, collect: ["progress.txt"] },
+      ingest,
+    );
+    // The worker writes ~/.anybench/budget-stop once the run spent its budget.
+    const stop = setTimeout(() => {
+      void writeFile(paths.budgetStopFile, "spent $20.40, past the $20.00 budget\n");
+    }, 1500);
+    const t0 = Date.now();
+    const r = await runTrial({ trialId: "trial-tdm160", home, log: quiet, stealWindowMs: 10 });
+    clearTimeout(stop);
+    expect(Date.now() - t0).toBeLessThan(9_000);
+    expect(r.exitCode).toBe(RUNNER_EXIT.failed_subject);
+    const status = RunnerStatusSchema.parse(JSON.parse(await readFile(paths.statusJson, "utf8")));
+    expect(status.result).toMatchObject({ outcome: "failed_subject", failure_class: "budget" });
+    expect(status.result?.reason).toMatch(/the run's budget stopped run: spent \$20\.40/);
+    expect(await readFile(paths.stdoutLog, "utf8")).not.toContain("never");
+    // The work so far is collected, frozen and uploaded, so the gate can grade it (TDM-232).
+    expect(await readFile(join(paths.artifactsDir, "progress.txt"), "utf8")).toBe("half done\n");
+    const manifest = JSON.parse(await readFile(paths.manifestJson, "utf8")) as {
+      files: { path: string }[];
+    };
+    expect(manifest.files.map((f) => f.path)).toContain("artifacts/progress.txt");
+    expect(status.upload?.state).toBe("uploaded");
+  }, 30_000);
+
   it("probes the network before run, writes network.json into the bundle and emits it", async () => {
     ingest = await startMockIngestTdm46();
     const probeFetch: ProbeFetch = async (url) => {

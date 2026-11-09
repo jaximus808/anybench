@@ -60,12 +60,10 @@ import {
   type RunState,
 } from "@anybench/core";
 import { expandTrials, expandTrialsInputFromKit, TRIAL_MAX_ATTEMPTS } from "@anybench/bench";
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
-import { computers } from "../db/schema/computers.js";
 import { contenders } from "../db/schema/contenders.js";
-import { freeStarterRuns } from "../db/schema/free_starter_runs.js";
 import { kits } from "../db/schema/kits.js";
 import { PreregSchema, preregMismatch, preregistrationOf } from "./prereg.js";
 import { projects } from "../db/schema/projects.js";
@@ -77,6 +75,16 @@ import { appendEvents } from "../lib/events.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import { kitSpecHash, proofOf } from "../routes/kits.js";
 import { proofAccepted } from "./proof-score.js";
+import {
+  launchHeldReason,
+  limitWords,
+  readRunBudget,
+  storeRunBudget,
+  terminalRunBudget,
+  usd,
+  type BudgetPricing,
+  type RunBudget,
+} from "./budget.js";
 import {
   AnalysisSchema,
   EnvBuildSchema,
@@ -203,11 +211,13 @@ export interface OrchestratorDeps {
   /** In each state change's transaction (run-email: enqueue run.notify). */
   onStateChange?: OrchestratorStoreOptions["onStateChange"];
   /**
-   * TDM-224: FREE_RUN_CAP_MICRO_USD. A running free starter run whose computers have cost us this
-   * much (computers.cost_micro_usd, our cost) is held in paused_budget: no more trials launch.
-   * Unset = no free-run cap check (tests, tools).
+   * TDM-242: enforce the run's budget (orchestrator/budget.ts): keep runs.spent_micro_usd and
+   * committed_micro_usd current, launch only the trials whose worst case fits, hold the run in
+   * paused_budget when none fits. A free starter run is held to FREE_RUN_CAP_MICRO_USD at our
+   * cost (`freeRunCapMicroUsd` here), the same mechanism (TDM-224's free-run hold folded in).
+   * Unset = only the legacy spent >= budget check (tests, tools).
    */
-  freeRunCapMicroUsd?: bigint;
+  budget?: BudgetPricing;
 }
 
 export interface AdvanceOptions {
@@ -228,25 +238,15 @@ export type AdvanceOutcome =
   | { kind: "polling"; state: RunState; at: Date }
   | { kind: "finalized"; state: RunState };
 
-/**
- * TDM-224: what a run holding a free starter run (free_starter_runs `reserved`) has cost us in
- * computers so far, at registry cost; null when the run holds no free run.
- */
-export async function freeRunComputeSpent(db: Database, runId: string): Promise<bigint | null> {
-  const [held] = await db
-    .select({ id: freeStarterRuns.id })
-    .from(freeStarterRuns)
-    .where(and(eq(freeStarterRuns.runId, runId), eq(freeStarterRuns.state, "reserved")))
-    .limit(1);
-  if (!held) return null;
-  const [row] = await db
-    .select({ sum: sql<string>`coalesce(sum(${computers.costMicroUsd}), 0)::text` })
-    .from(computers)
-    .where(eq(computers.runId, runId));
-  return BigInt(row?.sum ?? "0");
-}
-
 const MAX_STEPS = 64;
+/** TDM-242: stages that can spend before any trial exists (an uploaded kit's proof computers). */
+const BEFORE_TRIALS: readonly RunState[] = [
+  "understand",
+  "research",
+  "kit_draft",
+  "env_build",
+  "proof",
+];
 const ORCHESTRATOR_MAX_ATTEMPTS = 5;
 
 /** Stages that the sweep re-drives (awaiting_go only with auto-go; terminal until finalized). */
@@ -493,23 +493,29 @@ class RunAdvance {
     if (run.cancelRequestedAt)
       return this.cancel(run, run.cancelCause ?? "user", "cancel requested");
 
-    if (run.state === "needs_human" || run.state === "paused_budget") {
-      return this.wait(run.state, run.pausedReason ?? undefined);
-    }
-    if (
-      (RUN_PAUSE_BUDGET_FROM as readonly RunState[]).includes(run.state) &&
-      run.spentMicroUsd >= run.budgetMicroUsd
-    ) {
-      return this.hold(run, "pause_budget", "the run spent its budget");
-    }
-    if (run.state === "running" && this.deps.freeRunCapMicroUsd !== undefined) {
-      const spent = await freeRunComputeSpent(this.deps.db, run.id);
-      if (spent !== null && spent >= this.deps.freeRunCapMicroUsd) {
-        return this.hold(
-          run,
-          "pause_budget",
-          `the free run reached its compute cap (${spent} of ${this.deps.freeRunCapMicroUsd} micro-USD at our cost): settle it to score the trials it has, or cancel it`,
-        );
+    if (run.state === "needs_human") return this.wait(run.state, run.pausedReason ?? undefined);
+    if (run.state === "paused_budget") return this.pausedBudget(run);
+
+    // TDM-242: keep the run's spent / committed current while it can spend, and hold it before
+    // the trials (stages before `running`: an uploaded kit's proof computers bill with the run).
+    let budget: RunBudget | null = null;
+    if ((RUN_PAUSE_BUDGET_FROM as readonly RunState[]).includes(run.state)) {
+      if (this.deps.budget) {
+        budget = await readRunBudget(this.deps.db, run.id, this.deps.budget);
+        if (budget) await storeRunBudget(this.deps.db, budget, this.actor);
+        if (budget && BEFORE_TRIALS.includes(run.state) && budget.spent.total > budget.limit) {
+          return this.hold(
+            run,
+            "pause_budget",
+            `spent ${usd(budget.spent.total)}, past ${limitWords(budget)}, before any trial ran`,
+          );
+        }
+      } else if (
+        run.spentMicroUsd >= run.budgetMicroUsd &&
+        run.state !== "scoring" &&
+        run.state !== "analyzing"
+      ) {
+        return this.hold(run, "pause_budget", "the run spent its budget");
       }
     }
 
@@ -544,7 +550,7 @@ class RunAdvance {
       case "awaiting_go":
         return this.awaitingGo(run);
       case "running":
-        return this.running(run);
+        return this.running(run, budget);
       case "scoring":
         return this.scoring(run);
       case "analyzing":
@@ -593,13 +599,14 @@ class RunAdvance {
     run: RunRow,
     type: "needs_human" | "pause_budget",
     reason: string,
+    extra: Record<string, unknown> = {},
   ): Promise<Step> {
     const command: RunCommand =
       type === "needs_human" ? { type, reason } : { type: "pause_budget", reason };
     await this.commit(run, command, {
       reason,
       set: { pausedReason: reason.slice(0, 2000) },
-      outputs: { held_from: run.state, hold_reason: reason },
+      outputs: { held_from: run.state, hold_reason: reason, ...extra },
     });
     this.deps.logger?.warn({ runId: run.id, from: run.state, reason }, `run held: ${type}`);
     return CONTINUE; // re-read: the hold state stops the loop
@@ -1014,7 +1021,7 @@ class RunAdvance {
     );
   }
 
-  private async running(run: RunRow): Promise<Step> {
+  private async running(run: RunRow, budgetIn: RunBudget | null = null): Promise<Step> {
     const kit = await this.loadKit(run);
     if (!kit) return this.hold(run, "needs_human", "running needs a valid kit");
     let all = await this.store.trials(run.id);
@@ -1036,11 +1043,105 @@ class RunAdvance {
       if (created === null) return CONTINUE; // the run moved: re-read
       all = await this.store.trials(run.id);
     }
-    await this.enqueueTrialJobs(all);
+    if (this.deps.budget) {
+      // The trials were just expanded: read the budget again so they are in its queue.
+      const budget =
+        budgetIn && budgetIn.queued.length + budgetIn.inFlight.length > 0
+          ? budgetIn
+          : await readRunBudget(this.deps.db, run.id, this.deps.budget);
+      if (budget) {
+        const held = await this.budgetHold(run, budget);
+        if (held) return held;
+        await this.enqueueTrialJobs(all, this.launchable(budget));
+      } else {
+        await this.enqueueTrialJobs(all);
+      }
+    } else {
+      await this.enqueueTrialJobs(all);
+    }
     if (all.length > 0 && all.every(trialSettled)) {
       return this.advance(run, { reason: `${all.length} trials settled` });
     }
     return this.poll(run.state);
+  }
+
+  /**
+   * TDM-242: the queued trials that may launch now, in order: each one's worst case must fit on
+   * top of spent, committed and the ones before it. The trial store admits each launch again
+   * under the run's lock, so this only avoids launching jobs that would be held.
+   */
+  private launchable(b: RunBudget): Set<string> {
+    const out = new Set<string>();
+    let room = b.limit - b.spent.total - b.committed;
+    for (const q of b.queued) {
+      if (q.cap > room) break;
+      out.add(q.id);
+      room -= q.cap;
+    }
+    return out;
+  }
+
+  /**
+   * TDM-242: hold a running run for its budget, or null.
+   * - spent alone passed the limit while trials run (one overran its cap): hold, and stop the
+   *   running trials' subjects (budget_stop): their work so far is collected and graded.
+   * - queued trials remain, none fits, nothing is in flight: hold (running trials finish first,
+   *   since their committed worst case may come in lower and free the room).
+   */
+  private async budgetHold(run: RunRow, b: RunBudget): Promise<Step | null> {
+    const finished = (await this.store.trials(run.id)).filter(
+      (t) => t.state === "done" || t.state === "failed_subject",
+    ).length;
+    // What the user can do: raise the budget (a free run's cap is ours: only settle or cancel).
+    const options =
+      b.basis === "free_run"
+        ? `Settle to score the ${finished} finished, or cancel`
+        : `Raise the budget to run them, or settle to score the ${finished} finished`;
+    if (b.spent.total > b.limit && b.inFlight.length > 0) {
+      const reason =
+        `spent ${usd(b.spent.total)}, past ${limitWords(b)}: stopping the ${b.inFlight.length} ` +
+        `running trial(s); what they did so far is graded. ${b.queued.length} trial(s) not ` +
+        `started. ${options}`;
+      return this.hold(run, "pause_budget", reason, {
+        budget_stop: {
+          at: new Date().toISOString(),
+          reason: `spent ${usd(b.spent.total)}, past ${limitWords(b)}`,
+        },
+      });
+    }
+    const next = b.queued[0];
+    if (!next || b.inFlight.length > 0 || this.launchable(b).size > 0) return null;
+    const reason = `${launchHeldReason(b, next.cap)}. ${b.queued.length} trial(s) not started. ${options}`;
+    return this.hold(run, "pause_budget", reason);
+  }
+
+  /**
+   * TDM-242: a run held for its budget. Keep its numbers current (trials stopped by a budget stop
+   * are still finishing); once every trial has settled (the user settled the rest, or the budget
+   * stop ended them all and none is queued), the trials are paid for: resume into running, which
+   * scores the run. Otherwise wait for the user (resume with a higher budget, settle, cancel).
+   */
+  private async pausedBudget(run: RunRow): Promise<Step> {
+    let inFlight = 0;
+    if (this.deps.budget) {
+      const b = await readRunBudget(this.deps.db, run.id, this.deps.budget);
+      if (b) {
+        await storeRunBudget(this.deps.db, b, this.actor);
+        inFlight = b.inFlight.length;
+      }
+    }
+    const from = this.outputs(run).held_from;
+    const all = await this.store.trials(run.id);
+    if (from === "running" && all.length > 0 && all.every(trialSettled)) {
+      const reason = `every trial settled (${all.length}): scoring what the budget paid for`;
+      return this.commit(
+        run,
+        { type: "resume", to: "running" },
+        { reason, set: { pausedReason: null }, outputs: { budget_stop: null } },
+      );
+    }
+    if (inFlight > 0) return this.poll(run.state);
+    return this.wait(run.state, run.pausedReason ?? undefined);
   }
 
   /**
@@ -1117,12 +1218,16 @@ class RunAdvance {
     });
   }
 
-  /** trial.execute for every trial that should run and has no live job (lost enqueues too). */
-  private async enqueueTrialJobs(all: TrialRow[]): Promise<void> {
+  /**
+   * trial.execute for every trial that should run and has no live job (lost enqueues too).
+   * `launchable` (TDM-242): only these queued trials get a launch job (the budget's pick).
+   */
+  private async enqueueTrialJobs(all: TrialRow[], launchable?: Set<string>): Promise<void> {
     const wanted: { task: string; key: string; payload: Record<string, unknown> }[] = [];
     for (const t of all) {
       if (t.leaseOwner) continue; // an executor holds it (trial.reattach covers a dead one)
       if (t.state === "queued") {
+        if (launchable && !launchable.has(t.id)) continue;
         wanted.push({
           task: TRIAL_EXECUTE_TASK,
           key: trialJobKey(t.id, t.attempt),
@@ -1266,6 +1371,11 @@ class RunAdvance {
       });
     } else {
       this.deps.logger?.info({ runId: run.id, state, cancelCause }, "run ended (no billing hook)");
+    }
+    if (this.deps.budget) {
+      // TDM-242: the run's spent becomes what the ledger actually charged; nothing is committed.
+      const b = await terminalRunBudget(this.deps.db, run.id, this.deps.budget);
+      if (b) await storeRunBudget(this.deps.db, b, this.actor);
     }
     await this.save(run, { outputs: { finalized_at: new Date().toISOString() } });
     return { next: "stop", outcome: { kind: "finalized", state: run.state } };

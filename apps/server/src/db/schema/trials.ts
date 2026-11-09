@@ -12,7 +12,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { TRIAL_STATES } from "./_enums.js";
-import { createdAt, idPk, inList, microUsdZero, tstz, updatedAt } from "./_shared.js";
+import { createdAt, idPk, inList, microUsd, microUsdZero, tstz, updatedAt } from "./_shared.js";
 import { computers } from "./computers.js";
 import { contenders } from "./contenders.js";
 import { runs } from "./runs.js";
@@ -70,6 +70,12 @@ export const trials = pgTable(
      * with it. A failed_subject trial with one is graded (trial.gate) and keeps its outcome.
      */
     frozenWorkspace: jsonb("frozen_workspace"),
+    /**
+     * TDM-242: the attempt's model-token spend as the runner metered it (status.json token_cap),
+     * integer micro-USD; null when the trial had no token cap. On a trial with no proxy key this
+     * is the user's own key (BYOK): reported, never billed.
+     */
+    tokenSpendMicroUsd: microUsd("token_spend_micro_usd"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

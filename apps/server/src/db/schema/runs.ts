@@ -41,7 +41,26 @@ export const runs = pgTable(
     intake: jsonb("intake"),
     state: text("state", { enum: RUN_STATES }).notNull().default("intake"),
     budgetMicroUsd: microUsd("budget_micro_usd").notNull(),
+    /**
+     * TDM-242: what the run has spent against its budget limit so far (orchestrator/budget.ts):
+     * run fee + compute at billed price + managed tokens, live while the run goes (a running
+     * computer counts its blocks so far), the ledger's charges once it is terminal. A free run
+     * counts compute at our cost against FREE_RUN_CAP_MICRO_USD (budget_basis `free_run`).
+     */
     spentMicroUsd: microUsdZero("spent_micro_usd"),
+    /**
+     * TDM-242: the worst case of the trials launched but not finished: each one's compute up to
+     * its wall-clock cap (minus what it already spent) plus its managed-token cap where we pay.
+     */
+    committedMicroUsd: microUsdZero("committed_micro_usd"),
+    /** TDM-242: model tokens on the user's own key (BYOK), runner-metered. Not billed by us. */
+    byokTokenMicroUsd: microUsdZero("byok_token_micro_usd"),
+    /** TDM-242: `billed` (limit = budget_micro_usd) or `free_run` (limit = the free-run cap). */
+    budgetBasis: text("budget_basis", { enum: ["billed", "free_run"] })
+      .notNull()
+      .default("billed"),
+    /** TDM-242: the limit spent + committed is held to; null = budget_micro_usd. */
+    budgetLimitMicroUsd: microUsd("budget_limit_micro_usd"),
     estimateMicroUsd: microUsd("estimate_micro_usd"),
     kitId: uuid("kit_id").references((): AnyPgColumn => kits.id, { onDelete: "set null" }),
     /** Next events.seq for this run; bumped atomically by the event writer. */
@@ -78,6 +97,7 @@ export const runs = pgTable(
       .where(sql`${t.intake} ? 'idempotency_key'`),
     check("runs_state_check", inList(t.state, RUN_STATES)),
     check("runs_budget_nonneg", sql`${t.budgetMicroUsd} >= 0`),
+    check("runs_budget_basis_check", inList(t.budgetBasis, ["billed", "free_run"])),
     check(
       "runs_cancel_cause_check",
       sql`${sql.identifier("cancel_cause")} is null or ${inList(t.cancelCause, RUN_CANCEL_CAUSES)}`,

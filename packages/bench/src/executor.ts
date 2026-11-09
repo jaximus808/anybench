@@ -171,6 +171,11 @@ export interface ExecTrial {
    * when the runner ended; core FrozenWorkspaceSchema. A failed_subject trial with one is graded.
    */
   frozen_workspace?: FrozenWorkspace | null;
+  /**
+   * TDM-242: the attempt's model-token spend as the runner metered it (status.json token_cap),
+   * integer micro-USD. The server reports it as BYOK spend when the trial had no proxy key.
+   */
+  token_spend_micro_usd?: MicroUsd | null;
 }
 
 /** Columns the executor writes besides state. */
@@ -190,6 +195,7 @@ export type TrialPatch = Partial<
     | "log_offset"
     | "outage_pauses"
     | "frozen_workspace"
+    | "token_spend_micro_usd"
   >
 >;
 
@@ -212,7 +218,11 @@ export type TransitionOutcome =
   | { ok: true; trial: ExecTrial; from: TrialState; to: TrialState }
   | {
       ok: false;
-      reason: "not_found" | "lease_lost" | "stale_attempt" | "illegal";
+      /**
+       * `held` (TDM-242): the store refused to launch the trial (queued → forking) because the
+       * run's budget cannot take its worst case right now; it stays queued, nothing was spent.
+       */
+      reason: "not_found" | "lease_lost" | "stale_attempt" | "illegal" | "held";
       message: string;
       trial: ExecTrial | null;
     };
@@ -229,6 +239,11 @@ export interface RunnerEdge {
 export interface CancelState {
   cancelled: boolean;
   reason?: string;
+  /**
+   * TDM-242: the run spent its budget: stop the subject now (the executor writes the runner's
+   * ~/.anybench/budget-stop), keep what it did, and let the gate grade the frozen workspace.
+   */
+  budget_stop?: string;
 }
 
 /** The DB port (apps/server implements it with Drizzle; MemoryTrialExecStore for tests). */
@@ -451,6 +466,12 @@ export type ExecuteOutcome =
    * billed. Run the trial again at `retry_at` (epoch ms).
    */
   | { kind: "paused"; trial: ExecTrial; retry_at: number; reason: string }
+  /**
+   * TDM-242: the run's budget cannot take this trial's worst case now (the store refused the
+   * launch). Still `queued`, same attempt, nothing spent; the run orchestrator launches it again
+   * when the budget allows, or holds the run in paused_budget.
+   */
+  | { kind: "held"; trial: ExecTrial; reason: string }
   /** Another live execution holds the lease. */
   | { kind: "busy"; trial: ExecTrial | null }
   /** We lost the lease mid-flight (someone took it over); we stopped without touching anything. */
@@ -753,6 +774,14 @@ class OutagePause extends Error {
   }
 }
 
+/** TDM-242: the store held the launch for the run's budget. */
+class LaunchHeld extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LaunchHeld";
+  }
+}
+
 class Stop extends Error {
   constructor(readonly kind: "aborted" | "lease_lost") {
     super(kind);
@@ -801,6 +830,7 @@ class TrialExecution {
   private seenRunnerEdges: RunnerEdge[] = [];
   /** This execution wrote ~/.anybench/cancel: a runner-reported `cancelled` is ours. */
   private cancelWritten = false;
+  private budgetStopWritten = false;
   /** TDM-39: revokes the trial's Naïve proxy key at a cap hit and at the end of the attempt. */
   private proxyGuard: ProxyKeyGuard | null = null;
   private proxyKey: TrialProxyKey | null = null;
@@ -958,6 +988,13 @@ class TrialExecution {
         }
       } catch (err) {
         if (err instanceof Stop) throw err;
+        if (err instanceof LaunchHeld) {
+          this.deps.logger?.info(
+            { trialId: this.trialId, attempt: this.t.attempt, reason: err.message },
+            "trial launch held for the run's budget",
+          );
+          return { kind: "held", trial: this.t, reason: err.message };
+        }
         if (err instanceof OutagePause) return this.pause(err.message, err.retryAt, false);
         const failure =
           err instanceof InfraFailure
@@ -1002,6 +1039,7 @@ class TrialExecution {
       throw new Stop("lease_lost");
     }
     if (out.trial) this.trial = out.trial;
+    if (out.reason === "held") throw new LaunchHeld(out.message);
     return null;
   }
 
@@ -1424,6 +1462,7 @@ class TrialExecution {
       this.checkStop();
       const cancel = await this.deps.store.cancelState(this.t);
       if (cancel.cancelled) return this.cancel(cancel.reason ?? "run cancelled");
+      if (cancel.budget_stop !== undefined) await this.writeBudgetStopFile(cancel.budget_stop);
       if (this.now() > deadlineAt) {
         await this.writeCancelFile();
         throw new InfraFailure("trial ran over 2x its estimated duration", "deadline");
@@ -1562,6 +1601,22 @@ class TrialExecution {
     });
   }
 
+  /** TDM-242: ask the runner to stop the subject for the run's budget (once per execution). */
+  private async writeBudgetStopFile(reason: string): Promise<void> {
+    if (this.budgetStopWritten || !this.computer) return;
+    try {
+      await this.deps.registry.provider.putFile(
+        this.computer.info.id,
+        this.paths().budgetStopFile,
+        `${reason.replace(/\s+/g, " ").slice(0, 500)}\n`,
+      );
+      this.budgetStopWritten = true;
+      this.deps.logger?.warn({ trialId: this.trialId, reason }, "budget stop sent to the runner");
+    } catch (err) {
+      this.deps.logger?.warn({ err, trialId: this.trialId }, "could not write the budget stop");
+    }
+  }
+
   private async writeCancelFile(): Promise<void> {
     if (!this.computer) return;
     try {
@@ -1591,6 +1646,11 @@ class TrialExecution {
     }
     // collecting (runner done) or failed_subject: both keep their outputs.
     const patch: TrialPatch = { exit_code: status?.run?.exit_code ?? null };
+    // TDM-242: the runner's metered token spend (BYOK or proxy; the server tells them apart).
+    const tokens = status?.token_cap?.spent_micro_usd;
+    if (tokens !== undefined && /^\d{1,20}$/.test(tokens)) {
+      patch.token_spend_micro_usd = BigInt(tokens);
+    }
     const machine = await this.readMachine();
     if (machine !== undefined) patch.machine = machine;
     const bundle = await this.bundleKey(status);

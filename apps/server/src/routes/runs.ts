@@ -6,6 +6,7 @@
 //   PATCH /runs/:id/kit      runs.editKit: edit the run's kit (same as kits.createVersion; see kits.ts)
 //   POST  /runs/:id/go       leave awaiting_go: proven kit, estimate within budget, billing gate
 //   POST  /runs/:id/cancel   set cancel_requested_at, move to cancelled, write the event
+//   POST  /runs/:id/resume   TDM-242: leave needs_human / paused_budget, optionally raising the budget
 //   GET   /runs/:id/contenders  runs.contenders: every candidate, kept or dropped, with its spec
 //   GET   /runs/:id/agents      runs.agents: the run's Naïve agent sessions (agent_sessions)
 //
@@ -52,6 +53,7 @@ import {
   RunIdSchema,
   toJsonValue,
   transitionRun,
+  RunStateSchema,
   UserIdSchema,
   type AgentSession,
   type Alert,
@@ -127,6 +129,10 @@ export function toRun(row: RunRow): Run {
     state: row.state,
     budget_micro_usd: row.budgetMicroUsd,
     spent_micro_usd: row.spentMicroUsd,
+    committed_micro_usd: row.committedMicroUsd,
+    budget_basis: row.budgetBasis,
+    budget_limit_micro_usd: row.budgetLimitMicroUsd ?? row.budgetMicroUsd,
+    byok_token_micro_usd: row.byokTokenMicroUsd,
     estimate_micro_usd: row.estimateMicroUsd ?? null,
     kit_id: (row.kitId ?? null) as Run["kit_id"],
     kit_origin: isUploadedKitRun(row.intake) ? "uploaded" : "generated",
@@ -743,6 +749,76 @@ export function runsRoutes(deps: RunsRouteDeps): Hono<ActorEnv> {
       // The orchestrator (jobs/run-advance.ts) stops live Naïve sessions and queued trials; running
       // trials see cancel_requested_at and stop themselves.
       await enqueueAdvance(deps, tx, { run_id: params.id, reason: "cancelled" }, "cancelled");
+      return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 } };
+    });
+    if (!result.ok)
+      return fail(c, result.status === 404 ? "not_found" : "conflict", result.message);
+    return send(c, route, { run: toRun(result.run) });
+  });
+
+  // TDM-242: leave needs_human / paused_budget (contract runs.resume), optionally raising the
+  // budget. `to` defaults to the state the run was held from. A free run held at its compute cap
+  // cannot be resumed (its cap is ours, not the user's budget): settle or cancel it instead.
+  r.post("/:id/resume", writeRun, async (c) => {
+    const route = contract.resume;
+    const parsed = await parseOrFail(c, route);
+    if (!parsed.ok) return parsed.response;
+    const { params, body } = parsed.request;
+    const actor = c.get("actor");
+    type Resumed = { ok: true; run: RunRow } | { ok: false; status: 404 | 409; message: string };
+    const result = await scopedDb(actor, deps.db).transaction(async (tx): Promise<Resumed> => {
+      const row = await lockRun(tx, params.id);
+      if (!row) return { ok: false, status: 404, message: "run not found" };
+      if (row.state !== "needs_human" && row.state !== "paused_budget") {
+        return { ok: false, status: 409, message: `run is ${row.state}, not on hold` };
+      }
+      const outputs = (row.stageOutputs ?? {}) as { held_from?: unknown };
+      const heldFrom = RunStateSchema.safeParse(outputs.held_from);
+      const to = body.to ?? (heldFrom.success ? heldFrom.data : undefined);
+      if (!to)
+        return {
+          ok: false,
+          status: 409,
+          message: "the run does not say where it was held from: pass `to`",
+        };
+      if (row.state === "paused_budget" && row.budgetBasis === "free_run") {
+        return {
+          ok: false,
+          status: 409,
+          message:
+            "a free run is capped at its free compute; settle it to score the trials it has, or cancel it",
+        };
+      }
+      const t = transitionRun(row.state, { type: "resume", to });
+      if (!t.ok) return { ok: false, status: 409, message: t.error.message };
+      const raised =
+        body.budget_micro_usd !== undefined && body.budget_micro_usd !== row.budgetMicroUsd;
+      const [updated] = await tx
+        .update(runs)
+        .set({
+          state: t.to,
+          pausedReason: null,
+          ...(body.budget_micro_usd !== undefined ? { budgetMicroUsd: body.budget_micro_usd } : {}),
+          // A budget stop ends with the hold (trial-execute cancelState reads it).
+          stageOutputs: sql`${runs.stageOutputs} - 'budget_stop'`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(runs.id, params.id))
+        .returning();
+      const { lastSeq } = await appendEvents(tx, params.id, [
+        stateChanged(params.id, actor, t.from, t.to, {
+          command: "resume",
+          reason: raised
+            ? `resumed with the budget raised to ${body.budget_micro_usd} micro-USD`
+            : "resumed",
+        }),
+      ]);
+      await enqueueAdvance(
+        deps,
+        tx,
+        { run_id: params.id, reason: "resumed" },
+        `resumed:${lastSeq}`,
+      );
       return { ok: true, run: { ...updated!, nextSeq: lastSeq + 1 } };
     });
     if (!result.ok)

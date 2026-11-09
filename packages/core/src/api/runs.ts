@@ -42,7 +42,19 @@ export const RunSchema = z.object({
   question: z.string(),
   state: RunStateSchema,
   budget_micro_usd: NonNegativeMicroUsdSchema,
+  /**
+   * TDM-242: spent against the budget limit so far: run fee + compute at billed price + managed
+   * tokens (a free run: compute at our cost). Never includes BYOK tokens (`byok_token_micro_usd`).
+   */
   spent_micro_usd: MicroUsdSchema,
+  /** TDM-242: the worst case of the trials running now (each up to its cap, minus what it spent). */
+  committed_micro_usd: NonNegativeMicroUsdSchema.default(0n),
+  /** TDM-242: what the budget limits: `billed` = budget_micro_usd; `free_run` = the free-run cap. */
+  budget_basis: z.enum(["billed", "free_run"]).default("billed"),
+  /** TDM-242: the limit spent + committed is held to (budget_micro_usd unless a free run). */
+  budget_limit_micro_usd: NonNegativeMicroUsdSchema.nullable().default(null),
+  /** TDM-242: model tokens on the user's own key, paid to their provider; reported, not billed. */
+  byok_token_micro_usd: NonNegativeMicroUsdSchema.default(0n),
   estimate_micro_usd: NonNegativeMicroUsdSchema.nullable(),
   kit_id: KitIdSchema.nullable(),
   /** `uploaded`: the run page says "kit: uploaded by you". Older servers omit it: `generated`. */

@@ -10,7 +10,10 @@ import type { JobHelpers } from "graphile-worker";
 import type { Database } from "../../src/db/client.js";
 import { trials, workerHeartbeats } from "../../src/db/schema/index.js";
 import { createRunAdvanceJob, type RunAdvanceJobOptions } from "../../src/jobs/run-advance.js";
-import { createTrialExecuteJob } from "../../src/jobs/trial-execute.js";
+import {
+  createTrialExecuteJob,
+  type TrialExecuteJobOptions,
+} from "../../src/jobs/trial-execute.js";
 import type { JobContext, JobDef } from "../../src/jobs/types.js";
 import { appendEvents } from "../../src/lib/events.js";
 import type { JobsPort } from "../../src/orchestrator/advance.js";
@@ -145,6 +148,8 @@ export function workerTdm54(
   fake: FakeProvider,
   orchestrator: RunAdvanceJobOptions,
   env: Record<string, string> = {},
+  /** Extra trial.execute options (TDM-242: `budget` turns on the launch admission). */
+  trial: Partial<TrialExecuteJobOptions> = {},
 ): WorkerTdm54 {
   const ctx: JobContext = {
     config: configTdm14(url, env),
@@ -175,6 +180,7 @@ export function workerTdm54(
     // Generous windows: under CI load a 2 s start window let a slow first poll look like a dead
     // runner, retrying the trial (attempt 2) and failing the "each trial ran once" checks.
     timing: { pollMs: 10, leaseRefreshMs: 50, staleMs: 5_000, startTimeoutMs: 10_000 },
+    ...trial,
   });
   for (const j of [runAdvance, trialExecute, testGateJobTdm54()]) handlers.set(j.name, j as JobDef);
   return { id, ctx, handlers, abort: new AbortController() };

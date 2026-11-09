@@ -106,6 +106,13 @@
       "when": 1794220194116,
       "tag": "0014_free_starter_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794222923167,
+      "tag": "0015_budget_enforcement",
+      "breakpoints": true
     }
   ]
 }

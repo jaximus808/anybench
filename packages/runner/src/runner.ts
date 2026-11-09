@@ -12,7 +12,7 @@
 // cancelled. After a subject failure the runner still collects, freezes and uploads what exists,
 // so the investigator has evidence, and reports the failure last.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -183,6 +183,8 @@ class TrialRun {
   private readonly chunkers = new Map<LogStream, LogChunker>();
   private meter: TokenMeter | null = null;
   private budgetHit: TokenMeterSnapshot | null = null;
+  /** TDM-242: why the worker asked us to stop for the run's budget (~/.anybench/budget-stop). */
+  private runBudgetStop: string | null = null;
   private resolveBudget!: () => void;
   private readonly budgetStop = new Promise<void>((r) => (this.resolveBudget = r));
 
@@ -582,9 +584,12 @@ class TrialRun {
     ignoreCancel = false,
   ): Promise<VerbResult> {
     if (!ignoreCancel) this.throwIfCancelled();
-    // The token cap watches the verbs that run the subject: warm-ups and `run`.
-    const metered = this.meter !== null && (name === "run" || name === "warmup");
+    // The token cap watches the verbs that run the subject: warm-ups and `run`. Both also stop
+    // on the run's budget stop (TDM-242), with or without a token cap.
+    const subject = name === "run" || name === "warmup";
+    const metered = this.meter !== null && subject;
     this.stdout.onLine = metered ? (line) => this.meter?.line(line) : null;
+    if (subject) this.checkBudgetStop();
     return runVerb({
       command,
       args,
@@ -596,7 +601,7 @@ class TrialRun {
       stderr: this.stderr,
       tag: `[${name}${iteration !== undefined ? ` ${iteration}` : ""}] `,
       ...(ignoreCancel ? {} : { cancelled: this.cancelled }),
-      ...(metered ? { abort: this.budgetStop } : {}),
+      ...(subject ? { abort: this.budgetStop } : {}),
     }).finally(() => {
       this.stdout.onLine = null;
     });
@@ -608,6 +613,14 @@ class TrialRun {
     // Crossing the token cap fails the verb even if it managed to exit 0 before the kill landed.
     if (metered && this.budgetHit) {
       this.fail("failed_subject", "budget", this.budgetReason(this.budgetHit, what));
+      return false;
+    }
+    if (metered && this.runBudgetStop !== null) {
+      this.fail(
+        "failed_subject",
+        "budget",
+        `the run's budget stopped ${what}: ${this.runBudgetStop}; the work so far is collected and graded`,
+      );
       return false;
     }
     if (r.timedOut) {
@@ -667,6 +680,7 @@ class TrialRun {
   private heartbeat(): void {
     if (!this.cancelRequested && existsSync(this.paths.cancelFile))
       this.requestCancel("cancel file");
+    this.checkBudgetStop();
     const now = Date.now();
     this.sink.emit({
       type: "trial.heartbeat",
@@ -681,6 +695,21 @@ class TrialRun {
     this.status.heartbeat_at = new Date(now).toISOString();
     void this.writeStatus();
     void this.sink.flush();
+  }
+
+  /** TDM-242: the worker wrote ~/.anybench/budget-stop: stop the subject's verb like a cap hit. */
+  private checkBudgetStop(): void {
+    if (this.runBudgetStop !== null || !existsSync(this.paths.budgetStopFile)) return;
+    let why = "the run reached its budget";
+    try {
+      const text = readFileSync(this.paths.budgetStopFile, "utf8").trim().split("\n")[0] ?? "";
+      if (text) why = text.slice(0, 500);
+    } catch {
+      // unreadable: the default reason
+    }
+    this.runBudgetStop = why;
+    this.log(`runner: budget stop requested (${why}); stopping`);
+    this.resolveBudget();
   }
 
   private requestCancel(why: string): void {

@@ -14,6 +14,12 @@ export interface RunnerPaths {
   envFile: string;
   /** ~/.anybench/cancel: the worker writes this file to cancel; checked at phase boundaries and heartbeats. */
   cancelFile: string;
+  /**
+   * ~/.anybench/budget-stop (TDM-242): the worker writes this when the run spent its budget. The
+   * runner stops the `run` (or warm-up) verb like a token-cap hit: the trial ends failed_subject
+   * (`budget`), and what the agent did so far is collected, frozen and graded (TDM-232).
+   */
+  budgetStopFile: string;
   /** ~/eval */
   evalDir: string;
   /** ~/eval/in (EVAL_IN): the workload input. */
@@ -57,6 +63,7 @@ export function runnerPaths(home: string = homedir()): RunnerPaths {
     trialJson: join(configDir, "trial.json"),
     envFile: join(configDir, "env"),
     cancelFile: join(configDir, "cancel"),
+    budgetStopFile: join(configDir, "budget-stop"),
     evalDir,
     inDir: join(evalDir, "in"),
     wsDir: join(evalDir, "ws"),

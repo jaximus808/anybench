@@ -75,6 +75,15 @@ import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
 import { byokLookup } from "../lib/byok.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
+import {
+  budgetPricingFromConfig,
+  fitsBudget,
+  launchHeldReason,
+  readRunBudget,
+  storeRunBudget,
+  type BudgetPricing,
+  type RunBudget,
+} from "../orchestrator/budget.js";
 import { kitTrialSource } from "../orchestrator/defaults.js";
 import { attemptProxySpend, recordTrialMetrics } from "../orchestrator/trial-metrics.js";
 import { writeHeartbeat } from "./heartbeat.js";
@@ -83,6 +92,8 @@ import { defineJob, type JobContext } from "./types.js";
 export const TRIAL_EXECUTE_JOB = "trial.execute";
 export const TRIAL_GATE_JOB = "trial.gate";
 export const TRIAL_REATTACH_JOB = "trial.reattach";
+/** orchestrator/advance.ts RUN_ADVANCE_JOB (not imported: trial-execute → advance is a cycle). */
+const RUN_ADVANCE_JOB = "run.advance";
 /** plan.md section 5: the reaper sweeps every 60 s. */
 export const TRIAL_REATTACH_INTERVAL_MS = 60_000;
 
@@ -138,6 +149,7 @@ function toExec(r: TrialRow): ExecTrial {
     log_offset: r.logOffset,
     outage_pauses: r.outagePauses,
     frozen_workspace: frozenWorkspaceOf(r.frozenWorkspace),
+    token_spend_micro_usd: r.tokenSpendMicroUsd,
   };
 }
 
@@ -156,6 +168,7 @@ function toColumns(p: TrialPatch): Partial<typeof trials.$inferInsert> {
   if (p.log_offset !== undefined) c.logOffset = p.log_offset;
   if (p.outage_pauses !== undefined) c.outagePauses = p.outage_pauses;
   if (p.frozen_workspace !== undefined) c.frozenWorkspace = p.frozen_workspace;
+  if (p.token_spend_micro_usd !== undefined) c.tokenSpendMicroUsd = p.token_spend_micro_usd;
   return c;
 }
 
@@ -185,6 +198,11 @@ const ActorKindSchema = z.object({ kind: z.string() });
 export interface DrizzleTrialExecStoreOptions {
   /** `ANYBENCH_PAUSE=1` cancels like a global kill switch. */
   paused?: boolean;
+  /**
+   * TDM-242: admit each launch (queued → forking) against the run's budget under the run's row
+   * lock (orchestrator/budget.ts). Unset = no admission check (tools, tests of other behaviour).
+   */
+  budget?: BudgetPricing;
   workerMaxTickAgeMs?: number;
 }
 
@@ -247,11 +265,35 @@ export function drizzleTrialExecStore(
 
     async transition(id, owner, req): Promise<TransitionOutcome> {
       return db.transaction(async (tx) => {
+        // TDM-242: a launch is admitted under the run's row lock, taken before the trial's (the
+        // orchestrator's lock order: run, then trials), so concurrent launches serialize.
+        let budget: RunBudget | null = null;
+        if (options.budget && req.command.type === "advance") {
+          const [peek] = await tx
+            .select({ runId: trials.runId, state: trials.state })
+            .from(trials)
+            .where(eq(trials.id, id));
+          if (peek?.state === "queued") {
+            budget = await readRunBudget(tx, peek.runId, options.budget, { lock: true });
+          }
+        }
         const [r] = await tx.select().from(trials).where(eq(trials.id, id)).for("update");
         if (!r) return { ok: false, reason: "not_found", message: `no trial ${id}`, trial: null };
         // transitionTrial runs on the row's state, locked: never on what a runner claimed.
         const plan = planTransition(toExec(r), owner, req);
         if (!plan.ok) return plan;
+        const launching = budget !== null && r.state === "queued" && plan.to === "forking";
+        const cap = launching ? budget!.capOf(r.id).total : 0n;
+        if (launching) {
+          const b = budget!;
+          const why =
+            b.state === "paused_budget"
+              ? "the run is paused for its budget"
+              : !fitsBudget(b, cap)
+                ? launchHeldReason(b, cap)
+                : null;
+          if (why) return { ok: false, reason: "held", message: why, trial: toExec(r) };
+        }
         const [u] = await tx
           .update(trials)
           .set({
@@ -262,6 +304,11 @@ export function drizzleTrialExecStore(
           .where(eq(trials.id, id))
           .returning();
         if (plan.event) await appendTo(tx, r.runId, [plan.event]);
+        if (launching) {
+          // The launched trial's worst case is committed from now on.
+          budget!.committed += cap;
+          await storeRunBudget(tx, budget!, req.actor);
+        }
         return { ok: true, trial: toExec(u!), from: plan.from, to: plan.to };
       });
     },
@@ -313,6 +360,8 @@ export function drizzleTrialExecStore(
       const res = await db.execute(sql`
         select
           (select cancel_requested_at from runs where id = ${trial.run_id}) as cancel_requested_at,
+          (select stage_outputs->'budget_stop'->>'reason' from runs
+            where id = ${trial.run_id} and state = 'paused_budget') as budget_stop,
           (select scope || ': ' || reason from kill_switches
             where cleared_at is null
               and (scope = 'global'
@@ -320,10 +369,14 @@ export function drizzleTrialExecStore(
                 or (scope = 'user' and scope_id = ${trial.owner_id}))
             order by set_at limit 1) as kill`);
       const row = (
-        res as unknown as { rows: { cancel_requested_at: unknown; kill: string | null }[] }
+        res as unknown as {
+          rows: { cancel_requested_at: unknown; kill: string | null; budget_stop: string | null }[];
+        }
       ).rows[0];
       if (row?.kill) return { cancelled: true, reason: `kill switch ${row.kill}` };
       if (row?.cancel_requested_at) return { cancelled: true, reason: "run cancel requested" };
+      // TDM-242: the run spent its budget: the runner stops the subject, the gate grades its work.
+      if (row?.budget_stop) return { cancelled: false, budget_stop: row.budget_stop };
       return { cancelled: false };
     },
 
@@ -391,6 +444,8 @@ export interface TrialExecuteJobOptions {
    * provider (lib/provider-breaker.ts). Return null to run without one.
    */
   breaker?: (ctx: JobContext, provider: ComputeProvider) => LaunchBreaker | null;
+  /** TDM-242: admit every launch against the run's budget (production: from config). */
+  budget?: (ctx: JobContext) => BudgetPricing | null;
 }
 
 /** The shared breaker for `provider` (production default). */
@@ -439,6 +494,17 @@ export async function enqueueFollowUp(
   outcome: ExecuteOutcome,
   payload?: TrialExecutePayload,
 ): Promise<void> {
+  if (outcome.kind === "held") {
+    // TDM-242: the budget held the launch; the trial stays queued with no job. Wake the run, which
+    // launches it once the budget allows or holds the run in paused_budget.
+    const runId = outcome.trial.run_id;
+    await addJob(
+      RUN_ADVANCE_JOB,
+      { run_id: runId, reason: "budget" },
+      { jobKey: `runs:${runId}:budget` },
+    );
+    return;
+  }
   if (outcome.kind === "paused") {
     // Same attempt, same job key: graphile gives a key held by this (locked) job to a new job.
     const t = outcome.trial;
@@ -500,7 +566,11 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
       }
       // Our liveness row must exist before we hold a lease, or a sweep would think us dead.
       await writeHeartbeat(ctx);
-      const store = drizzleTrialExecStore(ctx.db, { paused: ctx.config.ANYBENCH_PAUSE });
+      const budget = options.budget?.(ctx) ?? null;
+      const store = drizzleTrialExecStore(ctx.db, {
+        paused: ctx.config.ANYBENCH_PAUSE,
+        ...(budget ? { budget } : {}),
+      });
       const breaker =
         options.breaker === undefined
           ? defaultLaunchBreaker(ctx, provider)
@@ -561,13 +631,15 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
           ? { kind: outcome.kind, state: outcome.state }
           : outcome.kind === "paused"
             ? { kind: outcome.kind, resumeAt: new Date(outcome.retry_at).toISOString() }
-            : outcome.kind === "retry"
-              ? {
-                  kind: outcome.kind,
-                  nextAttempt: outcome.next_attempt,
-                  retryAt: new Date(outcome.retry_at).toISOString(),
-                }
-              : { kind: outcome.kind };
+            : outcome.kind === "held"
+              ? { kind: outcome.kind, reason: outcome.reason }
+              : outcome.kind === "retry"
+                ? {
+                    kind: outcome.kind,
+                    nextAttempt: outcome.next_attempt,
+                    retryAt: new Date(outcome.retry_at).toISOString(),
+                  }
+                : { kind: outcome.kind };
       log.info(summary, "trial.execute finished");
     },
   });
@@ -581,6 +653,7 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
 export function defaultTrialExecuteOptions(): TrialExecuteJobOptions {
   return {
     provider: (ctx) => computeProviderFromConfig(ctx.config),
+    budget: (ctx) => budgetPricingFromConfig(ctx.config),
     source: (ctx) => {
       const byok = byokLookup(ctx.db, {
         current: ctx.config.ANYBENCH_KEK,

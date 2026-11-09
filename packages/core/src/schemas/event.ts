@@ -45,6 +45,7 @@ export type EventSeverity = z.infer<typeof EventSeveritySchema>;
 
 export const EVENT_TYPES = [
   "run.state_changed",
+  "run.budget",
   "trial.phase",
   "trial.heartbeat",
   "trial.log_chunk",
@@ -70,6 +71,7 @@ export type AnybenchEventType = z.infer<typeof AnybenchEventTypeSchema>;
 
 export const EVENT_SOURCE_BY_TYPE = {
   "run.state_changed": "run",
+  "run.budget": "run",
   "trial.phase": "trial",
   "trial.heartbeat": "trial",
   "trial.log_chunk": "trial",
@@ -176,6 +178,29 @@ const offset = z.int().nonnegative();
 
 export const AnybenchEventSchema = z.discriminatedUnion("type", [
   eventOf("run.state_changed", runStateChanged),
+  /**
+   * TDM-242: the run's budget numbers changed (orchestrator/budget.ts). `cost_delta_micro_usd` is
+   * the change in `spent_micro_usd`, so the live spent counter follows it; the payload carries the
+   * absolute numbers. `limit_micro_usd` is what spent + committed is held to (`basis` billed: the
+   * run budget; `free_run`: the free-run compute cap at our cost). BYOK tokens are reported only.
+   */
+  eventOf(
+    "run.budget",
+    z.object({
+      basis: z.enum(["billed", "free_run"]),
+      limit_micro_usd: eventMicroUsd,
+      spent_micro_usd: eventMicroUsd,
+      committed_micro_usd: eventMicroUsd,
+      byok_token_micro_usd: eventMicroUsd,
+      spent_by_kind: z
+        .object({
+          run_fee: eventMicroUsd,
+          compute: eventMicroUsd,
+          managed_tokens: eventMicroUsd,
+        })
+        .optional(),
+    }),
+  ),
   eventOf("trial.phase", trialPhase),
   eventOf(
     "trial.heartbeat",

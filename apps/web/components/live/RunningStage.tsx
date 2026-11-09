@@ -13,7 +13,8 @@ import {
   type LiveTrialCard,
   type TrialStage,
 } from "../../lib/live/phase";
-import { bytes, clock, pctOf, usd, usdSmall } from "./format";
+import { budgetCopy } from "./budget-copy";
+import { bytes, clock, pctOf, usdSmall } from "./format";
 import styles from "./live.module.css";
 
 const STAGES: TrialStage[] = ["booting", "running", "grading"];
@@ -47,7 +48,10 @@ export function RunningStage({
   );
   const more = Math.max(0, v.live.length - cardsInSlots.filter(Boolean).length);
   const c = v.counts;
-  const spentPct = pctOf(live.spentMicroUsd, live.budgetMicroUsd);
+  // TDM-242: spent (solid) and the running trials' worst case (lighter), of the run's limit.
+  const spentPct = pctOf(live.spentMicroUsd, live.limitMicroUsd);
+  const heldPct = Math.min(100 - spentPct, pctOf(live.committedMicroUsd, live.limitMicroUsd));
+  const budget = budgetCopy(live);
   return (
     <div className={styles.running} data-testid="running-stage">
       <dl className={styles.tally} aria-label="Trials so far">
@@ -129,14 +133,16 @@ export function RunningStage({
         ) : null}
       </p>
 
-      <div className={styles.runSpend}>
+      <div className={styles.runSpend} data-testid="run-budget" title={budget.note}>
         <span className={styles.runSpendBar} aria-hidden="true">
           <i style={{ width: `${spentPct}%` }} data-hot={spentPct >= 70 || undefined} />
+          {heldPct > 0 ? (
+            <i data-held style={{ left: `${spentPct}%`, width: `${heldPct}%` }} />
+          ) : null}
         </span>
-        <span className="num">{usd(live.spentMicroUsd)}</span>
-        <span className={styles.runSpendOf}>
-          spent of the <span className="num">{usd(live.budgetMicroUsd, 0)}</span> cap
-        </span>
+        <span className="num">{budget.line}</span>
+        <span className={styles.runSpendOf}>{budget.note}</span>
+        {budget.byok ? <span className={styles.runSpendOf}>{budget.byok}</span> : null}
       </div>
     </div>
   );

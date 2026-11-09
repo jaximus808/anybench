@@ -40,6 +40,11 @@ export interface LiveSnapshot {
     kit_id?: string | null;
     /** TDM-218: `uploaded` when the user's own agent built the kit; absent = `generated`. */
     kit_origin?: "generated" | "uploaded";
+    /** TDM-242: the budget numbers; absent on older servers. */
+    committed_micro_usd?: bigint;
+    budget_basis?: "billed" | "free_run";
+    budget_limit_micro_usd?: bigint | null;
+    byok_token_micro_usd?: bigint;
   };
   contenders: LiveContender[];
   trials: Trial[];
@@ -134,7 +139,15 @@ export interface LiveRun {
   question: string;
   state: RunState;
   budgetMicroUsd: bigint;
+  /** TDM-242: spent against the limit (fee + compute + tokens we pay for; never BYOK tokens). */
   spentMicroUsd: bigint;
+  /** TDM-242: the worst case still to come of the trials running now. */
+  committedMicroUsd: bigint;
+  /** TDM-242: what spent + committed is held to: the budget, or a free run's compute cap. */
+  limitMicroUsd: bigint;
+  budgetBasis: "billed" | "free_run";
+  /** TDM-242: tokens on the user's own key, billed by their provider (reported only). */
+  byokTokenMicroUsd: bigint;
   estimateMicroUsd: bigint | null;
   /** The run's kit once kit_draft wrote one (the Go hero reads its plan). */
   kitId: string | null;
@@ -233,6 +246,10 @@ export function initLive(s: LiveSnapshot): LiveRun {
     state: s.run.state,
     budgetMicroUsd: s.run.budget_micro_usd,
     spentMicroUsd: s.run.spent_micro_usd,
+    committedMicroUsd: s.run.committed_micro_usd ?? 0n,
+    limitMicroUsd: s.run.budget_limit_micro_usd ?? s.run.budget_micro_usd,
+    budgetBasis: s.run.budget_basis ?? "billed",
+    byokTokenMicroUsd: s.run.byok_token_micro_usd ?? 0n,
     estimateMicroUsd: s.run.estimate_micro_usd,
     kitId: s.run.kit_id ?? null,
     kitOrigin: s.run.kit_origin ?? "generated",
@@ -483,6 +500,8 @@ export function describeEvent(live: LiveRun, ev: AnybenchEvent): string {
   switch (ev.type) {
     case "run.state_changed":
       return `Run ${ev.payload.from ?? "created"} → ${ev.payload.to}${ev.payload.reason ? `: ${ev.payload.reason}` : ""}`;
+    case "run.budget":
+      return `Budget: ${ev.payload.spent_micro_usd} spent, ${ev.payload.committed_micro_usd} committed, limit ${ev.payload.limit_micro_usd} micro-USD`;
     case "trial.phase":
       return `${who ?? "trial"}: ${ev.payload.from === "failed_infra" && ev.payload.to === "queued" ? "retrying" : TRIAL_STATE_WORD[ev.payload.to]}${ev.payload.reason ? ` (${ev.payload.reason})` : ""}${ev.payload.attempt > 1 ? `, attempt ${ev.payload.attempt}` : ""}`;
     case "trial.heartbeat":
@@ -647,6 +666,14 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
   }
 
   switch (ev.type) {
+    case "run.budget":
+      // The absolute numbers win over the summed deltas (a replay or a missed event).
+      next.spentMicroUsd = ev.payload.spent_micro_usd;
+      next.committedMicroUsd = ev.payload.committed_micro_usd;
+      next.limitMicroUsd = ev.payload.limit_micro_usd;
+      next.budgetBasis = ev.payload.basis;
+      next.byokTokenMicroUsd = ev.payload.byok_token_micro_usd;
+      break;
     case "run.state_changed":
       next.state = ev.payload.to;
       next.stateHistory = [...next.stateHistory, { state: ev.payload.to, at: ev.at }];
@@ -686,8 +713,8 @@ export function applyEvent(live: LiveRun, ev: AnybenchEvent): LiveRun {
       break;
   }
 
-  // Heartbeats are noise in the feed; they still update the trial above.
-  if (ev.type !== "trial.heartbeat")
+  // Heartbeats and budget ticks are noise in the feed; they still update the run above.
+  if (ev.type !== "trial.heartbeat" && ev.type !== "run.budget")
     next.feed = pushCapped(next.feed, feedItem(next, ev), FEED_CAP);
   return next;
 }

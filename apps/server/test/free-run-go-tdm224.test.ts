@@ -27,8 +27,9 @@ import {
 } from "../src/db/schema/index.js";
 import type { Database } from "../src/db/client.js";
 import { freeRunRefusalMessage, dollars } from "../src/lib/free-run.js";
-import { freeRunComputeSpent } from "../src/orchestrator/advance.js";
+import { budgetPricingFromConfig, readRunBudget } from "../src/orchestrator/budget.js";
 import { freshMigratedDbTdm11, pgAvailableTdm11, type FreshDbTdm11 } from "./helpers/pg-tdm11.js";
+import { configTdm14 } from "./helpers/server-tdm14.js";
 import {
   forceRunStateTdm67,
   kitSpecTdm67,
@@ -390,12 +391,17 @@ describe.skipIf(!available)("Go with no card: the free starter run (TDM-224)", (
     }
   });
 
-  it("the free run's compute cap: freeRunComputeSpent sums the run's computers only while it is free", async () => {
+  it("the free run's compute cap (TDM-242: the general budget, on the free-run basis)", async () => {
     const { c } = await newUser("cap");
     const runId = await runAwaitingGo(c);
-    expect(await freeRunComputeSpent(db.db, runId)).toBeNull();
+    const pricing = budgetPricingFromConfig(configTdm14(db.url, ENV));
+    // Before Go the run holds no free run: the billed basis, its own budget.
+    const before = await readRunBudget(db.db, runId, pricing);
+    expect(before).toMatchObject({ basis: "billed", limit: githubBody.budget_micro_usd });
     await c.runs.go({ params: { id: runId } });
-    expect(await freeRunComputeSpent(db.db, runId)).toBe(0n);
+    const free = await readRunBudget(db.db, runId, pricing);
+    expect(free).toMatchObject({ basis: "free_run", limit: pricing.freeRunCapMicroUsd });
+    expect(free!.spent.total).toBe(0n);
     await db.db.insert(computers).values([
       {
         provider: "naive",
@@ -412,7 +418,15 @@ describe.skipIf(!available)("Go with no card: the free starter run (TDM-224)", (
         costMicroUsd: 4_500_000n,
       },
     ]);
-    expect(await freeRunComputeSpent(db.db, runId)).toBe(10_500_000n);
+    // Compute at OUR cost (no markup, no run fee): 10.5M is past the 10M cap.
+    const spent = await readRunBudget(db.db, runId, pricing);
+    expect(spent!.spent).toEqual({
+      runFee: 0n,
+      compute: 10_500_000n,
+      managedTokens: 0n,
+      total: 10_500_000n,
+    });
+    expect(spent!.spent.total > spent!.limit).toBe(true);
   });
 });
 
