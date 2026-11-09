@@ -12,6 +12,7 @@ import {
   pageOf,
 } from "./common.js";
 import { defineRoute, defineRoutes } from "./route.js";
+import { RunKitOriginSchema } from "./runs.js";
 
 export const PAYMENT_STATUSES = ["none", "ok", "past_due", "blocked"] as const;
 export const PaymentStatusSchema = z.enum(PAYMENT_STATUSES);
@@ -121,6 +122,87 @@ export const BillingSummarySchema = z.object({
 });
 export type BillingSummary = z.infer<typeof BillingSummarySchema>;
 
+/**
+ * TDM-226: GET /billing/free-pool, public. Whether free starter runs are open right now. Only the
+ * state: never the pool's dollars, nor how many runs are left (packages/billing poolStatusFrom).
+ */
+export const FREE_POOL_STATES = ["open", "paused"] as const;
+export const PublicFreePoolSchema = z.strictObject({ state: z.enum(FREE_POOL_STATES) });
+export type PublicFreePool = z.infer<typeof PublicFreePoolSchema>;
+
+/** One worked example on the pricing page: a fixed kit priced by estimateRunCost. */
+export const PricingExampleSchema = z.object({
+  id: z.enum(["starter", "head_to_head"]),
+  title: z.string().min(1),
+  /** One sentence: what the example kit compares. */
+  summary: z.string().min(1),
+  kit_origin: RunKitOriginSchema,
+  /** Setups (contenders x their `vary` values), workloads and measured repeats of the kit. */
+  setups: z.int().positive(),
+  workloads: z.int().positive(),
+  repeats: z.int().positive(),
+  /** Whose model tokens the contenders spend: the user's own key, or Anybench's (managed). */
+  tokens: z.enum(["own_key", "managed"]),
+  /** The free starter run covers it (isStarterRun on the same estimate, an account with a key). */
+  free: z.boolean(),
+  run_fee_micro_usd: NonNegativeMicroUsdSchema,
+  compute: z.object({
+    computers: z.int().nonnegative(),
+    /** Trials, warm-ups included. */
+    trials: z.int().nonnegative(),
+    blocks: z.int().nonnegative(),
+    block_seconds: z.int().positive(),
+    /** Each trial is priced at this length (its time cap unless the kit says otherwise). */
+    est_trial_seconds: z.int().positive(),
+    /** At the billed price: per computer, cost + COMPUTE_MARKUP_BPS, rounded down. */
+    charge_micro_usd: NonNegativeMicroUsdSchema,
+  }),
+  /** run fee + computer time, before model tokens. What the run costs when it is not free. */
+  total_micro_usd: NonNegativeMicroUsdSchema,
+});
+export type PricingExample = z.infer<typeof PricingExampleSchema>;
+
+/**
+ * TDM-226: GET /billing/pricing, public. Every number the pricing page shows, from the server's
+ * billing config (RUN_FEE_MICRO_USD, COMPUTE_MARKUP_BPS, MANAGED_TOKEN_MARKUP_BPS, FREE_RUN_*)
+ * and packages/billing's estimate functions, so the page cannot drift from what is billed.
+ */
+export const PublicPricingSchema = z.object({
+  rates: z.object({
+    /** RUN_FEE_MICRO_USD: per benchmark run whose kit our agents designed. */
+    run_fee_micro_usd: NonNegativeMicroUsdSchema,
+    /** UPLOADED_KIT_RUN_FEE_MICRO_USD: per run from a kit you uploaded. */
+    uploaded_kit_run_fee_micro_usd: NonNegativeMicroUsdSchema,
+    /** COMPUTE_MARKUP_BPS: computer time at our cost + this. */
+    compute_markup_bps: z.int().nonnegative(),
+    /** MANAGED_TOKEN_MARKUP_BPS: Anybench's model tokens at our cost + this. */
+    managed_token_markup_bps: z.int().nonnegative(),
+    /** Computer time is billed in blocks of this many seconds. */
+    block_seconds: z.int().positive(),
+    /** The standard eval computer and what one block of it costs. */
+    machine: z.object({
+      vcpu: z.int().positive(),
+      memory_gb: z.int().positive(),
+      /** What one block costs us (Naïve). */
+      block_cost_micro_usd: NonNegativeMicroUsdSchema,
+      /** What one block costs you: cost + COMPUTE_MARKUP_BPS. */
+      block_charge_micro_usd: NonNegativeMicroUsdSchema,
+    }),
+  }),
+  /** The free starter run's limits (FREE_RUN_MAX_TRIALS, FREE_RUN_CAP_MICRO_USD). */
+  free_run: z.object({
+    /** False when free runs are switched off (FREE_RUN_POOL_MICRO_USD=0). */
+    offered: z.boolean(),
+    max_setups: z.int().positive(),
+    max_trials: z.int().nonnegative(),
+    /** Computer time a free run covers, at our cost. */
+    compute_cap_micro_usd: NonNegativeMicroUsdSchema,
+    min_github_age_days: z.int().nonnegative(),
+  }),
+  examples: z.array(PricingExampleSchema),
+});
+export type PublicPricing = z.infer<typeof PublicPricingSchema>;
+
 /** Where Stripe sends the browser back to; must be on the web origin (checked by the server). */
 const ReturnPathSchema = z
   .string()
@@ -128,6 +210,22 @@ const ReturnPathSchema = z
   .refine((s) => s.startsWith("/") && !s.startsWith("//"), { message: "must be a relative path" });
 
 export const billingRoutes = defineRoutes({
+  freePool: defineRoute({
+    id: "billing.freePool",
+    method: "GET",
+    path: "/billing/free-pool",
+    auth: ["public"],
+    summary: "Whether free starter runs are open or paused (never amounts). Cacheable for 60 s.",
+    response: PublicFreePoolSchema,
+  }),
+  pricing: defineRoute({
+    id: "billing.pricing",
+    method: "GET",
+    path: "/billing/pricing",
+    auth: ["public"],
+    summary: "Rates, free-run limits and two worked examples, from the billing config. 60 s cache.",
+    response: PublicPricingSchema,
+  }),
   summary: defineRoute({
     id: "billing.summary",
     method: "GET",

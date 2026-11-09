@@ -15,8 +15,8 @@ export function Header() {
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const pathname = usePathname() ?? "/";
-  // The landing page and live runs are always dark (screens, not documents); match them.
-  const instrument = pathname === "/" || pathname.startsWith("/runs");
+  // The landing page, pricing and live runs are always dark (screens, not documents); match them.
+  const instrument = pathname === "/" || pathname === "/pricing" || pathname.startsWith("/runs");
 
   useEffect(() => {
     if (!open) return;

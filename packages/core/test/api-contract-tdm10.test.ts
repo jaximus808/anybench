@@ -215,6 +215,12 @@ describe("api contract: required routes", () => {
     expect(apiRoutes.billing.linkCard.path).toBe("/billing/link-card");
     expect(apiRoutes.billing.portal.path).toBe("/billing/portal");
     expect(apiRoutes.billing.summary.path).toBe("/billing/summary");
+    // TDM-226: the pricing page's two public reads.
+    expect(apiRoutes.billing.freePool).toMatchObject({
+      path: "/billing/free-pool",
+      auth: ["public"],
+    });
+    expect(apiRoutes.billing.pricing).toMatchObject({ path: "/billing/pricing", auth: ["public"] });
     expect(apiRoutes.billing.stripeWebhook.path).toBe("/webhooks/stripe");
     expect(apiRoutes.runs.go.errors[402]).toBe(PaymentRequiredSchema);
     // TDM-224: `free_run` (optional) says why the run was not free. TDM-244: `message`

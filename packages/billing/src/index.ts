@@ -8,3 +8,4 @@ export * from "./setup.js";
 export * from "./stripe-ops.js";
 export * from "./free-run.js";
 export * from "./signup-grant.js";
+export * from "./public-pricing.js";

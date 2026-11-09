@@ -6,7 +6,7 @@ import { Placeholder, TableWrap } from "../../../components/docs/Notices";
 export const metadata: Metadata = {
   title: "Refunds and billing",
   description:
-    "How Anybench bills by usage, what is never billed, credit grants, refunds and disputes. Draft, pending founder and legal review.",
+    "How Anybench bills by usage, the free first benchmark, what is never billed, credit grants, refunds and disputes. Draft, pending founder and legal review.",
 };
 
 export default function RefundsPage() {
@@ -14,18 +14,22 @@ export default function RefundsPage() {
     <LegalPage
       path="/refunds"
       title="Refunds and billing"
-      summary="Anybench bills by usage. You link a card once, usage adds up as your trials run, and Stripe sends a monthly invoice. Runs that fail because of us are never billed."
+      summary="Anybench bills by usage. Your first benchmark is free, with no card. After that you link a card once, usage adds up as your trials run, and Stripe sends a monthly invoice. Runs that fail because of us are never billed."
     >
       <section aria-labelledby="refunds-how">
         <h2 id="refunds-how">How billing works</h2>
         <ul>
+          <li>
+            <strong>Your first benchmark is free.</strong> It runs on your own model key and needs
+            no card. See <a href="#refunds-free">the free first benchmark</a>.
+          </li>
           <li>
             <strong>Card on file, no upfront charge.</strong> Linking a card through Stripe Checkout
             saves it and starts a usage-based subscription. Nothing is charged at that point.
           </li>
           <li>
             <strong>You see the estimate before you start.</strong> The test plan shows what a run
-            should cost before you press Go, and each run has a spend cap you set.
+            should cost before you press Go, and each run has a budget you set, which is a hard cap.
           </li>
           <li>
             <strong>Monthly invoices.</strong> Stripe invoices your usage once a month.
@@ -43,28 +47,33 @@ export default function RefundsPage() {
 
       <section aria-labelledby="refunds-what">
         <h2 id="refunds-what">What we bill</h2>
-        <p>Pricing is cost-plus, and the test plan shows the estimate before you press Go.</p>
+        <p>
+          Pricing is cost-plus, and the test plan shows the estimate before you press Go. The
+          current amounts and two worked examples are on the{" "}
+          <Link href="/pricing">pricing page</Link>, which is rendered from the same billing
+          configuration that bills your runs.
+        </p>
         <ul>
           <li>
             <strong>
-              $2 per benchmark run, charged only when the run is delivered or fails because of the
-              subject.
+              A run fee per benchmark run, charged only when the run is delivered or fails because
+              of the subject.
             </strong>{" "}
             This covers the work of our own agents: understanding your project, finding what to
             compare it against, writing the kit, running the proof checks, reviewing and explaining
             the results. That work is not billed separately.
           </li>
           <li>
-            <strong>Eval computer time at our cost plus 50%.</strong> We pass on what our computer
-            provider charges us for the computers your trials ran on, plus 50%. It is metered from
-            when each computer is created to when it is destroyed, in the same 10-minute blocks the
-            provider bills us in.
+            <strong>Eval computer time at our cost plus a markup.</strong> We pass on what our
+            computer provider charges us for the computers your trials ran on, plus the markup on
+            the pricing page. It is metered from when each computer is created to when it is
+            destroyed, in the same 10-minute blocks the provider bills us in.
           </li>
           <li>
-            <strong>Model tokens, only if you choose managed tokens.</strong> By default the agent
-            under test uses your own model key and your provider bills you directly; we charge
-            nothing for those tokens. If you choose managed tokens, we bill them at cost plus a
-            markup shown before the run. Markup: <Placeholder>managed-token markup</Placeholder>.
+            <strong>Model tokens, only if you use ours.</strong> By default the agent under test
+            uses your own model key and your provider bills you directly; we charge nothing for
+            those tokens. If a run uses Anybench&rsquo;s model tokens, we bill them as used at our
+            cost plus the markup on the pricing page, and a card on file is required.
           </li>
         </ul>
       </section>
@@ -102,7 +111,7 @@ export default function RefundsPage() {
             <thead>
               <tr>
                 <th scope="col">How the run ended</th>
-                <th scope="col">$2 run fee</th>
+                <th scope="col">Run fee</th>
                 <th scope="col">Computer time</th>
               </tr>
             </thead>
@@ -139,9 +148,33 @@ export default function RefundsPage() {
           </table>
         </TableWrap>
         <p>
-          <strong>Spend caps.</strong> No new trials start once a run reaches its cap; trials
-          already running finish and are billed.
+          <strong>Budgets are a hard cap.</strong> Your budget is the most Anybench will charge for
+          a run: the run fee, computer time and any model tokens we provide. A trial starts only if
+          its worst case still fits; when the next one can&rsquo;t, the run pauses and asks you.
+          Tokens on your own key are billed by your provider and are not counted.
         </p>
+      </section>
+
+      <section aria-labelledby="refunds-free">
+        <h2 id="refunds-free">The free first benchmark</h2>
+        <ul>
+          <li>
+            One free starter run per account, for accounts signed in with a GitHub account older
+            than 90 days. It needs your own Anthropic or OpenAI key and no card.
+          </li>
+          <li>
+            A starter run is small: a limited number of setups, trials and computer time, shown on
+            the pricing page. Your run page says before you press Go whether a run is free.
+          </li>
+          <li>
+            Its charges are covered by a credit grant recorded on your account, so they never reach
+            your card. If it fails because of us, or we cancel it, you keep your free run.
+          </li>
+          <li>
+            Free runs are paid from a shared pool. When the pool is used up, free runs pause and the
+            site says so; runs are then billed at the normal prices.
+          </li>
+        </ul>
       </section>
 
       <section aria-labelledby="refunds-credits">
@@ -150,10 +183,6 @@ export default function RefundsPage() {
           <li>
             Credit granted to your account is used before your card is charged. Stripe applies it to
             your usage invoices first.
-          </li>
-          <li>
-            New accounts can get a one-time signup credit of $5 when the GitHub account they sign in
-            with is more than 90 days old. One signup credit per person.
           </li>
           <li>
             We may also grant credit for demos, support or to make up for a problem. Each grant is

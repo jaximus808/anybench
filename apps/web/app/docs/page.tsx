@@ -146,6 +146,16 @@ export default function DocsOverviewPage() {
         </p>
       </section>
 
+      <section aria-labelledby="overview-pricing">
+        <h2 id="overview-pricing">What it costs</h2>
+        <p>
+          Your first benchmark is free, on your own model key, with no card. After that a run costs a
+          run fee plus computer time at cost plus a markup; infrastructure failures are never
+          billed. <Link href="/pricing">Pricing</Link> has the current rates and two worked
+          examples.
+        </p>
+      </section>
+
       <section aria-labelledby="overview-more">
         <h2 id="overview-more">Use it from your tools</h2>
         <ul>

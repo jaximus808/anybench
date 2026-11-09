@@ -24,7 +24,7 @@ import type { AppDeps, AppEnv } from "../types.js";
 import { stripeBillingFromConfig } from "../lib/stripe-billing.js";
 import { apiKeysRoutes } from "./api-keys.js";
 import { authRoutes } from "./auth.js";
-import { billingRoutes, stripeWebhookRoutes } from "./billing.js";
+import { billingRoutes, publicBillingRoutes, stripeWebhookRoutes } from "./billing.js";
 import { eventsRoutes } from "./events.js";
 import { healthRoutes } from "./health.js";
 import { kitsRoutes } from "./kits.js";
@@ -65,6 +65,8 @@ export function registerRoutes(app: Hono<AppEnv>, appDeps: AppDeps): void {
         ? deps.stripeBilling
         : stripeBillingFromConfig(deps.config, deps.logger),
   };
+  // TDM-226: the public pricing reads (no session) come before the session-only billing routes.
+  app.route("/billing", publicBillingRoutes(deps));
   app.route("/billing", billingRoutes(billing));
   app.route("/health", healthRoutes(deps));
   app.route("/kits", kitsRoutes(tenant));

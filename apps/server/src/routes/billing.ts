@@ -8,6 +8,11 @@
 //   POST /billing/link-card  Stripe Checkout (mode subscription, the metered usage price): saves a
 //                            card, $0 due today. Answers {url}; the browser goes there.
 //   POST /billing/portal     Stripe billing portal (change card, invoices, receipts).
+// Public, no session (TDM-226; publicBillingRoutes, mounted before the session routes):
+//   GET  /billing/free-pool  {state: open|paused}: whether free starter runs are open. Never the
+//                            pool's amounts or runs left. Cacheable for 60 s.
+//   GET  /billing/pricing    the pricing page's numbers: rates, free-run limits and two worked
+//                            examples, from this deployment's billing config. Cacheable for 60 s.
 // And at /webhooks (no session; Stripe signs it):
 //   POST /webhooks/stripe    raw body, signature verified, stripe_events insert first (idempotent),
 //                            then the customer's account is re-synced from Stripe.
@@ -28,7 +33,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Config } from "../config.js";
 import { usageEntries } from "../db/schema/index.js";
 import { requireSessionActor, type ActorEnv } from "../lib/auth-key.js";
-import { freeRunStatusFor } from "../lib/free-run.js";
+import { freeRunStatusFor, publicFreePoolFor, publicPricingFor } from "../lib/free-run.js";
 import {
   ensureStripeCustomer,
   loadBillingAccount,
@@ -78,6 +83,28 @@ function monthBounds(now: Date): { start: Date; end: Date } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   return { start, end };
+}
+
+/** Shared caches (the CDN) may keep the public billing reads this long. */
+export const PUBLIC_BILLING_CACHE_CONTROL = "public, max-age=60, s-maxage=60";
+
+/** GET /billing/free-pool and GET /billing/pricing: public. Mount before billingRoutes. */
+export function publicBillingRoutes(deps: AppDeps): Hono<AppEnv> {
+  const r = new Hono<AppEnv>();
+  r.get("/free-pool", async (c) => {
+    const result: RouteResult<typeof contract.freePool> = await publicFreePoolFor(
+      deps.db,
+      deps.config,
+    );
+    c.header("cache-control", PUBLIC_BILLING_CACHE_CONTROL);
+    return c.json(encodeRouteResponse(contract.freePool, result) as object, 200);
+  });
+  r.get("/pricing", (c) => {
+    const result: RouteResult<typeof contract.pricing> = publicPricingFor(deps.config);
+    c.header("cache-control", PUBLIC_BILLING_CACHE_CONTROL);
+    return c.json(encodeRouteResponse(contract.pricing, result) as object, 200);
+  });
+  return r;
 }
 
 export function billingRoutes(deps: BillingRouteDeps): Hono<ActorEnv> {

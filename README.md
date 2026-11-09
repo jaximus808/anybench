@@ -55,7 +55,7 @@ Tandem is the founder’s own harness, and it lost. The traces show why: most of
 
 ## Pricing
 
-Usage-based through Stripe: compute at cost plus a markup, and a small per-run fee. A full head-to-head benchmark like the one above costs about $17 before model tokens.
+Your first benchmark is free: a small starter run on your own model key, no card. After that it is usage-based through Stripe: a per-run fee, computer time at cost plus a markup, and model tokens free on your own key (or ours at cost plus a markup). Budgets are a hard cap, and infrastructure failures are never billed. The current rates and two worked examples, a starter run and a full head-to-head like the one above, are on [anybench.vercel.app/pricing](https://anybench.vercel.app/pricing), computed from the billing code (`GET /billing/pricing`).
 
 ## How it’s built
 

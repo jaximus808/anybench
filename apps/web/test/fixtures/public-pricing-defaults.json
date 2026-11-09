@@ -1,0 +1,66 @@
+{
+  "rates": {
+    "run_fee_micro_usd": "2000000",
+    "uploaded_kit_run_fee_micro_usd": "0",
+    "compute_markup_bps": 5000,
+    "managed_token_markup_bps": 2000,
+    "block_seconds": 600,
+    "machine": {
+      "vcpu": 2,
+      "memory_gb": 4,
+      "block_cost_micro_usd": "27600",
+      "block_charge_micro_usd": "41400"
+    }
+  },
+  "free_run": {
+    "offered": true,
+    "max_setups": 2,
+    "max_trials": 24,
+    "compute_cap_micro_usd": "10000000",
+    "min_github_age_days": 90
+  },
+  "examples": [
+    {
+      "id": "starter",
+      "title": "A starter run",
+      "summary": "Your agent against plain Claude Code on two small tasks, three measured repeats each, on your own Anthropic key.",
+      "kit_origin": "generated",
+      "setups": 2,
+      "workloads": 2,
+      "repeats": 3,
+      "tokens": "own_key",
+      "free": true,
+      "run_fee_micro_usd": "2000000",
+      "compute": {
+        "computers": 16,
+        "trials": 16,
+        "blocks": 32,
+        "block_seconds": 600,
+        "est_trial_seconds": 900,
+        "charge_micro_usd": "1324800"
+      },
+      "total_micro_usd": "3324800"
+    },
+    {
+      "id": "head_to_head",
+      "title": "A full head-to-head",
+      "summary": "Tandem with 3 workers against plain Claude Code (the README example): the same three coding tasks, 18 graded trials each, on Anybench's model tokens.",
+      "kit_origin": "generated",
+      "setups": 2,
+      "workloads": 3,
+      "repeats": 6,
+      "tokens": "managed",
+      "free": false,
+      "run_fee_micro_usd": "2000000",
+      "compute": {
+        "computers": 42,
+        "trials": 42,
+        "blocks": 252,
+        "block_seconds": 600,
+        "est_trial_seconds": 3600,
+        "charge_micro_usd": "20865600"
+      },
+      "total_micro_usd": "22865600"
+    }
+  ]
+}

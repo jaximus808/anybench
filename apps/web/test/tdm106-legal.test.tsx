@@ -46,8 +46,11 @@ const PAGES: readonly {
     Page: RefundsPage,
     mustSay: [
       /never billed/,
-      /\$2 per benchmark run/,
-      /cost plus 50%/,
+      /Your first benchmark is free/,
+      /A run fee per benchmark run/,
+      /our cost plus a markup/,
+      /Budgets are a hard cap/,
+      /GitHub account older\s+than 90 days/,
       /\$50/,
       /Stripe/,
       /monthly/i,
@@ -134,11 +137,12 @@ describe("legal pages (TDM-106)", () => {
     expect(row("We cancelled")).toEqual(["Not billed", "Not billed"]);
   });
 
-  it("caps stop new trials but running trials are billed", () => {
+  it("budgets are a hard cap: a trial starts only if its worst case fits (TDM-242, TDM-226)", () => {
     const { container } = render(<RefundsPage />);
     expect(container.textContent).toMatch(
-      /No new trials start once a run reaches its cap; trials\s+already running finish and are billed/,
+      /Your budget is the most Anybench will charge for\s+a run: the run fee, computer time and any model tokens we provide\. A trial starts only if\s+its worst case still fits/,
     );
+    expect(container.textContent).not.toMatch(/trials\s+already running finish and are billed/);
     expect(container.textContent).not.toMatch(/Anything past your cap/);
   });
 

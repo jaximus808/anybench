@@ -1,27 +1,21 @@
+import Link from "next/link";
 import styles from "./marketing.module.css";
 
 /**
- * Pricing copy as the founder set it (TDM-99, revised 2026-11-07; simplified the same day: no
- * per-unit rates on the page, but compute is still stated as at cost + 50%). Display strings
- * only: billing's source of truth is the server's micro-USD config (plan.md, E10),
- * and nothing on this page computes money.
+ * The landing page's short pricing section (TDM-99; TDM-226: the first benchmark is free). The
+ * landing page is static and makes no API calls, so this section states the rules in words and
+ * no amounts: the rates and worked examples live on /pricing, rendered from the billing config
+ * (GET /billing/pricing), so they can never drift from what is billed.
  */
-export const RUN_FEE_LABEL = "$2";
-export const FREE_CREDIT_LABEL = "$5";
-
 const LINES = [
+  ["First benchmark", "Free, on your own model key. No card."],
+  ["After that", "A run fee per benchmark, plus computer time at cost plus a markup."],
   [
-    "Computer time",
-    "At cost + 50%, only while your trials run. Every trial gets a fresh computer.",
+    "Model tokens",
+    "Free on your own key (your provider bills them), or ours at cost plus a markup, with a card.",
   ],
-  ["Model tokens", "On your own key, paid to your model provider at their price."],
-  ["Failures on our side", "If our infrastructure or pipeline fails the run, nothing is billed."],
-  ["Cancelling", "If you cancel mid-run, you pay for the compute used, but no run fee."],
-  [
-    "Free credit",
-    `${FREE_CREDIT_LABEL} free credit when you sign up, used before anything is charged.`,
-  ],
-  ["Billing", "Billed monthly by usage, to the card on file."],
+  ["Budgets", "A hard cap: the most a run can charge, including the tokens we provide."],
+  ["Failures on our side", "Infrastructure failures and our retries are never billed."],
 ] as const;
 
 export function Pricing() {
@@ -31,11 +25,14 @@ export function Pricing() {
         <div className={styles.priceLead}>
           <h2 id="pricing-h">Pay for what runs</h2>
           <p className={styles.price}>
-            <span className={styles.priceAmount}>{RUN_FEE_LABEL}</span>
-            <span className={styles.priceUnit}>per benchmark run</span>
+            <span className={styles.priceAmount}>Free</span>
+            <span className={styles.priceUnit}>your first benchmark</span>
           </p>
           <p className={styles.lede}>
-            Plus computer time at cost + 50%, and model tokens on your own key. Nothing else.
+            Then a run fee and computer time at cost plus a markup. Nothing else.
+          </p>
+          <p>
+            <Link href="/pricing">See pricing and two worked examples</Link>
           </p>
         </div>
         <dl className={styles.priceList}>
@@ -46,12 +43,6 @@ export function Pricing() {
             </div>
           ))}
         </dl>
-      </div>
-      <div className={styles.priceEstimate}>
-        <p>
-          A 60-trial Tandem vs Claude Code benchmark like the one above is about $17, plus your
-          tokens. A typical CLI or API benchmark is $2–4.
-        </p>
       </div>
     </section>
   );

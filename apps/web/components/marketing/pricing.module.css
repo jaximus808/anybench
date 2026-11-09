@@ -1,0 +1,245 @@
+/* /pricing (TDM-226). Dark like the landing page (.instrument): ruled, not carded; mono for every
+   number; orange only for "live" (free runs open), never decoration. Tokens: app/globals.css. */
+
+.shell {
+  background: var(--bg);
+  color: var(--fg);
+  min-height: 100%;
+}
+.page {
+  max-width: calc(var(--column) + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: 72px var(--gutter) 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 88px;
+  counter-reset: sec;
+}
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  counter-increment: sec;
+}
+.section h2 {
+  font-family: var(--display);
+  font-size: var(--text-xl);
+  font-weight: 400;
+  letter-spacing: var(--tracking-display);
+  line-height: 1.05;
+  margin: 0;
+}
+/* "§ 01" above every section heading, like the landing page. */
+.section h2::before {
+  content: "§ " counter(sec, decimal-leading-zero);
+  display: block;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.muted {
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* ---------- head ---------- */
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.kicker {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(2.6rem, 1.2rem + 5vw, 4.5rem);
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+}
+.lede {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 58ch;
+}
+.status {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--dim);
+  align-self: center;
+}
+.status[data-state="open"] .dot {
+  background: var(--accent);
+}
+.statusLine {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+}
+.statusDetail {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* ---------- free run ---------- */
+.includes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line-strong);
+}
+.includes li {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  line-height: 1.55;
+}
+.cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 22px;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 500;
+  text-decoration: none;
+}
+.cta:hover {
+  background: var(--muted);
+}
+
+/* ---------- rates and rules ---------- */
+.rates,
+.rules,
+.lines {
+  margin: 0;
+  border-top: 1px solid var(--line-strong);
+}
+.rates > div {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 0.7fr) minmax(0, 1.5fr);
+  gap: 6px 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rates dt {
+  font-family: var(--display);
+  font-size: 18px;
+}
+.rates dd,
+.rules dd {
+  margin: 0;
+}
+.rate {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.rateDetail {
+  color: var(--muted);
+  line-height: 1.55;
+}
+.rules > div {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 2.2fr);
+  gap: 6px 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rules dt {
+  font-family: var(--display);
+  font-size: 18px;
+}
+.rules dd {
+  color: var(--muted);
+  line-height: 1.55;
+}
+@media (max-width: 720px) {
+  .rates > div,
+  .rules > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- worked examples ---------- */
+.examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 24px;
+}
+.example {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.example h3 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: var(--text-lg);
+}
+.exampleHead {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exampleAmount {
+  font-family: var(--mono);
+  font-size: clamp(2rem, 1.4rem + 2vw, 2.75rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.lines > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.lines dt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lines dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.lines > div[data-line="total"] {
+  border-bottom-color: var(--line-strong);
+}
+.lineDetail {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  line-height: 1.45;
+}

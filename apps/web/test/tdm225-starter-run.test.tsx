@@ -254,9 +254,7 @@ describe("New run: the first run is sized to the starter limits and shows 'Free'
     expect(priceLine()?.textContent).toContain(
       "Free runs are paused right now, so this run is billed at the normal price.",
     );
-    expect(screen.getByRole("link", { name: "See pricing" }).getAttribute("href")).toBe(
-      "/#pricing",
-    );
+    expect(screen.getByRole("link", { name: "See pricing" }).getAttribute("href")).toBe("/pricing");
   });
 
   it("no free run in play (used, or an older server): no price line, the flow as before", async () => {

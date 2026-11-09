@@ -70,20 +70,22 @@ describe("landing page (TDM-99)", () => {
       expect(container.querySelector(`#${id}`)?.tagName).toBe("SECTION");
   });
 
-  it("states the founder's pricing simply, with the cancel and pipeline-failure rules", () => {
+  it("states pricing simply in words and links to /pricing for every amount (TDM-226)", () => {
     render(<HomePage />);
     const pricing = screen.getByRole("region", { name: "Pay for what runs" });
     const text = pricing.textContent ?? "";
-    expect(text).toContain("$2per benchmark run");
-    expect(text).toContain("Plus computer time at cost + 50%, and model tokens on your own key.");
-    expect(text).toContain("At cost + 50%, only while your trials run.");
-    expect(text).toContain("If our infrastructure or pipeline fails the run, nothing is billed.");
-    expect(text).toContain("If you cancel mid-run, you pay for the compute used, but no run fee.");
-    expect(text).toContain("$5 free credit when you sign up");
-    expect(text).toContain("Billed monthly by usage, to the card on file.");
-    expect(text).toContain("about $17, plus your tokens");
-    // No per-unit rates on the page.
-    expect(text).not.toMatch(/per vCPU-hour|per GiB-hour/);
+    expect(text).toContain("Freeyour first benchmark");
+    expect(text).toContain("Free, on your own model key. No card.");
+    expect(text).toContain("A run fee per benchmark, plus computer time at cost plus a markup.");
+    expect(text).toContain("A hard cap");
+    expect(text).toContain("Infrastructure failures and our retries are never billed.");
+    // The landing page is static: no amount is typed here; /pricing renders them from the API.
+    expect(text).not.toMatch(/\$\d|\d+%/);
+    expect(
+      within(pricing)
+        .getByRole("link", { name: "See pricing and two worked examples" })
+        .getAttribute("href"),
+    ).toBe("/pricing");
   });
 
   it("uses one cost and duration model everywhere ($17 for 60 trials, about 2 h)", () => {
@@ -91,7 +93,6 @@ describe("landing page (TDM-99)", () => {
     const text = container.textContent ?? "";
     // The Test plan screen and the /anybench transcript.
     expect(text.match(/≈ \$15 compute \+ \$2 run fee ≈ \$17/g)).toHaveLength(2);
-    expect(text).toContain("about $17, plus your");
     expect(text).toContain("about 2 h, 14 at a time");
     expect(text).not.toMatch(/\$19|40 min|\$40–120|\$0\.08 per vCPU/);
     expect(text).toContain("$1.58 tokens");

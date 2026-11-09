@@ -954,7 +954,7 @@ export function NewRunForm({ client: injected, put, timing = {} }: NewRunFormPro
               {price.kind === "paid_paused" ? (
                 <>
                   {" "}
-                  <Link href="/#pricing">See pricing</Link>
+                  <Link href="/pricing">See pricing</Link>
                 </>
               ) : null}
             </p>
