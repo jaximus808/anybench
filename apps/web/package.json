@@ -16,7 +16,8 @@
     "@anybench/core": "workspace:*",
     "next": "16.4.5",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",

@@ -1,0 +1,277 @@
+/* /blog and /blog/[slug] (TDM-214). A reading page: follows the system theme like /docs.
+   Colors and fonts are the site tokens in app/globals.css. */
+
+.shell {
+  width: 100%;
+  max-width: calc(var(--column) + 2 * var(--gutter));
+  margin-inline: auto;
+  padding: 56px var(--gutter) 96px;
+}
+
+.kicker {
+  margin: 0 0 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.kicker a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.kicker a:hover {
+  color: var(--fg);
+}
+
+.title {
+  margin: 0 0 16px;
+  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4rem);
+  line-height: 1;
+  letter-spacing: -0.035em;
+}
+
+.lede {
+  margin: 0 0 8px;
+  font-size: var(--text-md);
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.date {
+  margin: 0 0 40px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Index */
+.list {
+  list-style: none;
+  margin: 40px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: minmax(0, 160px) minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.itemDate {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding-top: 6px;
+}
+
+.itemTitle {
+  margin: 0 0 6px;
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+}
+
+.itemTitle a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.itemTitle a:hover {
+  text-decoration: underline;
+}
+
+.itemDesc {
+  margin: 0;
+  color: var(--muted);
+}
+
+.empty {
+  margin: 40px 0 0;
+  padding: 24px 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}
+
+/* Draft banner, same treatment as the legal pages' draft notice. */
+.draft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 40px;
+  padding: 16px 18px;
+  border: 1px solid var(--warn);
+  border-left-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--fg);
+  font-size: 15.5px;
+}
+
+.draft strong {
+  font-family: var(--display);
+  font-size: 17px;
+}
+
+/* Post body: HTML rendered from Markdown (lib/blog/markdown.ts). Sections are numbered like a
+   lab report (design-system.md principle 7). */
+.body {
+  counter-reset: section;
+  font-size: 1.0625rem;
+  line-height: 1.7;
+}
+
+.body h2 {
+  counter-increment: section;
+  margin: 56px 0 16px;
+  font-size: clamp(1.6rem, 1.2rem + 1.4vw, 2.1rem);
+  line-height: 1.1;
+}
+
+.body h2::before {
+  content: "§ " counter(section, decimal-leading-zero);
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.body h3 {
+  margin: 32px 0 10px;
+}
+
+.body p,
+.body ul,
+.body ol,
+.body blockquote {
+  margin: 0 0 18px;
+}
+
+.body ul,
+.body ol {
+  padding-left: 1.25em;
+}
+
+.body li + li {
+  margin-top: 10px;
+}
+
+.body li::marker {
+  color: var(--dim);
+}
+
+.body code {
+  overflow-wrap: anywhere;
+}
+
+.body blockquote {
+  padding-left: 18px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+}
+
+.body hr {
+  margin: 40px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.body pre {
+  margin: 16px 0 24px;
+  padding: 16px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.body pre code {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  overflow-wrap: normal;
+}
+
+.body :global(.md-table) {
+  overflow-x: auto;
+  margin: 16px 0 24px;
+}
+
+.body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.body th,
+.body td {
+  text-align: left;
+  vertical-align: top;
+  padding: 12px 14px 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.body td {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.body thead th {
+  border-bottom: 1px solid var(--line-strong);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.body tbody th {
+  font-weight: 500;
+}
+
+/* `:::placeholder` in a post: a section still to be written. */
+.body :global(.md-placeholder) {
+  margin: 20px 0 28px;
+  padding: 18px 20px;
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+}
+
+.body :global(.md-placeholder)::before {
+  content: "Placeholder";
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.body :global(.md-placeholder) > :last-child {
+  margin-bottom: 0;
+}
