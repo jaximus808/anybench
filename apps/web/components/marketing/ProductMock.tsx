@@ -193,9 +193,11 @@ const CHECKS = [
 ];
 
 /**
- * Cost model, kept consistent everywhere it appears: about $1.60 of
- * tokens and $0.25 of compute (30 min on 4 vCPU / 8 GiB) per trial, 14 trials at a
- * time. 60 trials ≈ $15 compute + $2 run fee ≈ $17, plus ≈ $96 of tokens.
+ * Duration and token model, kept consistent everywhere it appears: about $1.60 of tokens on the
+ * user's own key per trial, 14 trials at a time, about 2 h for 60 trials, ≈ $96 of tokens.
+ * TDM-243: no Anybench price here. This is an example screen, and its old "≈ $17" disagreed
+ * with the real estimate (/pricing renders every amount from GET /billing/pricing, i.e.
+ * packages/billing publicPricingFigures); the real Go screen shows the run's own estimate.
  */
 function PlanPane() {
   return (
@@ -261,8 +263,8 @@ function PlanPane() {
       </div>
       <div className={styles.estimate}>
         <span>
-          <b>60 trials</b> · about 2 h, 14 at a time · ≈ $15 compute + $2 run fee ≈ $17 · tokens ≈
-          $96 on your key
+          <b>60 trials</b> · about 2 h, 14 at a time · tokens ≈ $96 on your key · see{" "}
+          <a href="/pricing">pricing</a> for what a run costs
         </span>
         <span className={styles.fakeBtn}>Run 60 trials</span>
       </div>

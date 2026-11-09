@@ -363,5 +363,10 @@ export const RunStageOutputsShape = z.looseObject({
   failure: z.object({ stage: RunStateSchema, reason: z.string() }).optional(),
   /** Terminal cleanup done (sessions, trials, billing hook). */
   finalized_at: z.string().optional(),
+  /**
+   * TDM-243: the user cancelled the run while it was in this state (set by POST /runs/:id/cancel
+   * only for awaiting_go). packages/billing releases a free run such a run still holds.
+   */
+  cancelled_from: RunStateSchema.optional(),
 });
 export type RunStageOutputs = z.infer<typeof RunStageOutputsShape>;

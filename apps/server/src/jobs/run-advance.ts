@@ -183,6 +183,8 @@ export function orchestratorDeps(
         }),
     owner: leaseOwnerBase(ctx.workerId, ctx.workerStartedAt),
     paused: ctx.config.ANYBENCH_PAUSE,
+    // TDM-243: auto-go takes the free starter run exactly as POST /runs/:id/go does.
+    goConfig: ctx.config,
     // TDM-242: every run's budget (a free starter run: FREE_RUN_CAP_MICRO_USD at our cost).
     ...budgetDeps(options, ctx),
     logger: ctx.logger.child({ job: RUN_ADVANCE_JOB }),

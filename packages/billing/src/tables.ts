@@ -132,6 +132,11 @@ export const runs = pgTable("runs", {
   cancelCause: text("cancel_cause"),
   /** POST /runs' request; free-run.ts reads `kit_origin` (TDM-218) from it. */
   intake: jsonb("intake"),
+  /**
+   * The orchestrator's stage outputs; free-run.ts reads `cancelled_from` (TDM-243: the cancel
+   * route stamps `awaiting_go` when the user cancels before Go).
+   */
+  stageOutputs: jsonb("stage_outputs").notNull(),
 });
 
 /**

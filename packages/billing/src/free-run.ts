@@ -29,6 +29,12 @@
 //     cost us (its computers' registry cost + the agent allowance) is added to `spent`.
 //   - releaseFreeRun: Go reserved but the run never started (the Go transaction failed, the user
 //     backed out): the reservation and the entitlement go back.
+//   - Cancelled before Go (TDM-243): a run the user cancelled while it was still in awaiting_go
+//     never started, so a reservation it still holds (possible only after a crash between reserve
+//     and the Go transition, or a Go racing the cancel) is RELEASED (`user_cancel_before_go`), not
+//     consumed. The cancel route stamps runs.stage_outputs.cancelled_from = 'awaiting_go' in the
+//     cancel's own transaction and then calls releaseFreeRun; settleFreeRun applies the same rule,
+//     so whichever runs first, the outcome is the same. A user cancel AFTER Go still consumes.
 //
 // The correctness gate and statistics are unchanged on free runs: nothing here touches results.
 //
@@ -651,11 +657,26 @@ export type ReleaseFreeRunResult =
   | { status: "released"; freeRun: FreeStarterRun }
   | { status: "not_reserved"; freeRun: FreeStarterRun | null };
 
+/** The release reason of a run the user cancelled while it was still in awaiting_go (TDM-243). */
+export const USER_CANCEL_BEFORE_GO = "user_cancel_before_go";
+
+/** TDM-243: the run was cancelled while in awaiting_go (the cancel route's stamp): it never ran. */
+export function cancelledBeforeGo(run: { state: string; stageOutputs: unknown }): boolean {
+  if (run.state !== "cancelled") return false;
+  const out = run.stageOutputs;
+  return (
+    !!out &&
+    typeof out === "object" &&
+    (out as Record<string, unknown>).cancelled_from === "awaiting_go"
+  );
+}
+
 /**
  * Give back a reservation whose run never started (the Go transaction failed, or the user backed
  * out before the run left awaiting_go): the pool gets the whole reservation back and the account
- * gets its free run back. Only a `reserved` row on a run still `awaiting_go` is released; a run
- * that started is settled by settleFreeRun instead.
+ * gets its free run back. Only a `reserved` row on a run still `awaiting_go`, or one cancelled
+ * while it was in awaiting_go (cancelledBeforeGo, TDM-243), is released; a run that started is
+ * settled by settleFreeRun instead.
  */
 export async function releaseFreeRun(
   db: LedgerDb,
@@ -672,11 +693,13 @@ export async function releaseFreeRun(
       .for("update");
     if (!row || row.state !== "reserved") return { status: "not_reserved", freeRun: row ?? null };
     const [run] = await tx
-      .select({ state: runs.state })
+      .select({ state: runs.state, stageOutputs: runs.stageOutputs })
       .from(runs)
       .where(eq(runs.id, input.runId))
       .for("share");
-    if (run && run.state !== "awaiting_go") return { status: "not_reserved", freeRun: row };
+    if (run && run.state !== "awaiting_go" && !cancelledBeforeGo(run)) {
+      return { status: "not_reserved", freeRun: row };
+    }
     const [released] = await tx
       .update(freeStarterRuns)
       .set({
@@ -750,7 +773,11 @@ export async function settleFreeRun(
       .for("update");
     if (!row) return { status: "not_free_run" } as const;
     const [run] = await tx
-      .select({ state: runs.state, cancelCause: runs.cancelCause })
+      .select({
+        state: runs.state,
+        cancelCause: runs.cancelCause,
+        stageOutputs: runs.stageOutputs,
+      })
       .from(runs)
       .where(eq(runs.id, runId))
       .for("share");
@@ -771,12 +798,17 @@ export async function settleFreeRun(
         runTrials.map((t) => t.state),
         run.cancelCause === "ours" ? "ours" : "user",
       );
-      next = decision.billable ? "consumed" : "released";
-      releaseReason = decision.billable
-        ? null
-        : run.state === "cancelled"
-          ? "cancelled_by_us"
-          : "failed_not_subject";
+      // TDM-243: cancelled while still in awaiting_go = it never ran: released, not consumed.
+      const beforeGo = cancelledBeforeGo(run);
+      next = decision.billable && !beforeGo ? "consumed" : "released";
+      releaseReason =
+        next === "consumed"
+          ? null
+          : beforeGo
+            ? USER_CANCEL_BEFORE_GO
+            : run.state === "cancelled"
+              ? "cancelled_by_us"
+              : "failed_not_subject";
     }
 
     // Coverage: lock the account first (the ledger's order), then the run's open entries.

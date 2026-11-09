@@ -52,6 +52,17 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
     },
     { severity: "debug", cost_delta_micro_usd: "41400" },
   ),
+  // TDM-243: auto-go refused; the sentence the Go button would show.
+  "run.go_refused": tdm8Event(
+    "run.go_refused",
+    {
+      reason: "no_payment_method",
+      message: "You've used your free run. Add a card to continue.",
+      link_card_url: "https://anybench.jaxonp.com/settings/billing?run=run_1",
+      free_run_reason: "already_used",
+    },
+    { severity: "warn" },
+  ),
   "trial.phase": tdm8Event("trial.phase", { from: "gating", to: "reviewing", attempt: 1 }),
   "trial.heartbeat": tdm8Event(
     "trial.heartbeat",
@@ -177,7 +188,7 @@ const tdm8Fixtures: Record<AnybenchEventType, AnybenchEventInput> = {
 describe("AnybenchEvent", () => {
   it("EVENT_TYPES lists exactly the section 6 types", () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(tdm8Fixtures).sort());
-    expect(EVENT_TYPES).toHaveLength(21);
+    expect(EVENT_TYPES).toHaveLength(22);
   });
 
   it.each(EVENT_TYPES)("%s round-trips parse → serialize → parse", (type) => {

@@ -151,6 +151,35 @@ export const PaymentRequiredSchema = z.object({
 });
 export type PaymentRequired = z.infer<typeof PaymentRequiredSchema>;
 
+/** Each 402 reason in plain words, for when the server sent no sentence of its own. */
+export const PAYMENT_REQUIRED_WORDS: Record<PaymentRequired["reason"], string> = {
+  no_payment_method: "Add a card to start this run. You aren't charged until it runs.",
+  insufficient_credit: "Your credit doesn't cover this run. Add a card to start it.",
+  payment_past_due: "Your last payment failed. Update your card to start this run.",
+  account_blocked: "Your account is on hold. Contact support.",
+  spend_limit: "This run would pass the spend limit for new accounts.",
+  daily_cap: "You've reached today's spend cap.",
+  managed_tokens_need_card:
+    "This kit uses Anybench's model tokens. Add your own model key or a card to continue.",
+};
+
+/**
+ * TDM-243: the one sentence a refused Go shows. The Go button (web GoBar) and the orchestrator's
+ * auto-go `run.go_refused` event both use it. With no card on file, why the free run did not
+ * apply is the useful part; otherwise the server's own `message`, else the reason in words.
+ */
+export function paymentRequiredMessage(p: {
+  reason: PaymentRequired["reason"];
+  free_run?: { message: string } | undefined;
+  message?: string | undefined;
+}): string {
+  return (
+    (p.reason === "no_payment_method" ? p.free_run?.message : undefined) ??
+    p.message ??
+    PAYMENT_REQUIRED_WORDS[p.reason]
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Pagination (opaque cursors; events page by seq instead, see events.ts)
 

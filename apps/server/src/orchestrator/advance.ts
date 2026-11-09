@@ -53,6 +53,7 @@ import {
   type AnybenchEvent,
   type EventActor,
   type KitSpec,
+  type PaymentRequired,
   type ProjectDigest,
   type ProofCheckResult,
   type RunCommand,
@@ -60,10 +61,11 @@ import {
   type RunState,
 } from "@anybench/core";
 import { expandTrials, expandTrialsInputFromKit, TRIAL_MAX_ATTEMPTS } from "@anybench/bench";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { contenders } from "../db/schema/contenders.js";
+import { events } from "../db/schema/events.js";
 import { kits } from "../db/schema/kits.js";
 import { PreregSchema, preregMismatch, preregistrationOf } from "./prereg.js";
 import { projects } from "../db/schema/projects.js";
@@ -72,6 +74,7 @@ import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
 import type { BillingGate } from "../lib/billing-gate.js";
 import { appendEvents } from "../lib/events.js";
+import { startRunAtGo, type GoDeps } from "../lib/go.js";
 import { WORKER_MAX_TICK_AGE_MS } from "../lib/worker-health.js";
 import { kitSpecHash, proofOf } from "../routes/kits.js";
 import { proofAccepted } from "./proof-score.js";
@@ -203,6 +206,12 @@ export interface OrchestratorDeps {
   owner: string;
   /** ANYBENCH_PAUSE=1: a global kill switch (plan section 5). */
   paused: boolean;
+  /**
+   * TDM-243: the billing config auto-go's Go decision reads (lib/go.ts startRunAtGo, the same as
+   * POST /runs/:id/go): the free starter run's limits and pool, BILLING_MODE, admins. The job
+   * wiring passes the server config; unset (tests, tools) = the free run is not in play.
+   */
+  goConfig?: NonNullable<GoDeps["config"]>;
   logger?: OrchestratorLogger;
   timing?: Partial<OrchestratorTiming>;
   workerMaxTickAgeMs?: number;
@@ -1007,18 +1016,85 @@ class RunAdvance {
     if (run.estimateMicroUsd > run.budgetMicroUsd) {
       return this.wait(run.state, "estimate exceeds the run budget");
     }
-    const gate = await this.deps.billingGate(
-      { userId: run.ownerId, runId: run.id },
-      run.estimateMicroUsd,
-    );
-    if (!gate.allowed) return this.wait(run.state, `billing gate: ${gate.reason}`);
     // Plan 17.2 rule 6: freeze the kit (hash, files, weights, primary, repeats) at Go.
     const prereg = await preregistrationOf(kit.row, kit.spec);
-    return this.commit(
-      run,
-      { type: "go", estimate_fits_budget: true, billing_gate_passed: true },
-      { reason: "auto-go", outputs: { prereg } },
+    // TDM-243: the same Go decision as POST /runs/:id/go (lib/go.ts): the free starter run first,
+    // else the billing gate; a free run reserved here goes back if the commit does not happen.
+    const go = await startRunAtGo(
+      {
+        db: this.deps.db,
+        config: this.deps.goConfig ?? null,
+        billingGate: this.deps.billingGate,
+        ...(this.deps.logger ? { log: this.deps.logger } : {}),
+      },
+      { userId: run.ownerId, run, estimateMicroUsd: run.estimateMicroUsd },
+      async ({ free }) => {
+        const r = await this.store.commit(
+          this.runId,
+          this.owner,
+          run.state,
+          { type: "go", estimate_fits_budget: true, billing_gate_passed: true },
+          { reason: free ? "auto-go: free starter run" : "auto-go", outputs: { prereg } },
+        );
+        return { moved: r === "ok", value: r };
+      },
     );
+    switch (go.kind) {
+      case "payment_required":
+        await this.noteGoRefused(run, go.payment, go.message);
+        return this.wait(run.state, `billing gate: ${go.payment.reason}`);
+      case "conflict":
+        return CONTINUE; // the run moved under us: re-read
+      case "not_moved":
+      case "started":
+        if (go.value === "lease_lost") throw new Stop("lease_lost");
+        if (go.value === "gone") throw new Stop("gone");
+        return CONTINUE; // "ok" → running; "moved" → someone else moved it: re-read
+    }
+  }
+
+  /**
+   * TDM-243: auto-go was refused: say why on the run, in the words the Go button would use, once
+   * per distinct refusal (the sweep retries awaiting_go auto-go runs; it must not flood the feed).
+   */
+  private async noteGoRefused(run: RunRow, payment: PaymentRequired, message: string) {
+    const [last] = await this.deps.db
+      .select({ type: events.type, payload: events.payload })
+      .from(events)
+      .where(
+        and(
+          eq(events.runId, run.id),
+          inArray(events.type, ["run.state_changed", "run.go_refused"]),
+        ),
+      )
+      .orderBy(desc(events.seq))
+      .limit(1);
+    if (
+      last?.type === "run.go_refused" &&
+      (last.payload as { message?: unknown } | null)?.message === message &&
+      (last.payload as { reason?: unknown } | null)?.reason === payment.reason
+    ) {
+      return;
+    }
+    await appendEvents(this.deps.db, run.id as RunId, [
+      {
+        run_id: run.id,
+        seq: 0,
+        type: "run.go_refused",
+        source: "run",
+        source_id: run.id,
+        severity: "warn",
+        actor: this.actor,
+        cost_delta_micro_usd: 0n,
+        at: new Date().toISOString(),
+        payload: {
+          reason: payment.reason,
+          message,
+          link_card_url: payment.link_card_url,
+          ...(payment.free_run ? { free_run_reason: payment.free_run.reason } : {}),
+        },
+      },
+    ]);
   }
 
   private async running(run: RunRow, budgetIn: RunBudget | null = null): Promise<Step> {

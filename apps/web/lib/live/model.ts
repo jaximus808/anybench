@@ -500,6 +500,9 @@ export function describeEvent(live: LiveRun, ev: AnybenchEvent): string {
   switch (ev.type) {
     case "run.state_changed":
       return `Run ${ev.payload.from ?? "created"} → ${ev.payload.to}${ev.payload.reason ? `: ${ev.payload.reason}` : ""}`;
+    case "run.go_refused":
+      // TDM-243: auto-go could not start the run; the same sentence the Go button shows.
+      return `Not started automatically: ${ev.payload.message}`;
     case "run.budget":
       return `Budget: ${ev.payload.spent_micro_usd} spent, ${ev.payload.committed_micro_usd} committed, limit ${ev.payload.limit_micro_usd} micro-USD`;
     case "trial.phase":

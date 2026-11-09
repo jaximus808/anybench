@@ -7,7 +7,13 @@
 // why in plain words (a starter limit, free run already used, free runs paused) and is shown
 // instead of the generic card line. TDM-244: a kit on Anybench's model tokens with no card on file
 // gets `managed_tokens_need_card` and the server's own sentence (`message`), shown as is.
-import { ApiClientError, type RunId } from "@anybench/core";
+import {
+  ApiClientError,
+  PAYMENT_REQUIRED_REASONS,
+  paymentRequiredMessage,
+  type PaymentRequired,
+  type RunId,
+} from "@anybench/core";
 import { useState } from "react";
 import { apiErrorMessage } from "../../lib/api";
 import { useLiveApi } from "../../lib/live/client";
@@ -26,17 +32,6 @@ export type GoFailure =
       message?: string;
     }
   | { kind: "message"; text: string };
-
-const PAYMENT_WORDS: Record<string, string> = {
-  no_payment_method: "Add a card to start this run. You aren't charged until it runs.",
-  insufficient_credit: "Your credit doesn't cover this run. Add a card to start it.",
-  payment_past_due: "Your last payment failed. Update your card to start this run.",
-  account_blocked: "Your account is on hold. Contact support.",
-  spend_limit: "This run would pass the spend limit for new accounts.",
-  daily_cap: "You've reached today's spend cap.",
-  managed_tokens_need_card:
-    "This kit uses Anybench's model tokens. Add your own model key or a card to continue.",
-};
 
 /** The 402's link when it is https on any host, else our own billing page for this run. */
 export function goCardHref(linkCardUrl: string, runId: string): string {
@@ -89,16 +84,27 @@ export function useGoAction(runId: string): GoAction {
   return { busy, started, failure, go };
 }
 
+/**
+ * TDM-243: the sentence for a refused Go, from core paymentRequiredMessage (the orchestrator's
+ * auto-go `run.go_refused` event says the same).
+ */
+export function goFailureWords(failure: Extract<GoFailure, { kind: "payment" }>): string {
+  if (!(PAYMENT_REQUIRED_REASONS as readonly string[]).includes(failure.reason))
+    return failure.message ?? "Billing needs attention before this run can start.";
+  return paymentRequiredMessage({
+    reason: failure.reason as PaymentRequired["reason"],
+    free_run: failure.freeRun ? { message: failure.freeRun } : undefined,
+    message: failure.message,
+  });
+}
+
 /** What to say about a failed Go (or null when there is nothing wrong). */
 export function GoFailureText({ failure }: { failure: GoFailure | null }) {
   if (!failure) return null;
   if (failure.kind === "payment")
     return (
       <>
-        {(failure.reason === "no_payment_method" ? failure.freeRun : undefined) ??
-          failure.message ??
-          PAYMENT_WORDS[failure.reason] ??
-          "Billing needs attention before this run can start."}{" "}
+        {goFailureWords(failure)}
         <a href={failure.href}>Add a card</a>
       </>
     );

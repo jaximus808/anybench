@@ -26,7 +26,7 @@ const SESSION: Line[] = [
   [["    smoke               tandem ×3 hello-api, 4m12s   "], ["pass", "g"]],
   [['    planted regression  "skip tests" 0.21 vs 0.67   '], ["pass", "g"]],
   [["●", "a"], [" Plan: 4 setups × 3 tasks × 5 runs = 60 trials"]],
-  [["    est. ≈ $15 compute + $2 run fee ≈ $17 · about 2 h, 14 at a time", "d"]],
+  [["    about 2 h, 14 at a time · the price is shown before you start", "d"]],
   [["    tokens ≈ $96 on your key (cap $120)", "d"]],
   [],
   [["  Upload kit and start? "], ["(y/n)", "a"]],

@@ -88,12 +88,13 @@ describe("landing page (TDM-99)", () => {
     ).toBe("/pricing");
   });
 
-  it("uses one cost and duration model everywhere ($17 for 60 trials, about 2 h)", () => {
+  it("uses one duration model everywhere (60 trials, about 2 h) and types no Anybench price (TDM-243)", () => {
     const { container } = render(<HomePage />);
     const text = container.textContent ?? "";
-    // The Test plan screen and the /anybench transcript.
-    expect(text.match(/≈ \$15 compute \+ \$2 run fee ≈ \$17/g)).toHaveLength(2);
-    expect(text).toContain("about 2 h, 14 at a time");
+    // The Test plan screen and the /anybench transcript: the same duration, and no run price
+    // (the old "≈ $17 for 60 trials" disagreed with /pricing's real estimate from the API).
+    expect(text.match(/about 2 h, 14 at a time/g)).toHaveLength(2);
+    expect(text).not.toMatch(/run fee ≈|≈ \$17|\$15 compute/);
     expect(text).not.toMatch(/\$19|40 min|\$40–120|\$0\.08 per vCPU/);
     expect(text).toContain("$1.58 tokens");
   });

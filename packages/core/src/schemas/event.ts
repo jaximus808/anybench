@@ -24,6 +24,7 @@ import {
   type RunCommandType,
 } from "../state/run.js";
 import { isLegalTrialEdge, TrialStateSchema } from "../state/trial.js";
+import { FreeRunRefusalReasonSchema, PaymentRequiredReasonSchema } from "../api/common.js";
 
 export const EVENT_SOURCES = [
   "run",
@@ -46,6 +47,7 @@ export type EventSeverity = z.infer<typeof EventSeveritySchema>;
 export const EVENT_TYPES = [
   "run.state_changed",
   "run.budget",
+  "run.go_refused",
   "trial.phase",
   "trial.heartbeat",
   "trial.log_chunk",
@@ -72,6 +74,7 @@ export type AnybenchEventType = z.infer<typeof AnybenchEventTypeSchema>;
 export const EVENT_SOURCE_BY_TYPE = {
   "run.state_changed": "run",
   "run.budget": "run",
+  "run.go_refused": "run",
   "trial.phase": "trial",
   "trial.heartbeat": "trial",
   "trial.log_chunk": "trial",
@@ -199,6 +202,22 @@ export const AnybenchEventSchema = z.discriminatedUnion("type", [
           managed_tokens: eventMicroUsd,
         })
         .optional(),
+    }),
+  ),
+  /**
+   * TDM-243: auto-go (the orchestrator) could not start a run waiting in awaiting_go: the same
+   * Go decision as POST /runs/:id/go refused it. `message` is the sentence the Go button would
+   * show (core paymentRequiredMessage); the run stays in awaiting_go. Written once per distinct
+   * refusal, not on every sweep.
+   */
+  eventOf(
+    "run.go_refused",
+    z.object({
+      reason: PaymentRequiredReasonSchema,
+      message: z.string().min(1),
+      link_card_url: z.url(),
+      /** Why the free starter run did not apply, when it was in play. */
+      free_run_reason: FreeRunRefusalReasonSchema.optional(),
     }),
   ),
   eventOf("trial.phase", trialPhase),
