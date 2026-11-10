@@ -20,9 +20,14 @@ import { reports } from "../db/schema/reports.js";
 import { runs } from "../db/schema/runs.js";
 import { proofOf } from "../routes/kits.js";
 import { stageTrialOf } from "./advance.js";
-import { isTandemRepo } from "./curated.js";
+import {
+  CURATED_HARNESS_LEAGUE_KIT,
+  curatedDisclosure,
+  curatedKitFor,
+  isTandemRepo,
+} from "./curated.js";
 import { AnalysisSchema, RunIntakeSchema, RunStageOutputsShape, type StageTrial } from "./ports.js";
-import { buildSummary, storedScoreOf, TANDEM_DISCLOSURE, type StoredScore } from "./proof-score.js";
+import { buildSummary, storedScoreOf, type StoredScore } from "./proof-score.js";
 import { kitContenderSlugs, orchestratorStore } from "./store.js";
 import {
   attemptKey,
@@ -158,13 +163,18 @@ export async function writeScoreAndReport(
   }
   const outputs = RunStageOutputsShape.safeParse(run.stageOutputs ?? {});
   const basis = outputs.success ? outputs.data.proof_basis : undefined;
+  // The same disclosure the live analyze step gives this run (curated.ts): it depends on which
+  // curated kit the question picked. A hard-coded short-kit line mislabelled a league rescore
+  // (run 01a1c202 read "tokens: naive-proxy, effort: naive-min" though it ran on the owner's key).
+  const curatedId = curatedKitFor(run.question);
   const built = buildSummary({
     kit,
     score: toJsonValue(score),
     proof: proofOf(kitRow.proof),
     trials: stageTrials,
     ...(basis && basis.kit_id === kitRow.id ? { proofLabel: basis.label } : {}),
-    disclosure: TANDEM_DISCLOSURE,
+    disclosure: curatedDisclosure(curatedId),
+    ...(curatedId === CURATED_HARNESS_LEAGUE_KIT ? { headlessPolicy: true } : {}),
   });
   if (!built.ok) return { score, scoreWritten, report: "skipped", reportReason: built.reason };
   const analysis = AnalysisSchema.safeParse({
