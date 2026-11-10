@@ -29,9 +29,17 @@
 // verdict is `indistinguishable`, phrased "no detectable difference at n=…, smallest detectable
 // difference=…", where the smallest detectable difference is at 80% power and α / (family size).
 //
-// Too small to tell (TDM-210): when the test's exact floor (2 / 2^T over T tasks, 2 / C(n1+n2, n1)
-// for an exact two-sample test) is at least α, no data at this n could be significant, and the
-// statement says "not significant" with the n that could be.
+// Too small to tell (TDM-210): when the test's exact floor (2 / 2^T over T tasks; 2 / C(n1+n2, n1)
+// for exact Mann–Whitney; for the permutation test and Fisher 2 / C(n1+n2, n1) at n1 = n2 and
+// 1 / C(n1+n2, n1) at n1 ≠ n2, TDM-251) is at least α, no data at this n could be significant,
+// and the statement says "not significant" with the n that could be. The same when the floor is
+// below α but Holm across the family can't get below α (`holmFloors`).
+//
+// Within one task (TDM-251, `ComparisonSpec.continuousTest: "permutation"`, `DecideOptions.scope:
+// "task"`): a continuous metric is compared with the exact two-sample permutation test on the
+// trials' values (difference in means), Mann–Whitney when a value is infinite (an unsolved trial's
+// spend), with Cliff's δ ≥ 0.33 still required; the statement gives the test's p, its Holm p,
+// the floor at these n's and the means, and says "on this task".
 //
 // Honesty rules on top:
 // - A requirement scored as a median over solved trials only (`survivorship: true`) can never be
@@ -49,7 +57,9 @@ import {
   mannWhitney,
   mdeCliffsDelta,
   mdeTwoProportions,
+  holmFloors,
   minMannWhitneyP,
+  minPermutationP,
   mulberry32,
   newcombeCi,
   newcombePValue,
@@ -156,6 +166,12 @@ export interface Effect {
   /** Pass rates (rate_diff) or mean fractions (mean_diff); null for cliffs_delta. */
   candidateRate: number | null;
   baselineRate: number | null;
+  /**
+   * TDM-251, the within-task permutation test: each arm's mean in the metric's unit (what the
+   * test compares). Absent or null otherwise, or when a value is infinite.
+   */
+  candidateMean?: number | null;
+  baselineMean?: number | null;
 }
 
 export interface SmallestDetectable {
@@ -179,6 +195,13 @@ export interface Comparison {
   p: number;
   /** Holm-adjusted across `family` comparisons. */
   pAdjusted: number;
+  /**
+   * TDM-251: the smallest p this test can give at these n's, whatever the data (`minPermutationP`,
+   * `minMannWhitneyP`, 2 / 2^T over T tasks; 0 for an asymptotic or Monte Carlo test).
+   */
+  pFloor: number;
+  /** The smallest Holm-adjusted p it can reach in this family, whatever the data (`holmFloors`). */
+  pAdjustedFloor: number;
   alpha: number;
   family: number;
   effect: Effect;
@@ -224,6 +247,12 @@ export interface ComparisonSpec {
    * repeats in an agent kit, E18: exact at any n). The CI is Newcombe's either way.
    */
   rateTest?: "newcombe" | "fisher_exact";
+  /**
+   * Unclustered continuous metrics: `mann_whitney` (default; software kits) or `permutation`
+   * (TDM-251, one task's trials: the exact two-sample permutation test on the difference in means,
+   * Mann–Whitney when a value is infinite). The effect is Cliff's δ either way.
+   */
+  continuousTest?: "mann_whitney" | "permutation";
   /** The requirement's unit, for the statement ("s", "ms"). */
   unit?: string | undefined;
   seed: number;
@@ -351,9 +380,9 @@ function compareRateCell(spec: ComparisonSpec): RawComparison {
     },
     n: { candidate: c.trials, baseline: b.trials, tasks: 1 },
     mdeAt: (alpha) => ({
-      // Fisher can't go below 2 / C(n1+n2, n1) (a full split), the same floor as Mann–Whitney.
+      // Fisher can't go below a full split's probability (TDM-251: 1 / C(n1+n2, n1) at n1 ≠ n2).
       value:
-        fisher && minMannWhitneyP(c.trials, b.trials) >= alpha
+        fisher && minPermutationP(c.trials, b.trials) >= alpha
           ? null
           : mdeTwoProportions(c.trials, b.trials, { alpha, power, rate: pooled }),
       unit: "rate",
@@ -370,16 +399,28 @@ function compareContinuousCell(spec: ComparisonSpec): RawComparison {
   const level = spec.level ?? DECISION_RULE.level;
   const power = spec.power ?? DECISION_RULE.power;
   const sign = orient(spec.better);
-  const mw = mannWhitney(x, y);
-  const delta = z0(sign * cliffsDelta(x, y));
   const finite = [...x, ...y].every(Number.isFinite);
+  // TDM-251: one task's trials, compared on their values (difference in means), exactly. Ranks
+  // (Mann–Whitney) when a value is infinite: a mean with ∞ in it has no difference to permute.
+  const perm =
+    spec.continuousTest === "permutation" && finite
+      ? permutationMeanTest(x, y, { seed: spec.seed })
+      : null;
+  const mw = perm ? null : mannWhitney(x, y);
+  const delta = z0(sign * cliffsDelta(x, y));
   const hl = finite ? hodgesLehmannCi(x, y, level) : null;
   const finiteAll = [...x, ...y].filter(Number.isFinite);
   const spread = finiteAll.length >= 2 ? robustSd(finiteAll) : 0;
   return {
     spec,
-    test: mw.method === "exact" ? "mann_whitney_exact" : "mann_whitney_asymptotic",
-    p: mw.p,
+    test: perm
+      ? perm.method === "exact"
+        ? "permutation_exact"
+        : "permutation_monte_carlo"
+      : mw!.method === "exact"
+        ? "mann_whitney_exact"
+        : "mann_whitney_asymptotic",
+    p: perm ? perm.p : mw!.p,
     effect: {
       measure: "cliffs_delta",
       value: delta,
@@ -387,28 +428,31 @@ function compareContinuousCell(spec: ComparisonSpec): RawComparison {
       hodgesLehmann: hl ? z0(hl.estimate) : null,
       candidateRate: null,
       baselineRate: null,
+      ...(perm ? { candidateMean: mean(x), baselineMean: mean(y) } : {}),
     },
-    ci: hl
-      ? {
-          lo: hl.lo,
-          hi: hl.hi,
-          level: hl.level,
-          requestedLevel: hl.requestedLevel,
-          attained: hl.attained,
-          method: "hodges_lehmann",
-          unit: "metric",
-        }
-      : // Infinite values (failures counted as never solved) have no finite shift: report δ's
-        // own range instead, which is honest and wide.
-        {
-          lo: -1,
-          hi: 1,
-          level: 1,
-          requestedLevel: level,
-          attained: true,
-          method: "hodges_lehmann",
-          unit: "cliffs_delta",
-        },
+    // An interval with no coverage at all (1 vs 1: 0%) is not an interval: δ's range instead.
+    ci:
+      hl && hl.level > 0
+        ? {
+            lo: hl.lo,
+            hi: hl.hi,
+            level: hl.level,
+            requestedLevel: hl.requestedLevel,
+            attained: hl.attained,
+            method: "hodges_lehmann",
+            unit: "metric",
+          }
+        : // Infinite values (failures counted as never solved) have no finite shift, and 1 vs 1 has
+          // no interval: report δ's own range instead, which is honest and wide.
+          {
+            lo: -1,
+            hi: 1,
+            level: 1,
+            requestedLevel: level,
+            attained: true,
+            method: "hodges_lehmann",
+            unit: "cliffs_delta",
+          },
     n: { candidate: x.length, baseline: y.length, tasks: 1 },
     mdeAt: (alpha) => {
       const raw = mdeCliffsDelta(x.length, y.length, { alpha, power });
@@ -475,9 +519,9 @@ function compareMeanCell(spec: ComparisonSpec): RawComparison {
     },
     n: { candidate: x.length, baseline: y.length, tasks: 1 },
     mdeAt: (alpha) => ({
-      // The permutation test can't go below 2 / C(n1+n2, n1), like exact Mann–Whitney.
+      // The permutation test's floor: 2 / C(n1+n2, n1) at n1 = n2, 1 / C at n1 ≠ n2 (TDM-251).
       value:
-        minMannWhitneyP(x.length, y.length) >= alpha
+        minPermutationP(x.length, y.length) >= alpha
           ? null
           : mdeMean(x.length, y.length, pooledSd, alpha, power),
       unit: "rate",
@@ -666,6 +710,12 @@ export interface DecideOptions {
   baseline: string;
   /** Tasks needed for a general agent claim. Default 20. */
   minTasksForClaim?: number;
+  /**
+   * TDM-251: `task` when every comparison is one task's trials (the per-task family, or a
+   * single-task kit). Each is then `claim: these_tasks`, reads "on this task", and states its
+   * test's p, Holm p and floor.
+   */
+  scope?: "task";
 }
 
 const pts = (d: number) => `${Math.round(d * 100)} pts`;
@@ -673,6 +723,8 @@ const signedPts = (d: number) =>
   `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(Math.round(d * 100))} pts`;
 const fmtDelta = (d: number) => `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d).toFixed(2)}`;
 const fmtP = (p: number) => (p < 0.001 ? "<0.001" : p.toFixed(3));
+/** "p=0.029", or "p<0.001" (never "p=<0.001"). */
+const pIs = (p: number) => (p < 0.001 ? "p<0.001" : `p=${fmtP(p)}`);
 
 function fmtNum(v: number): string {
   if (!Number.isFinite(v)) return v > 0 ? "∞" : "−∞";
@@ -681,6 +733,14 @@ function fmtNum(v: number): string {
   return `${v < 0 ? "−" : ""}${s}`;
 }
 const withUnit = (v: number, unit?: string) => `${fmtNum(v)}${unit ? ` ${unit}` : ""}`;
+/** Like withUnit, but micro-USD reads as dollars (TDM-251: "$17.41", not "1.74e+7 micro-USD"). */
+function metricText(v: number, unit?: string): string {
+  if (unit === "micro-USD" && Number.isFinite(v)) {
+    const usd = formatUsd(BigInt(Math.round(Math.abs(v))) as MicroUsd);
+    return v < 0 ? `−${usd}` : usd;
+  }
+  return withUnit(v, unit);
+}
 
 function nText(r: RawComparison): string {
   const trials = `${r.n.candidate} vs ${r.n.baseline}`;
@@ -716,10 +776,17 @@ function effectText(r: RawComparison): string {
     return `${signedPts(e.value)} mean fraction${means} (${lvl} ${signedPts(r.ci.lo)} to ${signedPts(r.ci.hi)})`;
   }
   const delta = `Cliff's δ ${fmtDelta(e.value)}`;
+  const cm = e.candidateMean ?? null;
+  const bm = e.baselineMean ?? null;
+  const means =
+    cm !== null && bm !== null && Number.isFinite(cm) && Number.isFinite(bm)
+      ? `, mean ${metricText(cm, r.spec.unit)} vs ${metricText(bm, r.spec.unit)}${bm > 0 ? ` (${(cm / bm).toFixed(2)}×)` : ""}`
+      : "";
   if (r.ci.unit === "metric" && e.hodgesLehmann !== null) {
     const u = r.spec.unit;
-    return `${delta}, shift ${withUnit(e.hodgesLehmann, u)} (${lvl} ${withUnit(r.ci.lo, u)} to ${withUnit(r.ci.hi, u)})`;
+    return `${delta}${means}, shift ${metricText(e.hodgesLehmann, u)} (${lvl} ${metricText(r.ci.lo, u)} to ${metricText(r.ci.hi, u)})`;
   }
+  if (means) return `${delta}${means}`;
   if (r.ci.unit === "cliffs_delta" && r.spec.clustered) {
     return `${delta} averaged over tasks (${lvl} ${fmtDelta(r.ci.lo)} to ${fmtDelta(r.ci.hi)})`;
   }
@@ -728,21 +795,34 @@ function effectText(r: RawComparison): string {
 
 /**
  * The smallest p the comparison's test can give at its n, whatever the data: 2 / 2^T for the exact
- * sign-flip test over T tasks, 2 / C(n1+n2, n1) for an exact two-sample test (Fisher, exact
- * Mann–Whitney, permutation), 0 for an asymptotic one.
+ * sign-flip test over T tasks, 2 / C(n1+n2, n1) for exact Mann–Whitney, and for Fisher and the
+ * permutation test 2 / C(n1+n2, n1) at n1 = n2 but 1 / C(n1+n2, n1) at n1 ≠ n2 (TDM-251: 3 vs 4
+ * reaches 1/35). 0 for an asymptotic or Monte Carlo one.
  */
-function attainableFloor(r: RawComparison): number {
+export function attainableFloor(r: Pick<RawComparison, "test" | "n">): number {
   switch (r.test) {
     case "task_paired":
       return Math.min(1, 2 / 2 ** r.n.tasks);
-    case "fisher_exact":
     case "mann_whitney_exact":
-    case "permutation_exact":
       return minMannWhitneyP(r.n.candidate, r.n.baseline);
+    case "fisher_exact":
+    case "permutation_exact":
+      return minPermutationP(r.n.candidate, r.n.baseline);
     default:
       return 0;
   }
 }
+
+/** How each test reads in a statement ("exact permutation p=0.029"). */
+export const COMPARISON_TEST_NAMES: Readonly<Record<ComparisonTest, string>> = {
+  newcombe: "Newcombe",
+  fisher_exact: "Fisher exact",
+  mann_whitney_exact: "exact Mann–Whitney",
+  mann_whitney_asymptotic: "Mann–Whitney",
+  task_paired: "task-paired",
+  permutation_exact: "exact permutation",
+  permutation_monte_carlo: "permutation",
+};
 
 /**
  * Turn raw comparisons into verdicts: Holm-adjust their p-values as one family, apply the effect
@@ -753,8 +833,13 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
   const minTasks = opts.minTasksForClaim ?? DECISION_RULE.minTasksForClaim;
   const m = raws.length;
   const adjusted = holmAdjust(raws.map((r) => r.p));
+  const floors = raws.map(attainableFloor);
+  const adjustedFloors = holmFloors(floors);
+  const taskScope = opts.scope === "task";
   return raws.map((r, i) => {
     const pAdjusted = adjusted[i]!;
+    const floor = floors[i]!;
+    const holmFloor = adjustedFloors[i]!;
     const mde = r.mdeAt(alpha / Math.max(1, m));
     const continuous = r.effect.measure === "cliffs_delta";
     const bigEnough = !continuous || Math.abs(r.effect.value) >= DECISION_RULE.minCliffsDelta;
@@ -773,7 +858,9 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
       downgraded = "survivorship";
     }
     const claim: Comparison["claim"] =
-      r.spec.clustered && r.n.tasks < minTasks ? "these_tasks" : "general";
+      taskScope || (r.spec.clustered && r.n.tasks < minTasks) ? "these_tasks" : "general";
+    // TDM-251: one task's trials say the test, its p and its Holm p.
+    const tests = `${COMPARISON_TEST_NAMES[r.test]} ${pIs(r.p)}, Holm ${pIs(pAdjusted)} across ${m} test${m === 1 ? "" : "s"}`;
 
     let statement: string;
     if (verdict === "indistinguishable") {
@@ -782,20 +869,32 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
         statement += `; it leans better, but the value is a median over solved trials only, so it can't show better (${effectText(r)})`;
       else statement += `; observed ${effectText(r)}`;
       if (downgraded === "effect_size")
-        statement += `; significant but |δ| ${Math.abs(r.effect.value).toFixed(2)} < ${DECISION_RULE.minCliffsDelta}`;
+        statement += `; significant${taskScope ? ` (${tests})` : ""} but |δ| ${Math.abs(r.effect.value).toFixed(2)} < ${DECISION_RULE.minCliffsDelta}`;
       else if (downgraded === "multiplicity")
-        statement += `; p=${fmtP(r.p)} is not significant after Holm correction across ${m} comparisons`;
+        statement += taskScope
+          ? `; ${COMPARISON_TEST_NAMES[r.test]} ${pIs(r.p)} is not significant after Holm correction across ${m} tests (Holm ${pIs(pAdjusted)})`
+          : `; p=${fmtP(r.p)} is not significant after Holm correction across ${m} comparisons`;
+      else if (taskScope) statement += `; ${tests}`;
       // Tasks are the unit: too few of them and no data can show a general difference.
-      const floor = attainableFloor(r);
       if (r.spec.clustered && floor >= alpha / Math.max(1, m))
         statement += `; ${floor >= alpha ? "not significant: " : ""}insufficient tasks for a general claim: the exact test over ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"} can't go below p=${fmtP(floor)}, ≥${minTasksForSignificance(alpha / Math.max(1, m))} tasks needed`;
       else if (!r.spec.clustered && floor >= alpha)
         // TDM-210: too few trials for ANY result to be significant, whatever they show.
         statement += `; not significant: n=${nText(r)} is too small for any difference to be significant (the exact test can't go below p=${fmtP(floor)}), ≥${minRepeatsForPerTask(m, alpha)} trials per setup needed across ${m} comparison${m === 1 ? "" : "s"}`;
+      else if (!r.spec.clustered && floor > 0 && holmFloor >= alpha)
+        // TDM-251: the test alone could get below α, but not after Holm across this family.
+        statement += `; not significant: n=${nText(r)} is too small for any difference to be significant after Holm across ${m} comparisons (the exact test can't go below p=${fmtP(floor)}, Holm p below ${fmtP(holmFloor)}), ≥${minRepeatsForPerTask(m, alpha)} trials per setup needed`;
+      else if (taskScope && floor > 0)
+        statement += `; at n=${nText(r)} the exact test can't go below p=${fmtP(floor)}`;
     } else {
-      const where =
-        claim === "these_tasks" ? ` on these ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"}` : "";
-      statement = `${verdict}${where}: ${effectText(r)}, Holm p=${fmtP(pAdjusted)}, n=${nText(r)}`;
+      const where = taskScope
+        ? " on this task"
+        : claim === "these_tasks"
+          ? ` on these ${r.n.tasks} task${r.n.tasks === 1 ? "" : "s"}`
+          : "";
+      statement = taskScope
+        ? `${verdict}${where}: ${effectText(r)}, ${tests}, n=${nText(r)}`
+        : `${verdict}${where}: ${effectText(r)}, Holm p=${fmtP(pAdjusted)}, n=${nText(r)}`;
     }
     return {
       baseline: opts.baseline,
@@ -803,6 +902,8 @@ export function decide(raws: readonly RawComparison[], opts: DecideOptions): Com
       test: r.test,
       p: r.p,
       pAdjusted,
+      pFloor: floor,
+      pAdjustedFloor: holmFloor,
       alpha,
       family: m,
       effect: r.effect,

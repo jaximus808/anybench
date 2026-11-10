@@ -390,11 +390,14 @@ describe("TDM-210 n=3 per setup: 'not significant', never a winner", () => {
   ]);
   const s = scoreKit(kitTdm210(), n3, { baseline: "B" });
 
-  it("the task-paired verdict on the fraction says not significant at n=3", () => {
+  it("the verdict on the fraction says not significant at n=3 (TDM-251: 1 task, so the within-task test)", () => {
     const a = reqOf(s, "A", "tests");
     expect(a.verdict).toBe("indistinguishable");
+    expect(s.stats.singleTask).toBe(true);
+    expect(a.comparison!.test).toBe("permutation_exact");
+    expect(a.comparison!.claim).toBe("these_tasks");
     const st = a.comparison!.statement;
-    expect(st).toMatch(/^no detectable difference at n=1 task \(3 vs 3 trials\)/);
+    expect(st).toMatch(/^no detectable difference at n=3 vs 3/);
     expect(st).toContain("not significant");
     expect(st).toMatch(/\+55 pts mean fraction, 95 pts vs 40 pts/);
     expect(s.stats.headline[0]!.verdict).toBe("indistinguishable");

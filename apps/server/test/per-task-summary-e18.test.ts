@@ -133,7 +133,9 @@ describe("head-to-head per-task results in the report (E18)", () => {
     expect(md).toContain(
       "Per task (each task's repeats as the unit; Holm across 10 task × requirement tests; 3 tasks:",
     );
-    expect(md).toMatch(/- Tandem ×3 on todo-api: better: Cliff's δ \+1\.00/);
+    expect(md).toMatch(
+      /- Tandem ×3 on todo-api: better on this task: Cliff's δ \+1\.00, mean .* \(0\.\d\d×\), shift .*, exact permutation p=0\.002, Holm p=0\.0\d\d across 10 tests, n=6 vs 6/,
+    );
   });
 
   it("A/A: no per-task headline, every task 'no detectable difference', the scope line still there", async () => {

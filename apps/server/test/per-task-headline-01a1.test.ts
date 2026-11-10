@@ -165,7 +165,9 @@ describe("run 01a1bae4: per-task wall/cost findings reach the headline", () => {
       );
     expect(tandem.wins).toEqual([]);
     expect(tandem.losses).toEqual([]);
-    expect(md).toMatch(/- Tandem ×3 on bug-hunt: worse: Cliff's δ −1\.00, shift 170 s/);
+    expect(md).toMatch(
+      /- Tandem ×3 on bug-hunt: worse on this task: Cliff's δ −1\.00, mean \d+ s vs \d+\.\d s \(\d\.\d\d×\), shift 170 s/,
+    );
     expect(
       ReportSchema.safeParse({
         ...report,

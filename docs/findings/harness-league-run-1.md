@@ -268,6 +268,29 @@ reach significance under Holm, whatever the data**, and G's only with every gsta
 every solo trial. The bench docstring for `permutationMeanTest` gives the floor as 2/C, but with
 unequal n it can be 1/C (D: 0.0286 < 2/35).
 
+TDM-251 (fixed): bench `minPermutationP(n1, n2)` is the permutation test's (and Fisher's) floor,
+1/C at n1 ≠ n2 and 2/C at n1 = n2; `minMannWhitneyP` stays 2/C (rank sums are symmetric). The
+"Holm floor" column above is m × floor, the comparison's best case as the family's smallest p.
+The smallest Holm p a comparison can actually reach also lets the comparisons with smaller floors
+sit ahead of it (bench `holmFloors`): for D and S that is max(6/126, 5/126, 4 × 1/35) = 4/35 =
+0.114, still above 0.05, and for G 6/126 = 0.048. The script now prints both floors:
+
+```
+$ pnpm exec tsx scripts/spikes/harness-league/within-task-stats.ts stats-input.json
+setup          metric                        n       mean ratio  perm p   MW p     floor    MW floor Holm p
+G gstack       wall_s                        5 vs 4       1.023  0.5079   0.5556   0.0079   0.0159   1.0000
+D tandem       wall_s                        3 vs 4       2.143  0.0286   0.0571   0.0286   0.0571   0.1714
+S superpowers  wall_s                        4 vs 4       0.999  0.9714   1.0000   0.0286   0.0286   1.0000
+```
+
+The report now does this itself for a 1-task kit (TDM-251): `scoreKit` skips the task-paired test
+at one task, each requirement's comparison is the within-task one (`permutation_exact` on the
+trials' values, Holm across the family, `p_floor` and `p_adjusted_floor` in the report), and the
+answer leads with "Within this task (project-tracker), each setup vs A · Claude Code solo …" and
+"On this task only (project-tracker); no general claim from 1 task". On this run's values with the
+kit as preregistered (15 tests: tests-pass, tests-fraction, wall, cost, cost-per-test × G, S, D)
+D's wall is p = 0.029, Holm 0.429 (`apps/server/test/within-task-report-tdm251.test.ts`).
+
 ## Total spend
 
 | | |

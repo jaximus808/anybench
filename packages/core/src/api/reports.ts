@@ -40,6 +40,13 @@ export const RequirementComparisonSchema = z
     p: Probability,
     /** Holm-adjusted across the report's `family` comparisons. */
     p_adjusted: Probability,
+    /**
+     * TDM-251: the smallest p this test can give at these n's whatever the data (exact
+     * permutation and Fisher: 1 / C(n1+n2, n1) at n1 ≠ n2, 2 / C at n1 = n2), and the smallest
+     * Holm-adjusted p it can reach in this family. Absent in reports before TDM-251.
+     */
+    p_floor: Probability.optional(),
+    p_adjusted_floor: Probability.optional(),
     alpha: z.number().gt(0).lt(1),
     family: z.int().min(1),
     effect: z.object({
@@ -48,6 +55,9 @@ export const RequirementComparisonSchema = z
       /** Oriented: positive means the contender is better than the baseline. */
       value: Finite,
       hodges_lehmann: Finite.nullable(),
+      /** TDM-251, the within-task permutation test: each arm's mean in the metric's unit. */
+      candidate_mean: Finite.nullable().optional(),
+      baseline_mean: Finite.nullable().optional(),
     }),
     /** CI of the difference; `level` is the coverage attained (small n may fall short). */
     diff_ci: z.object({
@@ -90,9 +100,10 @@ export const RequirementComparisonSchema = z
 export type RequirementComparison = z.infer<typeof RequirementComparisonSchema>;
 
 /**
- * E18: one task's result vs the baseline, with the task's repeats as the unit (exact
- * Mann–Whitney, Fisher for pass rates), Holm across every task × requirement test. It speaks for
- * that task only: never a general claim.
+ * E18: one task's result vs the baseline, with the task's repeats as the unit (TDM-251: the exact
+ * two-sample permutation test on the trials' values, Mann–Whitney for reviews or an infinite
+ * value, Fisher for pass rates), Holm across every task × requirement test. It speaks for that
+ * task only: never a general claim.
  */
 export const TaskComparisonSchema = z
   .object({

@@ -234,7 +234,8 @@ export interface WorkloadCell {
   comparison: Comparison | null;
   /**
    * Agent and harness kits (E18): this task alone vs the baseline's, with its repeats as the
-   * unit (exact Mann–Whitney, Fisher for pass rates), Holm across every task × requirement test
+   * unit (TDM-251: the exact two-sample permutation test on the trials' values, Mann–Whitney when
+   * one is infinite, Fisher for pass rates), Holm across every task × requirement test
    * (`stats.perTask.family`). It speaks for this task only (`claim: these_tasks`). Absent for
    * the baseline, for software kits and for scores stored before E18.
    */
@@ -357,6 +358,13 @@ export interface KitStats {
   headline: { contenderId: string; verdict: Verdict; statement: string }[];
   /** Agent and harness kits: the per-task results (E18). Null for software kits. */
   perTask?: PerTaskStats | null;
+  /**
+   * TDM-251: an agent or harness kit with ONE task. The task-paired test over tasks can't go
+   * below p = 1 there, so it is not run: every requirement's comparison (and `headline`, and
+   * `family`) is the within-task one (`perTask`, the exact two-sample tests on the task's trials,
+   * Holm across them), scoped to that task (`claim: these_tasks`). Absent before TDM-251.
+   */
+  singleTask?: boolean;
 }
 
 /**
@@ -1173,6 +1181,11 @@ function attachVerdicts(
   };
   if (baseline === null) return stats;
   const base = scores.find((s) => s.contenderId === baseline)!;
+  // TDM-251: one task compared, so tasks can't be the unit (2 / 2^1 = 1): within-task tests only.
+  const tasksCompared = new Set(
+    scores.flatMap((s) => s.requirements.flatMap((r) => (r.scored ? r.workloads : []))),
+  );
+  const singleTask = clustered && tasksCompared.size === 1;
 
   const pending: PendingComparison[] = [];
   perReq.forEach(({ plan, raw }, ri) => {
@@ -1222,10 +1235,12 @@ function attachVerdicts(
     }
   });
 
-  const decided = decide(
-    pending.map((p) => p.raw),
-    { alpha, baseline },
-  );
+  const decided = singleTask
+    ? []
+    : decide(
+        pending.map((p) => p.raw),
+        { alpha, baseline },
+      );
   stats.family = decided.length;
   const perTarget = new Map<ScoredRequirement, Comparison[]>();
   decided.forEach((d, i) => {
@@ -1249,7 +1264,32 @@ function attachVerdicts(
   }
 
   if (clustered)
-    stats.perTask = perTaskVerdicts(kit, scores, perReq, baseline, alpha, stats.family, opts);
+    stats.perTask = perTaskVerdicts(
+      kit,
+      scores,
+      perReq,
+      baseline,
+      alpha,
+      singleTask ? pending.length : stats.family,
+      opts,
+    );
+  if (singleTask) {
+    // The within-task comparison IS the requirement's comparison (scoped to the task).
+    stats.singleTask = true;
+    stats.family = stats.perTask!.family;
+    for (const s of scores) {
+      if (s.contenderId === baseline) continue;
+      for (const r of s.requirements) {
+        if (!r.scored) continue;
+        const d = r.byWorkload.find((c) => c.taskComparison)?.taskComparison ?? null;
+        if (!d) continue;
+        r.comparison = d;
+        r.verdict = d.verdict;
+        r.effect = d.effect;
+        r.ci = d.ci;
+      }
+    }
+  }
 
   if (primary !== null) {
     const ri = kit.requirements.findIndex((r) => r.id === primary);
@@ -1326,6 +1366,9 @@ function perTaskVerdicts(
           unit,
           iterations: opts.iterations,
           rateTest: "fisher_exact",
+          // TDM-251: the exact two-sample permutation test on the trials' values. A review score
+          // is ordinal (1–4), so its mean is not a measurement: ranks (Mann–Whitney) there.
+          continuousTest: req.type === "measured" ? "permutation" : "mann_whitney",
           candidate: [armCell(plan.aggregate, cell, mineRaw.cells.get(cell.workloadId)!)],
           baseline: [armCell(plan.aggregate, baseCell, baseRaw.cells.get(baseCell.workloadId)!)],
           clustered: false,
@@ -1340,7 +1383,7 @@ function perTaskVerdicts(
   });
   const decided = decide(
     pending.map((p) => p.raw),
-    { alpha, baseline },
+    { alpha, baseline, scope: "task" },
   );
   decided.forEach((d, i) => {
     // One task's repeats speak for that task only.
@@ -1352,9 +1395,11 @@ function perTaskVerdicts(
   const general = minTasksForSignificance(alpha / Math.max(1, generalFamily));
   const T = tasks.length;
   const scope =
-    T < general
-      ? `${T} task${T === 1 ? "" : "s"}: this doesn't generalise to other tasks; ≥${general} tasks needed for a general claim.`
-      : `${T} tasks: per-task results speak for these tasks only; the general claim is the task-paired verdict.`;
+    T === 1
+      ? `On this task only (${tasks[0]!}); no general claim from 1 task: ≥${general} tasks needed for one.`
+      : T < general
+        ? `${T} task${T === 1 ? "" : "s"}: this doesn't generalise to other tasks; ≥${general} tasks needed for a general claim.`
+        : `${T} tasks: per-task results speak for these tasks only; the general claim is the task-paired verdict.`;
 
   // A requirement makes the headline when some task's own (Holm-corrected) verdict is better or
   // worse and no task goes the other way. Each per-task verdict already controls the family-wise
@@ -1381,7 +1426,9 @@ function perTaskVerdicts(
           ? `on ${ids.length} of ${covered.length} ${covered.length === T ? "tasks tested" : "tasks it covers"} (${listAnd(ids)}; no detectable difference on ${listAnd(inconclusive)})`
           : covered.length === T && T > 1
             ? `on all ${T} tasks tested`
-            : `on the ${ids.length} task${ids.length === 1 ? "" : "s"} it covers (${ids.join(", ")})`;
+            : T === 1
+              ? "on this task"
+              : `on the ${ids.length} task${ids.length === 1 ? "" : "s"} it covers (${ids.join(", ")})`;
       headline.push({
         contenderId: s.contenderId,
         requirementId: req.id,

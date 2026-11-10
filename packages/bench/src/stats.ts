@@ -674,11 +674,53 @@ function lnFactorial(n: number): number {
   return s;
 }
 
-/** Smallest two-sided exact Mann–Whitney p-value any n1 vs n2 data can reach: 2 / C(n1+n2, n1). */
-export function minMannWhitneyP(n1: number, n2: number): number {
+/** C(n1+n2, n1): the number of ways to split n1 + n2 trials into groups of n1 and n2. */
+export function splitCount(n1: number, n2: number): number {
   let c = 1;
   for (let i = 1; i <= n1; i++) c = (c * (n2 + i)) / i;
-  return Math.min(1, 2 / c);
+  return c;
+}
+
+/**
+ * Smallest two-sided exact Mann–Whitney p-value any n1 vs n2 data can reach: 2 / C(n1+n2, n1).
+ * The rank-sum distribution is symmetric at any n1, n2, so the most extreme split always has an
+ * equally extreme mirror (both tails count).
+ */
+export function minMannWhitneyP(n1: number, n2: number): number {
+  return Math.min(1, 2 / splitCount(n1, n2));
+}
+
+/**
+ * Smallest two-sided p-value any n1 vs n2 data can reach in the exact two-sample permutation test
+ * on the difference in means (`permutationMeanTest`) and in Fisher's exact test (TDM-251).
+ * With n1 = n2 the most extreme split's mirror (the groups swapped) is as extreme, so the floor is
+ * 2 / C(n1+n2, n1). With n1 ≠ n2 the mirror has a different difference in means (and a different
+ * table), so data can make one split the only one as extreme: the floor is 1 / C(n1+n2, n1).
+ * 3 vs 4: 1/35 = 0.0286 (harness league run 1, Tandem vs solo), not 2/35.
+ */
+export function minPermutationP(n1: number, n2: number): number {
+  return Math.min(1, (n1 === n2 ? 2 : 1) / splitCount(n1, n2));
+}
+
+/**
+ * The smallest Holm-adjusted p each comparison of a family can reach, whatever the data, given
+ * every comparison's own floor (TDM-251). Comparison i does best when it and the comparisons with
+ * the smallest floors (no larger than its own) all sit at their floors and come first: with r − 1
+ * of them ahead of it, its adjusted p is max((m − j + 1)·g_j for j < r, (m − r + 1)·f_i). This is
+ * the minimum over r. At least α means no result at these n's can be significant after Holm.
+ */
+export function holmFloors(floors: readonly number[]): number[] {
+  const m = floors.length;
+  return floors.map((f, i) => {
+    const ahead = floors.filter((g, j) => j !== i && g <= f).sort((a, b) => a - b);
+    let best = Math.min(1, m * f);
+    let running = 0;
+    for (let r = 2; r <= ahead.length + 1; r++) {
+      running = Math.max(running, (m - r + 2) * ahead[r - 2]!);
+      best = Math.min(best, Math.min(1, Math.max(running, (m - r + 1) * f)));
+    }
+    return best;
+  });
 }
 
 /** P(U ≤ u) for every u = 0..n1·n2, continuous data (no ties). */
@@ -1125,8 +1167,9 @@ export interface PermutationResult {
  * Two-sample permutation (Fisher–Pitman) test on mean(x) − mean(y), two-sided: the share of the
  * C(n1+n2, n1) relabellings whose |difference| is at least the observed one. Exact up to
  * PERMUTATION_EXACT_MAX splits, else `samples` seeded random relabellings
- * (p = (hits + 1) / (samples + 1)). Its floor is 2 / C(n1+n2, n1) (`minMannWhitneyP`): 3 vs 3
- * can't go below 0.1, so no result at that n is significant.
+ * (p = (hits + 1) / (samples + 1)). Its floor (`minPermutationP`) is 2 / C(n1+n2, n1) when
+ * n1 = n2 (3 vs 3 can't go below 0.1, so no result at that n is significant) and 1 / C(n1+n2, n1)
+ * when n1 ≠ n2, where one tail can be the only split that extreme (3 vs 4: 1/35 = 0.0286).
  */
 export function permutationMeanTest(
   x: readonly number[],

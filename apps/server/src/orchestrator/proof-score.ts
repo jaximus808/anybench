@@ -22,6 +22,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  COMPARISON_TEST_NAMES,
   costBasisDisclosure,
   gateResultsOf,
   kitCostBasis,
@@ -517,15 +518,21 @@ function requirementValue(r: ContenderScore["requirements"][number]): number | n
   return only && only.status === "measured" ? only.value : null;
 }
 
-/** The verdict lines for one requirement: one per compared setup (per workload in software kits). */
-function verdictLines(ks: KitScore, reqId: string): string[] {
+/**
+ * The verdict lines for one requirement: one per compared setup (per workload in software kits).
+ * `task` (TDM-251): a single-task kit's, which are that task's within-task comparisons.
+ */
+function verdictLines(ks: KitScore, reqId: string, task: string | null = null): string[] {
   const out: string[] = [];
+  const on = task ? ` on ${task} only` : "";
   for (const c of ks.contenders) {
     if (c.contenderId === ks.stats.baseline) continue;
     const r = c.requirements.find((x) => x.requirementId === reqId);
     if (!r?.scored) continue;
     if (r.comparison) {
-      out.push(`Verdict, ${c.contenderId} vs ${ks.stats.baseline}: ${r.comparison.statement}.`);
+      out.push(
+        `Verdict${on}, ${c.contenderId} vs ${ks.stats.baseline}: ${r.comparison.statement}.`,
+      );
       continue;
     }
     const cells = r.byWorkload.filter((cell) => cell.comparison !== null);
@@ -598,6 +605,67 @@ export function perTaskHeadlineOf(
   });
 }
 
+/** "p=0.029", or "p<0.001". */
+const pIs = (p: number) => (p < 0.001 ? "p<0.001" : `p=${p.toFixed(3)}`);
+
+/**
+ * TDM-251: a single-task kit's answer leads with each setup vs the baseline WITHIN the task (the
+ * exact two-sample tests on the trials, Holm across the family), never the task-paired p = 1.
+ * A setup with significant findings reads "D · Tandem ×3 was slower and more expensive (wall Holm
+ * p=0.016, cost Holm p=0.016)"; one without names its closest comparison, its Holm p and, when no
+ * data at these n's could pass Holm, that floor. Then the scope line ("On this task only …").
+ */
+export function withinTaskSentence(
+  ks: KitScore,
+  perTask: NonNullable<KitScore["stats"]["perTask"]>,
+  nameOf: (id: string) => string,
+): string {
+  const baseline = ks.stats.baseline!;
+  const clauses: string[] = [];
+  for (const c of ks.contenders) {
+    if (c.contenderId === baseline) continue;
+    const name = nameOf(c.contenderId);
+    const compared = c.requirements.flatMap((r) =>
+      r.scored && r.comparison ? [{ id: r.requirementId, cmp: r.comparison }] : [],
+    );
+    const findings = perTask.headline.filter((f) => f.contenderId === c.contenderId);
+    if (findings.length > 0) {
+      const adjectives = findings.map((f) => f.adjective);
+      const joined =
+        adjectives.length === 1
+          ? adjectives[0]!
+          : `${adjectives.slice(0, -1).join(", ")} and ${adjectives[adjectives.length - 1]!}`;
+      const ps = findings.flatMap((f) => {
+        const cmp = compared.find((x) => x.id === f.requirementId)?.cmp;
+        return cmp ? [`${f.requirementId} Holm ${pIs(cmp.pAdjusted)}`] : [];
+      });
+      clauses.push(`${name} was ${joined}${ps.length ? ` (${ps.join(", ")})` : ""}`);
+      continue;
+    }
+    if (compared.length === 0) {
+      clauses.push(`${name}: nothing to compare`);
+      continue;
+    }
+    const closest = compared.reduce((a, b) => (b.cmp.p < a.cmp.p ? b : a));
+    const k = closest.cmp;
+    const why =
+      k.downgraded === "survivorship"
+        ? "; it is a median over solved trials only, so it can't show better"
+        : k.downgraded === "effect_size"
+          ? `; |δ| ${Math.abs(k.effect.value).toFixed(2)} is below 0.33`
+          : "";
+    const floor =
+      typeof k.pAdjustedFloor === "number" && k.pAdjustedFloor >= k.alpha
+        ? `; no result at these n's could pass Holm: its floor here is ${pIs(k.pAdjustedFloor)}`
+        : "";
+    clauses.push(
+      `${name}: no detectable difference at n=${k.n.candidate} vs ${k.n.baseline} (closest: ${closest.id}, ${COMPARISON_TEST_NAMES[k.test]} ${pIs(k.p)}, Holm ${pIs(k.pAdjusted)}${why}${floor})`,
+    );
+  }
+  const m = perTask.family;
+  return `Within this task (${perTask.tasks[0]!}), each setup vs ${nameOf(baseline)} by exact two-sample tests on the trials' values, Holm-corrected across ${m} test${m === 1 ? "" : "s"}: ${clauses.join("; ")}. ${perTask.scope}`;
+}
+
 function verdictIds(c: ContenderScore, verdict: "better" | "worse"): string[] {
   return c.requirements.flatMap((r) =>
     r.scored && r.verdict === verdict ? [r.requirementId] : [],
@@ -613,12 +681,18 @@ function reportComparison(cmp: Comparison | null): RequirementComparison | null 
     test: cmp.test,
     p: cmp.p,
     p_adjusted: cmp.pAdjusted,
+    // TDM-251: the floor at these n's (absent in scores stored before it).
+    ...(typeof cmp.pFloor === "number" ? { p_floor: cmp.pFloor } : {}),
+    ...(typeof cmp.pAdjustedFloor === "number" ? { p_adjusted_floor: cmp.pAdjustedFloor } : {}),
     alpha: cmp.alpha,
     family: cmp.family,
     effect: {
       measure: cmp.effect.measure,
       value: cmp.effect.value,
       hodges_lehmann: cmp.effect.hodgesLehmann,
+      ...(cmp.effect.candidateMean != null && cmp.effect.baselineMean != null
+        ? { candidate_mean: cmp.effect.candidateMean, baseline_mean: cmp.effect.baselineMean }
+        : {}),
     },
     diff_ci: {
       lo: cmp.ci.lo,
@@ -748,17 +822,22 @@ export function buildSummary(
   const generalSentence = headline
     ? `Result on ${stats!.primary} (the primary requirement): ${headline}. (${contenderIds.length} setups; ${score.trials.scored} measured trials; Holm-corrected across ${stats!.family} comparisons.) No setup is ranked by a composite score.`
     : `Result: ${head} per setup (${contenderIds.length} setups; ${score.trials.scored} measured trials; the plan needs at least ${need} repeats per setup). No setup is ranked and no composite score is shown.`;
+  // TDM-251: one task. The within-task verdicts lead; the task-paired test (p = 1 at one task) is
+  // not run, so the answer never says "can't go below p=1".
+  const singleTask = perTask !== null && stats!.singleTask === true && perTask.tasks.length === 1;
   // The per-task findings lead (every task agreeing, or some with the rest named as no detectable
   // difference); the scope line is always there.
-  const sentence = perTask
-    ? [
-        perTaskHeadline.length ? `On the tasks tested: ${perTaskHeadline.join("; ")}.` : null,
-        generalSentence,
-        perTask.scope,
-      ]
-        .filter(Boolean)
-        .join(" ")
-    : generalSentence;
+  const sentence = singleTask
+    ? `${withinTaskSentence(ks, perTask!, nameOf)} (${contenderIds.length} setups; ${score.trials.scored} measured trials.) No setup is ranked by a composite score.`
+    : perTask
+      ? [
+          perTaskHeadline.length ? `On the tasks tested: ${perTaskHeadline.join("; ")}.` : null,
+          generalSentence,
+          perTask.scope,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : generalSentence;
   lines.push(sentence, "");
   lines.push(
     `Left out of scoring: ${score.trials.warmups} warm-ups, ${score.trials.infra} infra failures (ours), ${score.trials.infra_lost ? `${score.trials.infra_lost} not graded (infra: our runner lost the workspace), ` : ""}${score.trials.cancelled} cancelled.`,
@@ -794,15 +873,17 @@ export function buildSummary(
       return r?.scored ? r.byWorkload.map((cell) => cell.trials) : [];
     });
     lines.push("");
-    if (decided) lines.push(...verdictLines(ks, req.id), "");
-    const taskLines = perTask ? perTaskLines(ks, req.id, nameOf) : [];
+    if (decided)
+      lines.push(...verdictLines(ks, req.id, singleTask ? perTask!.tasks[0]! : null), "");
+    // TDM-251: with one task the verdict lines already are the task's; no second copy.
+    const taskLines = perTask && !singleTask ? perTaskLines(ks, req.id, nameOf) : [];
     if (taskLines.length)
       lines.push(
         `Per task (each task's repeats as the unit; Holm across ${perTask!.family} task × requirement tests; ${perTask!.scope}):`,
         ...taskLines,
         "",
       );
-    else
+    else if (!singleTask)
       lines.push(
         ns.length
           ? `Verdict: ${verdictAt(Math.min(...ns), Math.max(...ns), kind)}.`

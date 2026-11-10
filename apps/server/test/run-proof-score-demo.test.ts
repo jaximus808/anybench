@@ -462,12 +462,14 @@ describe("demo summary wording (no DB)", () => {
     expect(a.md).toContain(N1);
     expect(a.md).toContain("- a: w1 10 s (n=1, solved 1/1)");
     expect(a.md).toContain("- b: w1 20 s (n=1, solved 1/1)");
+    // TDM-251: one task, so the verdict is the within-task one (the task-paired test is p=1 there).
     expect(a.md).toContain(
-      "Verdict, a vs b: no detectable difference at n=1 task (1 vs 1 trials), smallest detectable difference=none reachable at this n",
+      "Verdict on w1 only, a vs b: no detectable difference at n=1 vs 1, smallest detectable difference=none reachable at this n",
     );
     expect(a.report.answer).toMatch(
-      /^Result on wall \(the primary requirement\): a vs b: no detectable difference at n=1 task/,
+      /^Within this task \(w1\), each setup vs B by exact two-sample tests on the trials' values, Holm-corrected across 1 test: A: no detectable difference at n=1 vs 1/,
     );
+    expect(a.report.answer).toContain("On this task only (w1); no general claim from 1 task");
     expect(a.report.answer).toContain("No setup is ranked by a composite score.");
     expect(a.md).not.toMatch(/\b(beats|faster|cheaper|better than)\b/i);
     const req = a.report.contenders[0]!.requirements[0]!;
@@ -475,11 +477,16 @@ describe("demo summary wording (no DB)", () => {
     expect(a.report.contenders[0]!.wins).toEqual([]);
   });
 
-  it("10 repeats on one task still can't tell: tasks are the unit, and the MDE says so", async () => {
+  it("10 repeats on one task: the within-task test sees it, but a median over solved trials can't show better (TDM-251)", async () => {
     const ten = await summary(10);
     expect(ten.md).toContain(
-      "no detectable difference at n=1 task (10 vs 10 trials), smallest detectable difference=none reachable at this n",
+      "Verdict on w1 only, a vs b: no detectable difference at n=10 vs 10, smallest detectable difference=|δ| 0.72",
     );
+    expect(ten.md).toContain("it leans better, but the value is a median over solved trials only");
+    expect(ten.report.answer).toContain(
+      "A: no detectable difference at n=10 vs 10 (closest: wall, permutation p<0.001, Holm p<0.001; it is a median over solved trials only, so it can't show better)",
+    );
+    expect(ten.report.answer).not.toMatch(/insufficient tasks|over 1 task/);
   });
 
   it("a planted effect on 8 tasks is 'better on these 8 tasks' and becomes a win", async () => {
