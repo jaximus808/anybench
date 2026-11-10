@@ -44,7 +44,7 @@ import { z } from "zod";
 import type { Database } from "../db/client.js";
 import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
-import { drizzleComputerStore } from "../lib/computer-store.js";
+import { computerPricing, drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
 import { defineJob, type JobContext } from "./types.js";
@@ -436,12 +436,16 @@ export function createComputerReapJob(options: ComputerReapJobOptions = {}) {
         return;
       }
       const store = drizzleComputerStore(ctx.db);
-      const pricing = { pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD };
       const events = options.events ?? appendEventsPort;
       const report = await reapComputers({
         db: ctx.db,
         registries: providers.map((provider) =>
-          createComputerRegistry({ provider, store, pricing, now: options.now }),
+          createComputerRegistry({
+            provider,
+            store,
+            pricing: computerPricing(provider, ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD),
+            now: options.now,
+          }),
         ),
         events,
         now: options.now,

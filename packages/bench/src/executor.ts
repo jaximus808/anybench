@@ -72,7 +72,7 @@ import {
   type TrialCommand,
   type TrialState,
 } from "@anybench/core";
-import type { ComputerRegistry } from "@anybench/envs";
+import type { ComputerRecord, ComputerRegistry } from "@anybench/envs";
 import {
   contenderDriverEnv,
   createProxyKeyGuard,
@@ -1169,12 +1169,17 @@ class TrialExecution {
    * Destroy the trial's computer (idempotent); a failure is left to the reaper. `unlink` clears
    * trials.computer_id afterwards (failed_infra: the next attempt gets a new computer).
    */
-  private async destroyComputer(reason: string, unlink = false): Promise<void> {
+  private async destroyComputer(
+    reason: string,
+    unlink = false,
+  ): Promise<{ blocksBilled: number; costMicroUsd: bigint } | null> {
     const computerId = this.t.computer_id ?? this.computer?.id;
-    if (!computerId) return;
+    if (!computerId) return null;
     const { registry } = this.deps;
+    let closed: { blocksBilled: number; costMicroUsd: bigint } | null = null;
     try {
       const out = await registry.destroy(computerId);
+      closed = out;
       await this.emit({
         type: "computer.destroyed",
         source: "computer",
@@ -1197,6 +1202,7 @@ class TrialExecution {
       await registry.markLeaked(computerId).catch(() => undefined);
     }
     this.computer = null;
+    return closed;
   }
 
   private async emit(event: ExecEventDraft): Promise<void> {
@@ -1207,16 +1213,23 @@ class TrialExecution {
     }
   }
 
+  /** The registry row of the trial's computer (null: no computer, or not tracked). */
+  private async computerRecord(): Promise<ComputerRecord | null> {
+    const info = this.computer?.info;
+    if (!info) return null;
+    return this.deps.registry.findByProviderId(info.id);
+  }
+
   /**
    * This trial's share of the computer's cost: blocks consumed since it started on the computer
    * (the first trial of a fresh computer also pays the block paid at create). Billable states only.
+   * `closedCost`: what the registry closed the computer at (its destroy), so a trial that ends
+   * with its computer is charged exactly what the registry bills for it (TDM-252); else the cost
+   * up to now.
    */
-  private async costShare(): Promise<MicroUsd> {
-    const info = this.computer?.info;
-    if (!info) return 0n;
-    const record = await this.deps.registry.findByProviderId(info.id);
+  private costShare(record: ComputerRecord | null, closedCost?: bigint): MicroUsd {
     if (!record) return 0n;
-    const end = this.deps.registry.costOf(record, new Date(this.now())).costMicroUsd;
+    const end = closedCost ?? this.deps.registry.costOf(record, new Date(this.now())).costMicroUsd;
     const start = this.t.started_at;
     const base =
       start && start.getTime() > record.createdAt.getTime()
@@ -1655,7 +1668,8 @@ class TrialExecution {
     if (machine !== undefined) patch.machine = machine;
     const bundle = await this.bundleKey(status);
     if (bundle) patch.logs_url = bundle;
-    patch.cost_micro_usd = await this.costShare();
+    const record = await this.computerRecord();
+    patch.cost_micro_usd = this.costShare(record);
     if (state === "failed_subject") patch.ended_at = new Date(this.now());
     // TDM-232: record whether a workspace was frozen (before the computer goes), so a subject
     // failure that left real work is graded on it, as an explicit fact on the trial.
@@ -1664,7 +1678,15 @@ class TrialExecution {
 
     const keep = this.opts.keepComputer === true && this.computer !== null;
     const kept = keep ? this.computer!.id : null;
-    if (!keep) await this.destroyComputer(state === "collecting" ? "trial collected" : state);
+    if (!keep) {
+      const closed = await this.destroyComputer(state === "collecting" ? "trial collected" : state);
+      // TDM-252: the share at the cost the registry closed the computer at (a block boundary can
+      // pass between the read above and the destroy).
+      const settled = closed ? this.costShare(record, closed.costMicroUsd) : null;
+      if (settled !== null && settled !== this.t.cost_micro_usd) {
+        await this.patch({ cost_micro_usd: settled });
+      }
+    }
     if (state === "collecting") {
       return {
         kind: "collected",

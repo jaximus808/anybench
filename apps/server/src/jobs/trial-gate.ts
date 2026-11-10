@@ -79,7 +79,7 @@ import { computers } from "../db/schema/computers.js";
 import { kits } from "../db/schema/kits.js";
 import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
-import { drizzleComputerStore } from "../lib/computer-store.js";
+import { computerPricing, drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { Logger } from "../lib/logger.js";
 import { TRIAL_GATE_JOB, TrialGatePayloadSchema, trialGateJobKey } from "./trial-execute.js";
@@ -733,7 +733,7 @@ export function createTrialGateJob(options: TrialGateJobOptions = {}) {
       const registry = createComputerRegistry({
         provider,
         store: drizzleComputerStore(ctx.db),
-        pricing: { pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD },
+        pricing: computerPricing(provider, ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD),
       });
       const profile = options.profile?.(ctx);
       const breaker =

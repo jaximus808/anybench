@@ -32,6 +32,25 @@ export const TrialSchema = z.object({
 export type Trial = z.infer<typeof TrialSchema>;
 
 /**
+ * TDM-252: one gate's verdict on the trial, as its `trial.gate` event has it: passed, the summary
+ * (the gate's reason), and the hidden-test counts the gate vouched for (null when it gave none).
+ */
+export const TrialGateVerdictSchema = z.object({
+  gate: z.string().min(1),
+  passed: z.boolean(),
+  /** false: the gate does not apply to this trial (it leaves the gate's tally). */
+  applicable: z.boolean(),
+  summary: z.string(),
+  /** How the verdict was obtained (`verdict`, `timeout`, `no_outputs`, ...); null if unrecorded. */
+  status: z.string().nullable(),
+  evidence: z.array(z.string()),
+  hidden_tests_passed: z.number().nullable(),
+  hidden_tests_total: z.number().nullable(),
+  hidden_test_fraction: z.number().nullable(),
+});
+export type TrialGateVerdict = z.infer<typeof TrialGateVerdictSchema>;
+
+/**
  * The trial drawer. `metrics` are raw collector readings; they only count toward a score when
  * `gate.pass` is true (no speed or quality number without a correctness gate).
  */
@@ -42,7 +61,13 @@ export const TrialDetailSchema = TrialSchema.extend({
   log_offset: z.int().nonnegative(),
   machine: z.record(z.string(), z.unknown()).nullable(),
   metrics: z.record(z.string(), z.number()).nullable(),
+  /**
+   * The trial's verdict over all its gates (TDM-252): pass when every applicable gate passed,
+   * reason and evidence from each gate. Null until a gate has scored it.
+   */
   gate: GateResultSchema.nullable(),
+  /** TDM-252: each gate's own verdict (absent on servers before it; [] until gated). */
+  gates: z.array(TrialGateVerdictSchema).optional(),
   versions: z.record(z.string(), z.string()),
   phases: z.array(z.object({ state: TrialStateSchema, at: IsoDateTimeSchema })),
   /**

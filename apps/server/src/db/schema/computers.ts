@@ -9,7 +9,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { COMPUTER_STATUSES } from "./_enums.js";
-import { idPk, inList, microUsdZero, tstz } from "./_shared.js";
+import { idPk, inList, microUsd, microUsdZero, tstz } from "./_shared.js";
 import { runs } from "./runs.js";
 import { trials } from "./trials.js";
 
@@ -30,6 +30,11 @@ export const computers = pgTable(
     blocksBilled: integer("blocks_billed").notNull().default(0),
     costMicroUsd: microUsdZero("cost_micro_usd"),
     lastSeenAt: tstz("last_seen_at"),
+    /**
+     * TDM-252: one block of this computer at its size (the provider's rate card), set at create.
+     * NULL (rows before TDM-252): COMPUTER_BLOCK_PRICE_MICRO_USD.
+     */
+    pricePerBlockMicroUsd: microUsd("price_per_block_micro_usd"),
   },
   (t) => [
     unique("computers_provider_id_uq").on(t.provider, t.providerId),

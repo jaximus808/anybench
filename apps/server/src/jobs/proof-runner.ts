@@ -60,6 +60,7 @@ import {
   runTagPrefix,
   type ComputeProvider,
 } from "@anybench/providers";
+import { computerPricing } from "../lib/computer-store.js";
 import { kitComputerSize, type EnvBuildDetail } from "../orchestrator/env-build.js";
 import type { EnvBuild } from "../orchestrator/ports.js";
 import { preparedJob, trialProxyCap } from "../orchestrator/trial-source.js";
@@ -174,7 +175,7 @@ export function providerProofRunner(opts: ProviderProofRunnerOptions): ProviderP
   const registry = createComputerRegistry({
     provider,
     store,
-    pricing: { pricePerBlockMicroUsd: opts.pricePerBlockMicroUsd ?? 0n },
+    pricing: computerPricing(provider, opts.pricePerBlockMicroUsd ?? 0n),
   });
   const trialIds: string[] = [];
   const log = opts.log ?? (() => undefined);

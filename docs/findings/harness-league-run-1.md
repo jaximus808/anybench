@@ -454,9 +454,24 @@ We **cannot** say:
    Run 01a1c202: trials store 55,200 µ$ (1 block) where `computer.destroyed` says
    `blocks_billed: 2`, and 82,800 where it says 3. The run's ledger shows $1.13 at cost against
    $2.37 of blocks.
+   **Cause (TDM-252):** no block was missing; the price was. The registry costed every computer
+   at the flat `COMPUTER_BLOCK_PRICE_MICRO_USD` = 27,600 (a 2 vCPU / 4 GiB block) and the league
+   kit runs 4 vCPU / 8 GiB (`kits/harness-league/anybench.yaml` `resources`), which Naïve bills
+   8,400 × 4 + 2,700 × 8 = 55,200 a block. So 55,200 = 2 × 27,600, 82,800 = 3 × 27,600, and
+   the ledger's $1.13 = 41 blocks × 27,600 (43 minus the 2 failed_infra computers); the $2.37 is
+   43 × 55,200. **Fix:** a Naïve computer's block price is its size at the rate card, stored on
+   its row at create (`computers.price_per_block_micro_usd`, migration 0018; envs
+   `pricing.blockPriceFor`, server `computerPricing`), so the trial share, the destroy cost, the
+   ledger and the budget (live computers and each trial's worst case) all use it. The executor
+   also settles the share at the cost the registry closed the computer at, so a block boundary
+   between the read and the destroy is charged too. The run's stored figures are not backfilled.
 10. **`GET /trials/:id` returns `gate: null` for gated trials.**
     Surface: apps/server `routes/trials.ts`. Done: the trial's gate verdict (pass, summary, the
     hidden-test counts) is in the trial response, as the `trial.gate` event has it.
+    **Cause (TDM-252):** `trials.gate` holds a bench `TrialGateRecord` (one outcome per kit gate)
+    and the route parsed it as one plain `GateResult`, which never matched. **Fix:** the
+    response has `gates` (each gate: passed, applicable, summary, status, evidence, the
+    hidden-test counts) and `gate`, the verdict over them (pass when every applicable gate passed).
 
 ## Files
 

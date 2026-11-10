@@ -127,6 +127,13 @@
       "when": 1794251799833,
       "tag": "0017_token_spend_by_attempt",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794268995042,
+      "tag": "0018_computer_block_price",
+      "breakpoints": true
     }
   ]
 }

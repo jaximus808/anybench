@@ -11,6 +11,10 @@
 //   call fails the row stays `destroying` and the error is rethrown; the reaper retries it.
 // - Cost: Naïve bills 10-minute blocks in advance, the first block at create. blocks billed =
 //   max(1, ceil(lifetime / block)); cost = blocks × price per block. Integer micro-USD (bigint).
+//   TDM-252: the price per block follows the computer's size. `pricing.blockPriceFor` prices it
+//   (Naïve's rate card in the server) and the row keeps it (`pricePerBlockMicroUsd`), so a
+//   4 vCPU / 8 GiB computer costs 55,200 a block, not the flat 2 vCPU / 4 GiB 27,600. A row
+//   without one (written before TDM-252) costs at `pricing.pricePerBlockMicroUsd`.
 import { ComputerIdSchema, mulMicro, newId, RunIdSchema, TrialIdSchema } from "@anybench/core";
 import {
   trialTag,
@@ -58,6 +62,11 @@ export const ComputerRecordSchema = z.object({
   blocksBilled: z.int().nonnegative(),
   costMicroUsd: z.bigint().nonnegative(),
   lastSeenAt: z.date().nullable(),
+  /**
+   * TDM-252: what one block of THIS computer costs (its size at the provider's rate), fixed at
+   * create. Null or absent: the registry's flat `pricing.pricePerBlockMicroUsd`.
+   */
+  pricePerBlockMicroUsd: z.bigint().nonnegative().nullish(),
 });
 export type ComputerRecord = z.infer<typeof ComputerRecordSchema>;
 
@@ -71,9 +80,25 @@ export interface ComputerStore {
   findByProviderId(provider: string, providerId: string): Promise<ComputerRecord | null>;
 }
 
+/** A computer's size, as the provider reports it (ComputerInfo) or as it was asked for. */
+export interface ComputerSize {
+  vcpu: number;
+  memoryMb: number;
+}
+
 export const ComputerPricingSchema = z.object({
-  /** Price of one billing block, integer micro-USD. */
+  /**
+   * Price of one billing block, integer micro-USD: for a computer of unknown size (a row written
+   * before TDM-252), or every computer when there is no `blockPriceFor`.
+   */
   pricePerBlockMicroUsd: z.bigint().nonnegative(),
+  /**
+   * TDM-252: the price of one block of a computer this size (the provider's rate card). The
+   * registry stores it on the row at create, so the computer's cost follows its size.
+   */
+  blockPriceFor: z
+    .custom<(size: ComputerSize) => bigint>((v) => typeof v === "function")
+    .optional(),
   /** Override the block length; default the provider's (block billing) or 600 s. */
   blockSeconds: z.int().positive().optional(),
 });
@@ -107,7 +132,7 @@ export function computerCostMicroUsd(blocks: number, pricePerBlockMicroUsd: bigi
  * (docker-local) still counts blocks, at price 0.
  */
 export function computerCost(
-  record: Pick<ComputerRecord, "createdAt">,
+  record: Pick<ComputerRecord, "createdAt" | "pricePerBlockMicroUsd">,
   endedAt: Date,
   caps: ProviderCapabilities,
   pricing: ComputerPricing,
@@ -116,8 +141,35 @@ export function computerCost(
     pricing.blockSeconds ??
     (caps.billing.kind === "block" ? caps.billing.blockSeconds : DEFAULT_BLOCK_SECONDS);
   const blocks = blocksBilled(record.createdAt, endedAt, blockSeconds);
-  const price = caps.billing.kind === "free" ? 0n : pricing.pricePerBlockMicroUsd;
+  const price =
+    caps.billing.kind === "free"
+      ? 0n
+      : (record.pricePerBlockMicroUsd ?? pricing.pricePerBlockMicroUsd);
   return { blocksBilled: blocks, costMicroUsd: computerCostMicroUsd(blocks, price) };
+}
+
+/** ComputerSpecSchema's defaults, for a spec that leaves the size out. */
+const DEFAULT_SIZE: ComputerSize = { vcpu: 2, memoryMb: 4096 };
+
+/**
+ * TDM-252: the price of one block of a computer this size: `pricing.blockPriceFor` when set,
+ * else the flat `pricePerBlockMicroUsd`. A free provider is 0 whatever the size.
+ */
+export function blockPriceOf(
+  size: Partial<ComputerSize>,
+  caps: ProviderCapabilities,
+  pricing: ComputerPricing,
+): bigint {
+  if (caps.billing.kind === "free") return 0n;
+  if (!pricing.blockPriceFor) return pricing.pricePerBlockMicroUsd;
+  const price = pricing.blockPriceFor({
+    vcpu: size.vcpu ?? DEFAULT_SIZE.vcpu,
+    memoryMb: size.memoryMb ?? DEFAULT_SIZE.memoryMb,
+  });
+  if (typeof price !== "bigint" || price < 0n) {
+    throw new ComputerRegistryError(`blockPriceFor returned ${String(price)}, not a bigint >= 0`);
+  }
+  return price;
 }
 
 // ---------- registry ----------
@@ -162,9 +214,9 @@ export interface ComputerRegistry {
   ): Promise<ComputerRecord>;
   /** Flag a row as leaked (a destroy that failed; the reaper retries it next tick). */
   markLeaked(computerId: string): Promise<void>;
-  /** Blocks billed and cost from the row's created_at until `at` (default now). */
+  /** Blocks billed and cost from the row's created_at until `at` (default now), at its price. */
   costOf(
-    record: Pick<ComputerRecord, "createdAt">,
+    record: Pick<ComputerRecord, "createdAt" | "pricePerBlockMicroUsd">,
     at?: Date,
   ): { blocksBilled: number; costMicroUsd: bigint };
   findByProviderId(providerId: string): Promise<ComputerRecord | null>;
@@ -207,6 +259,7 @@ export function createComputerRegistry(options: ComputerRegistryOptions): Comput
       if (!tags.includes(tag)) tags.push(tag);
       const computerId = nextId();
       const createdAt = now();
+      const caps = provider.capabilities;
 
       // BEFORE the provider call: a row exists even if we crash mid-create.
       await store.insert({
@@ -222,6 +275,8 @@ export function createComputerRegistry(options: ComputerRegistryOptions): Comput
         blocksBilled: 0,
         costMicroUsd: 0n,
         lastSeenAt: createdAt,
+        // The size asked for; corrected to the size the provider reports once it answers.
+        pricePerBlockMicroUsd: blockPriceOf(spec, caps, pricing),
       });
 
       let info: ComputerInfo;
@@ -242,6 +297,7 @@ export function createComputerRegistry(options: ComputerRegistryOptions): Comput
         providerId: info.id,
         status: info.status === "running" ? "running" : "creating",
         lastSeenAt: now(),
+        pricePerBlockMicroUsd: blockPriceOf(info, caps, pricing),
       });
       return { computerId, info };
     },
@@ -299,6 +355,7 @@ export function createComputerRegistry(options: ComputerRegistryOptions): Comput
         blocksBilled: 0,
         costMicroUsd: 0n,
         lastSeenAt: null,
+        pricePerBlockMicroUsd: blockPriceOf(info, provider.capabilities, pricing),
       };
       await store.insert(row);
       return row;

@@ -10,11 +10,17 @@
 // tenants' rows, so a foreign or unknown id is a 404. A key limited to other runs is a 403.
 //
 // What comes back is ours, not the runner's word:
-// - `gate` is trials.gate, which only the gate job writes; it is returned only when it parses as a
-//   core GateResult. Metrics are raw collector readings (finite numbers only) and count toward a
-//   score only when gate.pass is true: the report enforces that, this route just shows both.
+// - `gate` comes from trials.gate, which only the gate job writes. The job stores a bench
+//   TrialGateRecord (one outcome per kit gate); `gates` lists each gate's verdict as its trial.gate
+//   event has it (passed, summary, hidden-test counts) and `gate` is the verdict over all of them
+//   (pass when every applicable gate passed). TDM-252: the route used to parse the record as one
+//   plain GateResult, so `gate` was null for every graded trial. A plain GateResult (rows before
+//   the record) is still shown as `gate`. Metrics are raw collector readings (finite numbers only)
+//   and count toward a score only when gate.pass is true: the report enforces that, this route
+//   just shows both.
 // - Never a URL the runner sent: trials.logs_url is not returned, and string values that look like
 //   URLs are dropped from `machine` and `versions` (both runner-reported).
+import { TrialGateRecordSchema } from "@anybench/bench";
 import {
   apiRoutes,
   ComputeProviderNameSchema,
@@ -26,8 +32,10 @@ import {
   HIDDEN_TESTS_TOTAL_METRIC,
   subjectFailureNote,
   TrialStateSchema,
+  type GateResult,
   type Trial,
   type TrialDetail,
+  type TrialGateVerdict,
 } from "@anybench/core";
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { Hono } from "hono";
@@ -118,8 +126,53 @@ export function toTrial(row: TrialRow): Trial {
   };
 }
 
+function countOf(metrics: Record<string, number> | undefined, name: string): number | null {
+  const v = metrics?.[name];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** Each gate's verdict in a stored TrialGateRecord, as the trial.gate events carry them. */
+export function gateVerdictsOf(raw: unknown): TrialGateVerdict[] {
+  const record = TrialGateRecordSchema.safeParse(raw);
+  if (!record.success) return [];
+  return Object.entries(record.data.gates).map(([gate, o]) => {
+    // Only a real verdict on an applicable gate vouches for counts (bench trialGateMetrics).
+    const counts = o.status === "verdict" && o.result.applicable ? o.metrics : undefined;
+    return {
+      gate,
+      passed: o.result.pass,
+      applicable: o.result.applicable,
+      summary: o.result.reason,
+      status: o.status,
+      evidence: o.result.evidence,
+      hidden_tests_passed: countOf(counts, HIDDEN_TESTS_PASSED_METRIC),
+      hidden_tests_total: countOf(counts, HIDDEN_TESTS_TOTAL_METRIC),
+      hidden_test_fraction: countOf(counts, HIDDEN_TEST_FRACTION_METRIC),
+    };
+  });
+}
+
+/**
+ * The trial's verdict over its gates: pass when every applicable gate passed (and one applied),
+ * the gates' reasons and evidence. One gate: that gate's verdict as it is. Null: not gated.
+ */
+export function overallGate(verdicts: readonly TrialGateVerdict[]): GateResult | null {
+  if (verdicts.length === 0) return null;
+  const applicable = verdicts.filter((v) => v.applicable);
+  const pass = applicable.length > 0 && applicable.every((v) => v.passed);
+  const reason =
+    verdicts.length === 1
+      ? verdicts[0]!.summary
+      : verdicts.map((v) => `${v.gate}: ${v.summary}`).join("; ");
+  const evidence = [...new Set(verdicts.flatMap((v) => v.evidence))];
+  return applicable.length > 0
+    ? { pass, reason, evidence }
+    : { pass, reason, evidence, applicable: false };
+}
+
 export function toTrialDetail(row: TrialRow, phases: TrialDetail["phases"]): TrialDetail {
-  const gate = GateResultSchema.safeParse(row.gate);
+  const verdicts = gateVerdictsOf(row.gate);
+  const plain = GateResultSchema.safeParse(row.gate);
   const machine = machineOf(row.machine);
   const provider = ComputeProviderNameSchema.safeParse(row.provider);
   return {
@@ -130,7 +183,8 @@ export function toTrialDetail(row: TrialRow, phases: TrialDetail["phases"]): Tri
     log_offset: Math.max(0, row.logOffset),
     machine,
     metrics: metricsOf(row.metrics),
-    gate: gate.success ? gate.data : null,
+    gate: verdicts.length > 0 ? overallGate(verdicts) : plain.success ? plain.data : null,
+    gates: verdicts,
     versions: versionsOf(machine),
     phases,
     frozen_workspace: frozenWorkspaceOf(row.frozenWorkspace),

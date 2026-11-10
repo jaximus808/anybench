@@ -75,6 +75,7 @@ import {
   type KitSpec,
   type TrialState,
 } from "@anybench/core";
+import { NAIVE_PROVIDER_NAME, naiveBlockPriceMicroUsd } from "@anybench/providers";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Database, DbTx } from "../db/client.js";
@@ -86,6 +87,7 @@ import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
 import { usageEntries } from "../db/schema/usage_entries.js";
 import { appendEvents } from "../lib/events.js";
+import { kitComputerSize } from "./env-build.js";
 import { isUploadedKitRun } from "./ports.js";
 import { DEFAULT_TRIAL_PROXY_CAP_MICRO_USD, trialProxyCap } from "./trial-source.js";
 
@@ -112,7 +114,11 @@ export interface BudgetPricing {
   computeMarkupBps: bigint;
   /** TDM-244: MANAGED_TOKEN_MARKUP_BPS (default 2000, the config default). */
   managedTokenMarkupBps?: bigint;
-  /** COMPUTER_BLOCK_PRICE_MICRO_USD: what the registry costs one block of a computer at. */
+  /**
+   * COMPUTER_BLOCK_PRICE_MICRO_USD: one block of a computer whose size has no price (another
+   * provider, or a row written before TDM-252). A Naïve computer costs its rate-card price for
+   * its size, as the registry costs it (lib/computer-store.ts computerPricing).
+   */
   blockPriceMicroUsd: bigint;
   blockSeconds?: number;
   /** TRIAL_PROXY_CAP_MICRO_USD: the ceiling of a trial's managed-token cap. */
@@ -285,6 +291,9 @@ export function trialCap(
     if (spec.env) {
       const provider = resolveEnvProvider(spec.env);
       if ((pricing.freeProviders ?? FREE_COMPUTE_PROVIDERS).includes(provider)) price = 0n;
+      // TDM-252: the kit's machine at Naïve's rate (4 vCPU / 8 GiB = 55,200 a block), as billed.
+      else if (provider === NAIVE_PROVIDER_NAME)
+        price = naiveBlockPriceMicroUsd(kitComputerSize(spec));
     }
     try {
       const job = trialJobFromKit(spec, contenderId, workloadId);
@@ -410,6 +419,7 @@ export async function readRunBudget(
       status: computers.status,
       createdAt: computers.createdAt,
       cost: computers.costMicroUsd,
+      price: computers.pricePerBlockMicroUsd,
     })
     .from(computers)
     .where(eq(computers.runId, runId));
@@ -443,7 +453,10 @@ export async function readRunBudget(
     if (!counts) continue;
     let cost = c.cost;
     if (c.status !== "destroyed") {
-      const price = freeProviders.includes(c.provider) ? 0n : pricing.blockPriceMicroUsd;
+      // TDM-252: at the computer's own block price (its size), as the registry will cost it.
+      const price = freeProviders.includes(c.provider)
+        ? 0n
+        : (c.price ?? pricing.blockPriceMicroUsd);
       const secs = (now.getTime() - c.createdAt.getTime()) / 1000;
       cost = blocksFor(secs, blockSeconds) * price;
     }

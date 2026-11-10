@@ -225,6 +225,11 @@ export const EnvSchema = z.object({
   ANYBENCH_GENERATED_KITS_DIR: optionalString,
   /** Optional GitHub token for ingest (TDM-54 → packages/kit ingestGitHubRepo): private repos, rate limits. */
   GITHUB_TOKEN: optionalString,
+  /**
+   * One 10-minute eval-computer block (2 vCPU / 4 GiB at Naïve). TDM-252: a Naïve computer costs
+   * its own size's rate-card block (lib/computer-store.ts computerPricing; 4 vCPU / 8 GiB =
+   * 55,200); this is the price of another provider's block and of rows from before that.
+   */
   COMPUTER_BLOCK_PRICE_MICRO_USD: z.preprocess(
     emptyToUndefined,
     z

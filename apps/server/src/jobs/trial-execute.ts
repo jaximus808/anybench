@@ -73,7 +73,7 @@ import {
   fallbackBundleUpload,
   proxyDepsFromConfig,
 } from "../lib/compute.js";
-import { drizzleComputerStore } from "../lib/computer-store.js";
+import { computerPricing, drizzleComputerStore } from "../lib/computer-store.js";
 import { breakerConfigFrom, dbLaunchBreaker } from "../lib/provider-breaker.js";
 import { appendEvents } from "../lib/events.js";
 import { mintRunnerToken } from "../lib/runner-token.js";
@@ -628,7 +628,7 @@ export function createTrialExecuteJob(options: TrialExecuteJobOptions = {}) {
       const registry = createComputerRegistry({
         provider,
         store: trialLinkedComputerStore(ctx.db),
-        pricing: { pricePerBlockMicroUsd: ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD },
+        pricing: computerPricing(provider, ctx.config.COMPUTER_BLOCK_PRICE_MICRO_USD),
       });
       const ingest = ingestFromConfig(ctx.config);
       if (!ingest) log.warn("PUBLIC_API_URL or RUNNER_TOKEN_SECRET unset: runner is file-only");

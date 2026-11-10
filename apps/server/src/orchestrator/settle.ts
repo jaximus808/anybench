@@ -30,7 +30,7 @@ import type { Database } from "../db/client.js";
 import { computers } from "../db/schema/computers.js";
 import { runs } from "../db/schema/runs.js";
 import { trials } from "../db/schema/trials.js";
-import { drizzleComputerStore } from "../lib/computer-store.js";
+import { computerPricing, drizzleComputerStore } from "../lib/computer-store.js";
 import { appendEvents } from "../lib/events.js";
 import type { JobQueue } from "../lib/job-queue.js";
 import { TRIAL_MAX_ATTEMPTS } from "@anybench/bench";
@@ -192,7 +192,7 @@ export async function cleanupSettledTrials(
     const registry = createComputerRegistry({
       provider: deps.provider,
       store: drizzleComputerStore(deps.db),
-      pricing: { pricePerBlockMicroUsd: deps.pricePerBlockMicroUsd },
+      pricing: computerPricing(deps.provider, deps.pricePerBlockMicroUsd),
     });
     for (const c of live) {
       try {
